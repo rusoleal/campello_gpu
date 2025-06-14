@@ -1,6 +1,6 @@
 #pragma once
 
-namespace systems::leal::gpu
+namespace systems::leal::campello_gpu
 {
 
     class State

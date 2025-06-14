@@ -1,9 +1,9 @@
 #pragma once
 
-#include <gpu/pixel_format.hpp>
-#include <gpu/texture_usage.hpp>
+#include <campello_gpu/pixel_format.hpp>
+#include <campello_gpu/texture_usage.hpp>
 
-namespace systems::leal::gpu
+namespace systems::leal::campello_gpu
 {
 
     class Device;

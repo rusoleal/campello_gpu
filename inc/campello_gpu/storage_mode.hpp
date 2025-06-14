@@ -1,8 +1,12 @@
 #pragma once
 
-enum class StorageMode
+namespace systems::leal::campello_gpu
 {
-    hostVisible,
-    devicePrivate,
-    deviceTransient
-};
+
+    enum class StorageMode
+    {
+        hostVisible,
+        devicePrivate,
+        deviceTransient
+    };
+}

@@ -1,7 +1,7 @@
 #include "Metal.hpp"
-#include <gpu/buffer.hpp>
+#include <campello_gpu/buffer.hpp>
 
-using namespace systems::leal::gpu;
+using namespace systems::leal::campello_gpu;
 
 Buffer::Buffer(void *pd) {
     native = pd;

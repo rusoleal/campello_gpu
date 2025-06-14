@@ -4,14 +4,14 @@
 #include <set>
 #include <string>
 #include <vector>
-#include <gpu/texture.hpp>
-#include <gpu/buffer.hpp>
-#include <gpu/storage_mode.hpp>
-#include <gpu/texture_usage.hpp>
-#include <gpu/pixel_format.hpp>
-#include <gpu/feature.hpp>
+#include <campello_gpu/texture.hpp>
+#include <campello_gpu/buffer.hpp>
+#include <campello_gpu/storage_mode.hpp>
+#include <campello_gpu/texture_usage.hpp>
+#include <campello_gpu/pixel_format.hpp>
+#include <campello_gpu/feature.hpp>
 
-namespace systems::leal::gpu
+namespace systems::leal::campello_gpu
 {
 
     class Device

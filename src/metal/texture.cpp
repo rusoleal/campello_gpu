@@ -1,7 +1,7 @@
 #include "Metal.hpp"
-#include <gpu/texture.hpp>
+#include <campello_gpu/texture.hpp>
 
-using namespace systems::leal::gpu;
+using namespace systems::leal::campello_gpu;
 
 Texture::Texture(void *pd) {
     native = pd;

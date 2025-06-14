@@ -1,7 +1,7 @@
 #include <D3d12.h>
-#include <gpu/device.hpp>
+#include <campello_gpu/device.hpp>
 
-using namespace systems::leal::gpu;
+using namespace systems::leal::campello_gpu;
 
 Device::Device(void *pd) {
 }

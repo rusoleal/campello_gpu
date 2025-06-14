@@ -1,8 +1,8 @@
 #include <vulkan/vulkan.h>
-#include <gpu/device.hpp>
+#include <campello_gpu/device.hpp>
 #include <android/log.h>
 
-using namespace systems::leal::gpu;
+using namespace systems::leal::campello_gpu;
 
 VkInstance *instance = nullptr;
 
