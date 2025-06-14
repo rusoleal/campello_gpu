@@ -4,7 +4,7 @@ project("campello_gpu")
 
 set(CMAKE_CXX_STANDARD 17)
 
-include_directories(../../../inc)
+include_directories(inc)
 
 find_package(Vulkan)
 message(STATUS "Vulkan FOUND = ${Vulkan_FOUND}")
