@@ -42,4 +42,6 @@ namespace systems::leal::campello_gpu
         static std::string getEngineVersion();
     };
 
+    std::string getVersion();
+
 }

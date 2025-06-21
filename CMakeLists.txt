@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project("campello_gpu")
+project(campello_gpu VERSION 0.0.3)
+
+configure_file(src/vulkan_android/campello_cpu_config.h.in campello_cpu_config.h)
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -25,3 +27,7 @@ target_link_libraries(${PROJECT_NAME}
 target_include_directories (campello_gpu
     PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"
 )
+
+target_include_directories(campello_gpu PUBLIC
+                           "${PROJECT_BINARY_DIR}"
+                           )
