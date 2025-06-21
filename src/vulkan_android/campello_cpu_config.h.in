@@ -1,4 +1,4 @@
-// the configured options and settings for gltf
+// the configured options and settings for campello_cpu
 #define campello_cpu_VERSION_MAJOR @campello_cpu_VERSION_MAJOR@
 #define campello_cpu_VERSION_MINOR @campello_cpu_VERSION_MINOR@
 #define campello_cpu_VERSION_PATCH @campello_cpu_VERSION_PATCH@
