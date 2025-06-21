@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.0.3)
+project(campello_gpu VERSION 0.0.4)
 
 configure_file(src/vulkan_android/campello_cpu_config.h.in campello_cpu_config.h)
 
