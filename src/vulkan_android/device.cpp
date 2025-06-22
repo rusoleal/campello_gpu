@@ -135,6 +135,6 @@ std::string Device::getEngineVersion() {
 }
 
 std::string getVersion() {
-    return std::to_string(campello_cpu_VERSION_MAJOR) + "." + std::to_string(campello_cpu_VERSION_MINOR) + "." + std::to_string(campello_cpu_VERSION_PATCH);
+    return std::to_string(campellocpu_VERSION_MAJOR) + "." + std::to_string(campellocpu_VERSION_MINOR) + "." + std::to_string(campellocpu_VERSION_PATCH);
 
 }
