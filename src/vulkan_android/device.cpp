@@ -1,7 +1,7 @@
 #include <vulkan/vulkan.h>
 #include <campello_gpu/device.hpp>
 #include <android/log.h>
-#include "campello_cpu_config.h"
+#include "campello_gpu_config.h"
 
 using namespace systems::leal::campello_gpu;
 
@@ -135,6 +135,5 @@ std::string Device::getEngineVersion() {
 }
 
 std::string getVersion() {
-    return std::to_string(campellocpu_VERSION_MAJOR) + "." + std::to_string(campellocpu_VERSION_MINOR) + "." + std::to_string(campellocpu_VERSION_PATCH);
-
+    return std::to_string(campello_gpu_VERSION_MAJOR) + "." + std::to_string(campello_gpu_VERSION_MINOR) + "." + std::to_string(campello_gpu_VERSION_PATCH);
 }

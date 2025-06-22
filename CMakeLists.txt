@@ -1,14 +1,14 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project("campellogpu" VERSION 0.0.9)
+project(campello_gpu VERSION 0.0.11)
 
-get_cmake_property(_variableNames VARIABLES)
-list (SORT _variableNames)
-foreach (_variableName ${_variableNames})
-    message(STATUS "pepito ${_variableName}=${${_variableName}}")
-endforeach()
+#get_cmake_property(_variableNames VARIABLES)
+#list (SORT _variableNames)
+#foreach (_variableName ${_variableNames})
+#    message(STATUS "pepito ${_variableName}=${${_variableName}}")
+#endforeach()
 
-configure_file(src/vulkan_android/campello_cpu_config.h.in campello_cpu_config.h)
+configure_file(src/vulkan_android/campello_gpu_config.h.in campello_gpu_config.h)
 
 set(CMAKE_CXX_STANDARD 17)
 

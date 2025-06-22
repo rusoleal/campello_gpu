@@ -1,4 +1,0 @@
-// the configured options and settings for campello_cpu
-#define campellocpu_VERSION_MAJOR @campellocpu_VERSION_MAJOR@
-#define campellocpu_VERSION_MINOR @campellocpu_VERSION_MINOR@
-#define campellocpu_VERSION_PATCH @campellocpu_VERSION_PATCH@
