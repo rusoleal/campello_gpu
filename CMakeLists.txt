@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project("campello_gpu" VERSION 0.0.8)
+project("campellogpu" VERSION 0.0.9)
 
 get_cmake_property(_variableNames VARIABLES)
 list (SORT _variableNames)
@@ -30,10 +30,10 @@ target_link_libraries(${PROJECT_NAME}
         Vulkan::Vulkan
         log)
 
-target_include_directories (campello_gpu
-    PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"
-)
+target_include_directories (${PROJECT_NAME} PUBLIC 
+                            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"
+                            )
 
-target_include_directories(campello_gpu PUBLIC
+target_include_directories(${PROJECT_NAME} PUBLIC
                            "${PROJECT_BINARY_DIR}"
                            )
