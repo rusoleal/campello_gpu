@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.0.11)
+project(campello_gpu VERSION 0.0.12)
 
 #get_cmake_property(_variableNames VARIABLES)
 #list (SORT _variableNames)

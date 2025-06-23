@@ -134,6 +134,6 @@ std::string Device::getEngineVersion() {
     return "unknown";
 }
 
-std::string getVersion() {
+std::string systems::leal::campello_gpu::getVersion() {
     return std::to_string(campello_gpu_VERSION_MAJOR) + "." + std::to_string(campello_gpu_VERSION_MINOR) + "." + std::to_string(campello_gpu_VERSION_PATCH);
 }
