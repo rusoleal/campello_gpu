@@ -1,39 +1,23 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.0.12)
-
-#get_cmake_property(_variableNames VARIABLES)
-#list (SORT _variableNames)
-#foreach (_variableName ${_variableNames})
-#    message(STATUS "pepito ${_variableName}=${${_variableName}}")
-#endforeach()
-
-configure_file(src/vulkan_android/campello_gpu_config.h.in campello_gpu_config.h)
+project(campello_gpu VERSION 0.0.13)
 
 set(CMAKE_CXX_STANDARD 17)
 
+message(STATUS "CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}")
+
 include_directories(inc)
 
-find_package(Vulkan)
-message(STATUS "Vulkan FOUND = ${Vulkan_FOUND}")
-message(STATUS "Vulkan Include = ${Vulkan_INCLUDE_DIR}")
-message(STATUS "Vulkan Lib = ${Vulkan_LIBRARY}")
+configure_file(src/campello_gpu_config.h.in campello_gpu_config.h)
 
-message(STATUS ${PROJECT_NAME})
-
-add_library(${PROJECT_NAME} SHARED
-    src/vulkan_android/context.cpp
-    src/vulkan_android/device.cpp
-)
-
-target_link_libraries(${PROJECT_NAME}
-        Vulkan::Vulkan
-        log)
-
-target_include_directories (${PROJECT_NAME} PUBLIC 
-                            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"
-                            )
-
-target_include_directories(${PROJECT_NAME} PUBLIC
-                           "${PROJECT_BINARY_DIR}"
-                           )
+if(${CMAKE_SYSTEM_NAME} STREQUAL "Android")
+    include(android.cmake)
+elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
+    include(macos.cmake)
+elseif(${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
+    include(ios.cmake)
+elseif(${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
+    include(windows.cmake)
+elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+    include(linux.cmake)
+endif()
