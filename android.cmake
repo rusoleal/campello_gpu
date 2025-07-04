@@ -7,6 +7,8 @@ message(STATUS "Vulkan Lib = ${Vulkan_LIBRARY}")
 add_library(${PROJECT_NAME} SHARED
     src/vulkan_android/context.cpp
     src/vulkan_android/device.cpp
+    src/vulkan_android/device_def.cpp
+    src/vulkan_android/buffer.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}

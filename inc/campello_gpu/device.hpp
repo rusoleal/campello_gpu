@@ -7,12 +7,15 @@
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/storage_mode.hpp>
+#include <campello_gpu/buffer_usage.hpp>
 #include <campello_gpu/texture_usage.hpp>
 #include <campello_gpu/pixel_format.hpp>
 #include <campello_gpu/feature.hpp>
 
 namespace systems::leal::campello_gpu
 {
+
+    class DeviceDef;
 
     class Device
     {
@@ -34,10 +37,11 @@ namespace systems::leal::campello_gpu
             // TextureCoordinateSystem textureCoordinateSystem,
             TextureUsage usageMode);
 
-        std::shared_ptr<Buffer> createBuffer(uint64_t size, StorageMode storageMode);
+        std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage);
 
-        static std::shared_ptr<Device> getDefaultDevice();
-        static std::vector<std::shared_ptr<Device>> getDevices();
+        static std::shared_ptr<Device> createDefaultDevice();
+        static std::shared_ptr<Device> createDevice(std::shared_ptr<DeviceDef> deviceDef);
+        static std::vector<std::shared_ptr<DeviceDef>> getDevicesDef();
 
         static std::string getEngineVersion();
     };
