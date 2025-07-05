@@ -15,7 +15,7 @@ namespace systems::leal::campello_gpu
 
     public:
         uint64_t getLength();
-        void upload(uint64_t offset, uint64_t length, void *data);
+        bool upload(uint64_t offset, uint64_t length, void *data);
 
         ~Buffer();
     };

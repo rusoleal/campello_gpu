@@ -3,12 +3,14 @@
 #include "campello_gpu_config.h"
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/device_def.hpp>
+#include "buffer_handle.hpp"
 
 using namespace systems::leal::campello_gpu;
 
 struct DeviceData {
     VkDevice device;
     VkQueue graphicsQueue;
+    VkPhysicalDevice physicalDevice;
 };
 
 VkInstance *instance = nullptr;
@@ -199,8 +201,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<DeviceDef> deviceDe
 
     auto deviceData = new DeviceData();
     deviceData->device = toReturn;
-
-    vkGetDeviceQueue(toReturn, 0, 0, &deviceData->graphicsQueue);    
+    vkGetDeviceQueue(toReturn, 0, 0, &deviceData->graphicsQueue);
+    deviceData->physicalDevice = gpu;
 
     return std::shared_ptr<Device>(new Device(deviceData));
 }
@@ -215,6 +217,15 @@ std::shared_ptr<Texture> Device::createTexture(
     TextureUsage usageMode) {
 
     return nullptr;
+}
+
+uint32_t findMemoryType(uint32_t typeFilter, VkPhysicalDeviceMemoryProperties &memProperties, VkMemoryPropertyFlags properties) {
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+    throw std::runtime_error("failed to find suitable memory type!");
 }
 
 std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
@@ -232,7 +243,32 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     if (vkCreateBuffer(deviceData->device, &bufferInfo, nullptr, &bufferHandle) != VK_SUCCESS) {
         return nullptr;
     }
-    return nullptr;
+
+    VkMemoryRequirements bufferRequirements;
+    vkGetBufferMemoryRequirements(deviceData->device, bufferHandle, &bufferRequirements);    
+
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(deviceData->physicalDevice, &memProperties);
+
+    auto memoryType = findMemoryType(bufferRequirements.memoryTypeBits, memProperties, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    VkMemoryAllocateInfo allocInfo;
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.pNext = nullptr;
+    allocInfo.allocationSize = bufferRequirements.size;
+    allocInfo.memoryTypeIndex = memoryType;
+    VkDeviceMemory memoryHandle;
+    if (vkAllocateMemory(deviceData->device, &allocInfo, nullptr, &memoryHandle) != VK_SUCCESS) {
+        return nullptr;
+        // TODO destroy bufferHandle
+    }
+
+    BufferHandle *toReturn = new BufferHandle();
+    toReturn->device = deviceData->device;
+    toReturn->buffer = bufferHandle;
+    toReturn->memory = memoryHandle;
+
+    return std::shared_ptr<Buffer>(new Buffer(toReturn));
 }
 
 std::string Device::getName() {

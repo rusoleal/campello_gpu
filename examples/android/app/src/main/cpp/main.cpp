@@ -12,6 +12,8 @@ extern "C" {
 
 #include <game-activity/native_app_glue/android_native_app_glue.c>
 
+using namespace systems::leal::campello_gpu;
+
 /*!
  * Handles commands sent to this Android application
  * @param pApp the app the commands are coming from
@@ -65,7 +67,17 @@ void android_main(struct android_app *pApp) {
     // Can be removed, useful to ensure your code is running
     aout << "Welcome to android_main" << std::endl;
 
-    auto device = systems::leal::campello_gpu::Device::createDefaultDevice();
+    aout << "systems::leal::campello_gpu" << std::endl;
+    auto device = Device::createDefaultDevice();
+    if (device != nullptr) {
+        auto buffer1 = device->createBuffer(10,BufferUsage::vertex);
+        uint8_t buffer[10];
+        auto status = buffer1->upload(0,10,&buffer);
+        aout << "upload buffer status: " << status << std::endl;
+
+        auto buffer2 = device->createBuffer(10, BufferUsage::vertex, buffer);
+        aout << "buffer2: " << buffer2 << std::endl;
+    }
 
     // Register an event handler for Android events
     pApp->onAppCmd = handle_cmd;

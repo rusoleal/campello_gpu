@@ -39,6 +39,9 @@ namespace systems::leal::campello_gpu
 
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage);
 
+        // pi
+        std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage, void *data);
+
         static std::shared_ptr<Device> createDefaultDevice();
         static std::shared_ptr<Device> createDevice(std::shared_ptr<DeviceDef> deviceDef);
         static std::vector<std::shared_ptr<DeviceDef>> getDevicesDef();
