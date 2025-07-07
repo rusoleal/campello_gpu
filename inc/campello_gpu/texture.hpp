@@ -1,11 +1,11 @@
 #pragma once
 
+#include <stdint.h>
 #include <campello_gpu/pixel_format.hpp>
 #include <campello_gpu/texture_usage.hpp>
 
 namespace systems::leal::campello_gpu
 {
-
     class Device;
 
     class Texture
@@ -19,9 +19,11 @@ namespace systems::leal::campello_gpu
     public:
         ~Texture();
 
-        PixelFormat getPixelFormat();
-        uint64_t getWidth();
-        uint64_t getHeight();
-        TextureUsage getUsageMode();
+        bool upload(uint64_t offset, uint64_t length, void *data);
+
+        //PixelFormat getPixelFormat();
+        //uint64_t getWidth();
+        //uint64_t getHeight();
+        //TextureUsage getUsageMode();
     };
 }

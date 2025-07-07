@@ -21,21 +21,26 @@ namespace systems::leal::campello_gpu
         copyDst = 0x02,
 
         /**
-         * The texture can be readed in a shader.
+         * The texture can be bound for use as a sampled texture in a shader, for example as a 
+         * resource in a bind group entry when creating a GPUBindGroup (via createBindGroup()), 
+         * which adheres to a GPUBindGroupLayout entry with a specified texture binding layout.
          */
-        shaderRead = 0x04,
+        textureBinding = 0x04,
 
         /**
-         * The texture can be written in a shader.
+         * The texture can be bound for use as a storage texture in a shader, for example as a 
+         * resource in a bind group entry when creating a GPUBindGroup (via createBindGroup()), 
+         * which adheres to a GPUBindGroupLayout entry with a specified storage texture binding 
+         * layout.
          */
-        shaderWrite = 0x08,
+        storageBinding = 0x08,
 
         /**
          * (WebGPU)
          * The texture can be used as a color or depth/stencil attachment in a render pass,
          * for example as the view property of the descriptor object in a beginRenderPass() call.
          */
-        renderTarget = 0xA0,
+        renderTarget = 0x10,
     };
 
 }

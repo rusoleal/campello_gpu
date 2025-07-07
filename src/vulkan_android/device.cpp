@@ -4,6 +4,7 @@
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/device_def.hpp>
 #include "buffer_handle.hpp"
+#include "texture_handle.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -14,6 +15,8 @@ struct DeviceData {
 };
 
 VkInstance *instance = nullptr;
+
+VkFormat fromPixelFormat(PixelFormat format);
 
 std::string queueFlagsToString(VkQueueFlags flags) {
     std::vector<std::string> stringFlags;
@@ -207,16 +210,69 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<DeviceDef> deviceDe
     return std::shared_ptr<Device>(new Device(deviceData));
 }
 
-
 std::shared_ptr<Texture> Device::createTexture(
-    StorageMode storageMode, 
-    uint32_t width, 
-    uint32_t height, 
+    TextureType type,
     PixelFormat pixelFormat,
-    //TextureCoordinateSystem textureCoordinateSystem,
-    TextureUsage usageMode) {
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
+    uint32_t mipLevels,
+    uint32_t samples,
+    TextureUsage usageMode)
+{
 
-    return nullptr;
+    auto deviceData = (DeviceData *)this->native;
+
+    // calculate buffer size
+    uint64_t bufferSize = (width * height * depth * samples * getPixelFormatSize(pixelFormat)) / 8;
+    uint32_t w = width;
+    uint32_t h = height;
+    for (int a=1; a<mipLevels; a++) {
+        w = w/2;
+        h = h/2;
+        uint64_t mipSize = (w * h * depth * samples * getPixelFormatSize(pixelFormat)) / 8;
+        bufferSize += mipSize;
+    }
+
+    // create buffer
+    auto buffer = createBuffer(bufferSize, BufferUsage::copySrc);
+
+    VkImageUsageFlags imageUsage = 0;
+    if ((int)usageMode & (int)TextureUsage::copySrc) imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if ((int)usageMode & (int)TextureUsage::copyDst) imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if ((int)usageMode & (int)TextureUsage::renderTarget) imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if ((int)usageMode & (int)TextureUsage::storageBinding) imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if ((int)usageMode & (int)TextureUsage::textureBinding) imageUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    // create image
+    VkImageCreateInfo imageInfo = {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.pNext = nullptr;
+    imageInfo.imageType = (VkImageType)type;
+    imageInfo.format = fromPixelFormat(pixelFormat);
+    imageInfo.extent = {width, height, depth};
+    imageInfo.mipLevels = mipLevels;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = (VkSampleCountFlagBits)samples;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = imageUsage;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.queueFamilyIndexCount = 0;
+    imageInfo.pQueueFamilyIndices = nullptr;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage image;
+    if (vkCreateImage(deviceData->device, &imageInfo, nullptr, &image) != VK_SUCCESS) {
+        return nullptr;
+    }
+
+    TextureHandle *toReturn = new TextureHandle();
+    toReturn->device = deviceData->device;
+    toReturn->buffer = buffer;
+    toReturn->image = image;
+
+    return std::shared_ptr<Texture>(new Texture(toReturn));
+
 }
 
 uint32_t findMemoryType(uint32_t typeFilter, VkPhysicalDeviceMemoryProperties &memProperties, VkMemoryPropertyFlags properties) {
@@ -302,4 +358,134 @@ std::string Device::getEngineVersion() {
 
 std::string systems::leal::campello_gpu::getVersion() {
     return std::to_string(campello_gpu_VERSION_MAJOR) + "." + std::to_string(campello_gpu_VERSION_MINOR) + "." + std::to_string(campello_gpu_VERSION_PATCH);
+}
+
+VkFormat fromPixelFormat(PixelFormat format) {
+    switch (format) {
+        case PixelFormat::invalid: return VK_FORMAT_UNDEFINED;
+        // 8-bit formats
+        case PixelFormat::r8unorm: return VK_FORMAT_R8_UNORM;
+        case PixelFormat::r8snorm: return VK_FORMAT_R8_SNORM;
+        case PixelFormat::r8uint: return VK_FORMAT_R8_UINT;
+        case PixelFormat::r8sint: return VK_FORMAT_R8_SINT;
+
+        // 16-bit formats
+        case PixelFormat::r16unorm: return VK_FORMAT_R16_UNORM;
+        case PixelFormat::r16snorm: return VK_FORMAT_R16_SNORM;
+        case PixelFormat::r16uint: return VK_FORMAT_R16_UINT;
+        case PixelFormat::r16sint: return VK_FORMAT_R16_SINT;
+        case PixelFormat::r16float: return VK_FORMAT_R16_SFLOAT;
+        case PixelFormat::rg8unorm: return VK_FORMAT_R8G8_UNORM;
+        case PixelFormat::rg8snorm: return VK_FORMAT_R8G8_SNORM;
+        case PixelFormat::rg8uint: return VK_FORMAT_R8G8_UINT;
+        case PixelFormat::rg8sint: return VK_FORMAT_R8G8_SINT;
+
+        // 32-bit formats
+        case PixelFormat::r32uint: return VK_FORMAT_R32_UINT;
+        case PixelFormat::r32sint: return VK_FORMAT_R32_SINT;
+        case PixelFormat::r32float: return VK_FORMAT_R32_SFLOAT;
+        case PixelFormat::rg16unorm: return VK_FORMAT_R16G16_UNORM;
+        case PixelFormat::rg16snorm: return VK_FORMAT_R16G16_SNORM;
+        case PixelFormat::rg16uint: return VK_FORMAT_R16G16_UINT;
+        case PixelFormat::rg16sint: return VK_FORMAT_R16G16_SINT;
+        case PixelFormat::rg16float: return VK_FORMAT_R16G16_SFLOAT;
+        case PixelFormat::rgba8unorm: return VK_FORMAT_R8G8B8A8_UNORM;
+        case PixelFormat::rgba8unorm_srgb: return VK_FORMAT_R8G8B8A8_SRGB;
+        case PixelFormat::rgba8snorm: return VK_FORMAT_R8G8B8A8_SNORM;
+        case PixelFormat::rgba8uint: return VK_FORMAT_R8G8B8A8_UINT;
+        case PixelFormat::rgba8sint: return VK_FORMAT_R8G8B8A8_SINT;
+        case PixelFormat::bgra8unorm: return VK_FORMAT_B8G8R8A8_UNORM;
+        case PixelFormat::bgra8unorm_srgb: return VK_FORMAT_B8G8R8A8_SRGB;
+        // Packed 32-bit formats
+        case PixelFormat::rgb9e5ufloat: return VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
+        case PixelFormat::rgb10a2uint: return VK_FORMAT_A2R10G10B10_UINT_PACK32;
+        case PixelFormat::rgb10a2unorm: return VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+        case PixelFormat::rg11b10ufloat: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+
+        // 64-bit formats
+        case PixelFormat::rg32uint: return VK_FORMAT_R32_UINT;
+        case PixelFormat::rg32sint: return VK_FORMAT_R32_SINT;
+        case PixelFormat::rg32float: return VK_FORMAT_R32G32_SFLOAT;
+        case PixelFormat::rgba16unorm: return VK_FORMAT_R16G16B16A16_UNORM;
+        case PixelFormat::rgba16snorm: return VK_FORMAT_R16G16B16A16_SNORM;
+        case PixelFormat::rgba16uint: return VK_FORMAT_R16G16B16A16_UINT;
+        case PixelFormat::rgba16sint: return VK_FORMAT_R16G16B16A16_SINT;
+        case PixelFormat::rgba16float: return VK_FORMAT_R16G16B16A16_SFLOAT;
+
+        // 128-bit formats
+        case PixelFormat::rgba32uint: return VK_FORMAT_R32G32B32A32_UINT;
+        case PixelFormat::rgba32sint: return VK_FORMAT_R32G32B32A32_SINT;
+        case PixelFormat::rgba32float: return VK_FORMAT_R32G32B32A32_SFLOAT;
+
+        // Depth/stencil formats
+        case PixelFormat::stencil8: return VK_FORMAT_S8_UINT;
+        case PixelFormat::depth16unorm: return VK_FORMAT_D16_UNORM;
+        // depth24plus, // no metal compatible
+        case PixelFormat::depth24plus_stencil8: return VK_FORMAT_D24_UNORM_S8_UINT;
+        case PixelFormat::depth32float: return VK_FORMAT_D32_SFLOAT;
+
+        // "depth32float-stencil8" feature
+        case PixelFormat::depth32float_stencil8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
+
+        // BC compressed formats usable if "texture-compression-bc" is both
+        // supported by the device/user agent and enabled in requestDevice.
+        case PixelFormat::bc1_rgba_unorm: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case PixelFormat::bc1_rgba_unorm_srgb: return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+        case PixelFormat::bc2_rgba_unorm: return VK_FORMAT_BC2_UNORM_BLOCK;
+        case PixelFormat::bc2_rgba_unorm_srgb: return VK_FORMAT_BC2_SRGB_BLOCK;
+        case PixelFormat::bc3_rgba_unorm: return VK_FORMAT_BC3_UNORM_BLOCK;
+        case PixelFormat::bc3_rgba_unorm_srgb: return VK_FORMAT_BC3_SRGB_BLOCK;
+        case PixelFormat::bc4_r_unorm: return VK_FORMAT_BC4_UNORM_BLOCK;
+        case PixelFormat::bc4_r_snorm: return VK_FORMAT_BC4_SNORM_BLOCK;
+        case PixelFormat::bc5_rg_unorm: return VK_FORMAT_BC5_UNORM_BLOCK;
+        case PixelFormat::bc5_rg_snorm: return VK_FORMAT_BC5_SNORM_BLOCK;
+        case PixelFormat::bc6h_rgb_ufloat: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+        case PixelFormat::bc6h_rgb_float: return VK_FORMAT_BC6H_SFLOAT_BLOCK;
+        case PixelFormat::bc7_rgba_unorm: return VK_FORMAT_BC7_UNORM_BLOCK;
+        case PixelFormat::bc7_rgba_unorm_srgb: return VK_FORMAT_BC7_SRGB_BLOCK;
+
+        // ETC2 compressed formats usable if "texture-compression-etc2" is both
+        // supported by the device/user agent and enabled in requestDevice.
+        case PixelFormat::etc2_rgb8unorm: return VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK;
+        case PixelFormat::etc2_rgb8unorm_srgb: return VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK;
+        case PixelFormat::etc2_rgb8a1unorm: return VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK;
+        case PixelFormat::etc2_rgb8a1unorm_srgb: return VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK;
+        // etc2_rgba8unorm, // no metal compatible type
+        // etc2_rgba8unorm_srgb, // no metal compatible type
+        case PixelFormat::eac_r11unorm: return VK_FORMAT_EAC_R11_UNORM_BLOCK;
+        case PixelFormat::eac_r11snorm: return VK_FORMAT_EAC_R11_SNORM_BLOCK;
+        case PixelFormat::eac_rg11unorm: return VK_FORMAT_EAC_R11G11_UNORM_BLOCK;
+        case PixelFormat::eac_rg11snorm: return VK_FORMAT_EAC_R11G11_SNORM_BLOCK;
+
+        // ASTC compressed formats usable if "texture-compression-astc" is both
+        // supported by the device/user agent and enabled in requestDevice.
+        // astc_4x4_unorm,
+        case PixelFormat::astc_4x4_unorm_srgb: return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+        // astc_5x4_unorm,
+        case PixelFormat::astc_5x4_unorm_srgb: return VK_FORMAT_ASTC_5x4_SRGB_BLOCK;
+        // astc_5x5_unorm,
+        case PixelFormat::astc_5x5_unorm_srgb: return VK_FORMAT_ASTC_5x5_SRGB_BLOCK;
+        // astc_6x5_unorm,
+        case PixelFormat::astc_6x5_unorm_srgb: return VK_FORMAT_ASTC_6x5_SRGB_BLOCK;
+        // astc_6x6_unorm,
+        case PixelFormat::astc_6x6_unorm_srgb: return VK_FORMAT_ASTC_6x6_SRGB_BLOCK;
+        // astc_8x5_unorm,
+        case PixelFormat::astc_8x5_unorm_srgb: return VK_FORMAT_ASTC_8x5_SRGB_BLOCK;
+        // astc_8x6_unorm,
+        case PixelFormat::astc_8x6_unorm_srgb: return VK_FORMAT_ASTC_8x6_SRGB_BLOCK;
+        // astc_8x8_unorm,
+        case PixelFormat::astc_8x8_unorm_srgb: return VK_FORMAT_ASTC_8x8_SRGB_BLOCK;
+        // astc_10x5_unorm,
+        case PixelFormat::astc_10x5_unorm_srgb: return VK_FORMAT_ASTC_10x5_SRGB_BLOCK;
+        // astc_10x6_unorm,
+        case PixelFormat::astc_10x6_unorm_srgb: return VK_FORMAT_ASTC_10x6_SRGB_BLOCK;
+        // astc_10x8_unorm,
+        case PixelFormat::astc_10x8_unorm_srgb: return VK_FORMAT_ASTC_10x8_SRGB_BLOCK;
+        // astc_10x10_unorm,
+        case PixelFormat::astc_10x10_unorm_srgb: return VK_FORMAT_ASTC_10x10_SRGB_BLOCK;
+        // astc_12x10_unorm,
+        case PixelFormat::astc_12x10_unorm_srgb: return VK_FORMAT_ASTC_12x10_SRGB_BLOCK;
+        // astc_12x12_unorm,
+        case PixelFormat::astc_12x12_unorm_srgb: return VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
+    }
 }

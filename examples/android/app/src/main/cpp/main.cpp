@@ -26,7 +26,7 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
             // "game" class if that suits your needs. Remember to change all instances of userData
             // if you change the class here as a reinterpret_cast is dangerous this in the
             // android_main function and the APP_CMD_TERM_WINDOW handler case.
-            pApp->userData = new Renderer(pApp);
+            //pApp->userData = new Renderer(pApp);
             break;
         case APP_CMD_TERM_WINDOW:
             // The window is being destroyed. Use this to clean up your userData to avoid leaking
@@ -35,9 +35,9 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
             // We have to check if userData is assigned just in case this comes in really quickly
             if (pApp->userData) {
                 //
-                auto *pRenderer = reinterpret_cast<Renderer *>(pApp->userData);
-                pApp->userData = nullptr;
-                delete pRenderer;
+                //auto *pRenderer = reinterpret_cast<Renderer *>(pApp->userData);
+                //pApp->userData = nullptr;
+                //delete pRenderer;
             }
             break;
         default:
@@ -71,12 +71,18 @@ void android_main(struct android_app *pApp) {
     auto device = Device::createDefaultDevice();
     if (device != nullptr) {
         auto buffer1 = device->createBuffer(10,BufferUsage::vertex);
-        uint8_t buffer[10];
+        uint8_t buffer[256*256*4];
         auto status = buffer1->upload(0,10,&buffer);
         aout << "upload buffer status: " << status << std::endl;
 
         auto buffer2 = device->createBuffer(10, BufferUsage::vertex, buffer);
         aout << "buffer2: " << buffer2 << std::endl;
+
+        auto texture1 = device->createTexture(TextureType::tt2d, PixelFormat::rgba8uint, 256, 256, 1, 1, 1, TextureUsage::textureBinding);
+        aout << "texture1: " << texture1 << std::endl;
+
+        status = texture1->upload(0, 256*256*4, buffer);
+        aout << "upload texture status: " << status << std::endl;
     }
 
     // Register an event handler for Android events
@@ -121,13 +127,13 @@ void android_main(struct android_app *pApp) {
         if (pApp->userData) {
             // We know that our user data is a Renderer, so reinterpret cast it. If you change your
             // user data remember to change it here
-            auto *pRenderer = reinterpret_cast<Renderer *>(pApp->userData);
+            //auto *pRenderer = reinterpret_cast<Renderer *>(pApp->userData);
 
             // Process game input
-            pRenderer->handleInput();
+            //pRenderer->handleInput();
 
             // Render a frame
-            pRenderer->render();
+            //pRenderer->render();
         }
     } while (!pApp->destroyRequested);
 }

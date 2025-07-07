@@ -10,6 +10,7 @@ add_library(${PROJECT_NAME} SHARED
     src/vulkan_android/device.cpp
     src/vulkan_android/device_def.cpp
     src/vulkan_android/buffer.cpp
+    src/vulkan_android/texture.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}

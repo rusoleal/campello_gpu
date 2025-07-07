@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <campello_gpu/texture.hpp>
+#include <campello_gpu/texture_type.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/storage_mode.hpp>
 #include <campello_gpu/buffer_usage.hpp>
@@ -24,22 +25,17 @@ namespace systems::leal::campello_gpu
 
         Device(void *data);
 
+        uint32_t getPixelFormatSize(PixelFormat format);
+
     public:
         ~Device();
         std::string getName();
         std::set<Feature> getFeatures();
 
-        std::shared_ptr<Texture> createTexture(
-            StorageMode storageMode,
-            uint32_t width,
-            uint32_t height,
-            PixelFormat pixelFormat,
-            // TextureCoordinateSystem textureCoordinateSystem,
-            TextureUsage usageMode);
+        std::shared_ptr<Texture> createTexture(TextureType type, PixelFormat pixelFormat, uint32_t width, uint32_t height, uint32_t depth, uint32_t mipLevels, uint32_t samples, TextureUsage usageMode);
+        //std::shared_ptr<Texture> createTexture(TextureType type, PixelFormat pixelFormat, uint32_t width, uint32_t height, uint32_t depth, uint32_t mipLevels, uint32_t samples, TextureUsage usageMode, void *data);
 
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage);
-
-        // pi
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage, void *data);
 
         static std::shared_ptr<Device> createDefaultDevice();
