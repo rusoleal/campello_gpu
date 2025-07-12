@@ -29,6 +29,9 @@ namespace systems::leal::campello_gpu
 
     public:
         ~Device();
+
+        //void *getNative();
+
         std::string getName();
         std::set<Feature> getFeatures();
 
@@ -38,8 +41,8 @@ namespace systems::leal::campello_gpu
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage);
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage, void *data);
 
-        static std::shared_ptr<Device> createDefaultDevice();
-        static std::shared_ptr<Device> createDevice(std::shared_ptr<DeviceDef> deviceDef);
+        static std::shared_ptr<Device> createDefaultDevice(void *pd);
+        static std::shared_ptr<Device> createDevice(std::shared_ptr<DeviceDef> deviceDef, void *pd);
         static std::vector<std::shared_ptr<DeviceDef>> getDevicesDef();
 
         static std::string getEngineVersion();

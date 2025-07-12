@@ -7,6 +7,7 @@
 #include <game-text-input/gametextinput.cpp>
 
 #include <campello_gpu/device.hpp>
+#include <campello_gpu/view.hpp>
 
 extern "C" {
 
@@ -21,13 +22,36 @@ using namespace systems::leal::campello_gpu;
  */
 void handle_cmd(android_app *pApp, int32_t cmd) {
     switch (cmd) {
-        case APP_CMD_INIT_WINDOW:
+        case APP_CMD_INIT_WINDOW: {
             // A new window is created, associate a renderer with it. You may replace this with a
             // "game" class if that suits your needs. Remember to change all instances of userData
             // if you change the class here as a reinterpret_cast is dangerous this in the
             // android_main function and the APP_CMD_TERM_WINDOW handler case.
             //pApp->userData = new Renderer(pApp);
+            aout << "systems::leal::campello_gpu" << std::endl;
+
+            auto device = Device::createDefaultDevice(pApp->window);
+            if (device != nullptr) {
+
+                //auto view = View::createView(pApp->window, device);
+                //aout << "View: " << view << std::endl;
+
+                auto buffer1 = device->createBuffer(10, BufferUsage::vertex);
+                uint8_t buffer[256 * 256 * 4];
+                auto status = buffer1->upload(0, 10, &buffer);
+                aout << "upload buffer status: " << status << std::endl;
+
+                auto buffer2 = device->createBuffer(10, BufferUsage::vertex, buffer);
+                aout << "buffer2: " << buffer2 << std::endl;
+
+                auto texture1 = device->createTexture(TextureType::tt2d, PixelFormat::rgba8uint, 256, 256, 1, 1, 1, TextureUsage::textureBinding);
+                aout << "texture1: " << texture1 << std::endl;
+
+                status = texture1->upload(0, 256 * 256 * 4, buffer);
+                aout << "upload texture status: " << status << std::endl;
+            }
             break;
+        }
         case APP_CMD_TERM_WINDOW:
             // The window is being destroyed. Use this to clean up your userData to avoid leaking
             // resources.
@@ -64,26 +88,6 @@ bool motion_event_filter_func(const GameActivityMotionEvent *motionEvent) {
  * This the main entry point for a native activity
  */
 void android_main(struct android_app *pApp) {
-    // Can be removed, useful to ensure your code is running
-    aout << "Welcome to android_main" << std::endl;
-
-    aout << "systems::leal::campello_gpu" << std::endl;
-    auto device = Device::createDefaultDevice();
-    if (device != nullptr) {
-        auto buffer1 = device->createBuffer(10,BufferUsage::vertex);
-        uint8_t buffer[256*256*4];
-        auto status = buffer1->upload(0,10,&buffer);
-        aout << "upload buffer status: " << status << std::endl;
-
-        auto buffer2 = device->createBuffer(10, BufferUsage::vertex, buffer);
-        aout << "buffer2: " << buffer2 << std::endl;
-
-        auto texture1 = device->createTexture(TextureType::tt2d, PixelFormat::rgba8uint, 256, 256, 1, 1, 1, TextureUsage::textureBinding);
-        aout << "texture1: " << texture1 << std::endl;
-
-        status = texture1->upload(0, 256*256*4, buffer);
-        aout << "upload texture status: " << status << std::endl;
-    }
 
     // Register an event handler for Android events
     pApp->onAppCmd = handle_cmd;

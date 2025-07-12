@@ -1,20 +1,16 @@
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_android.h>
 #include <android/log.h>
 #include "campello_gpu_config.h"
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/device_def.hpp>
 #include "buffer_handle.hpp"
 #include "texture_handle.hpp"
+#include "common.hpp"
 
 using namespace systems::leal::campello_gpu;
 
-struct DeviceData {
-    VkDevice device;
-    VkQueue graphicsQueue;
-    VkPhysicalDevice physicalDevice;
-};
-
-VkInstance *instance = nullptr;
+VkInstance instance = nullptr;
 
 VkFormat fromPixelFormat(PixelFormat format);
 
@@ -41,17 +37,22 @@ std::string queueFlagsToString(VkQueueFlags flags) {
     return toReturn;
 }
 
-VkInstance *getInstance() {
+VkInstance systems::leal::campello_gpu::getInstance() {
+
+    if (instance != nullptr) {
+        return instance;
+    }
 
     uint32_t extensionCount = 0;
+    std::vector<VkExtensionProperties> extensions;
     vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
-    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","%d vulkan extensions supported,", extensionCount);
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","%d instance extensions supported,", extensionCount);
 
     if (extensionCount > 0) {
-        std::vector<VkExtensionProperties> properties(extensionCount);
-        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, properties.data());
+        extensions.resize(extensionCount);
+        vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, extensions.data());
         for (int a=0; a<extensionCount; a++) {
-            __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu"," - %s v%d", properties[a].extensionName, properties[a].specVersion);
+            __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu"," - %s v%d", extensions[a].extensionName, extensions[a].specVersion);
         }
     }
 
@@ -65,23 +66,32 @@ VkInstance *getInstance() {
     appInfo.apiVersion = VK_API_VERSION_1_0;
     appInfo.pNext = nullptr;
 
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","Setting required extensions");
+    std::vector<const char*> requiredExtensions;
+    requiredExtensions.push_back("VK_KHR_surface");
+    requiredExtensions.push_back("VK_KHR_android_surface");
+    //requiredExtensions.push_back("VK_KHR_get_surface_capabilities2");
+
     VkInstanceCreateInfo instanceInfo;
     instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceInfo.pNext = nullptr;
     instanceInfo.flags = 0;
-    instanceInfo.enabledExtensionCount = 0;
-    instanceInfo.ppEnabledExtensionNames = nullptr;
+    instanceInfo.enabledExtensionCount = requiredExtensions.size();
+    instanceInfo.ppEnabledExtensionNames = &requiredExtensions[0];
     instanceInfo.enabledLayerCount = 0;
     instanceInfo.ppEnabledLayerNames = nullptr;
     instanceInfo.pApplicationInfo = &appInfo;
 
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","Creating vulkan instance");
     VkInstance ins;
     auto res = vkCreateInstance(&instanceInfo, nullptr, &ins);
     if (res != VK_SUCCESS) {
         __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","vkCreateInstance failed with error: %d", res);
         return nullptr;
     }
-    return new VkInstance(ins);
+    instance = ins;
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","Vulkan instance created");
+    return ins;
 }
 
 Device::Device(void *pd) {
@@ -98,26 +108,27 @@ Device::~Device() {
     }
 }
 
-std::shared_ptr<Device> Device::createDefaultDevice() {
+/*void *Device::getNative()
+{
+    return native;
+}*/
+
+std::shared_ptr<Device> Device::createDefaultDevice(void *pd) {
 
     auto devicesDef = getDevicesDef();
     if (devicesDef.empty()) {
         return nullptr;
     }
 
-    return createDevice(devicesDef[0]);
+    return createDevice(devicesDef[0], pd);
 }
 
 std::vector<std::shared_ptr<DeviceDef>> Device::getDevicesDef() {
 
-    if (instance == nullptr) {
-        instance = getInstance();
-    }
-
     std::vector<std::shared_ptr<DeviceDef>> toReturn;
 
     uint32_t gpuCount = 0;
-    vkEnumeratePhysicalDevices(*instance, &gpuCount, nullptr);
+    vkEnumeratePhysicalDevices(getInstance(), &gpuCount, nullptr);
 
     __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","gpuCount=%d", gpuCount);
 
@@ -125,7 +136,7 @@ std::vector<std::shared_ptr<DeviceDef>> Device::getDevicesDef() {
     std::vector<VkPhysicalDevice> gpus(gpuCount);
 
     // Second call: Get the GPU handles
-    vkEnumeratePhysicalDevices(*instance, &gpuCount, gpus.data());
+    vkEnumeratePhysicalDevices(getInstance(), &gpuCount, gpus.data());
 
     // Now, 'gpus' contains a list of VkPhysicalDevice handles
     for (int a=0; a<gpuCount; a++) {
@@ -156,25 +167,71 @@ std::vector<std::shared_ptr<DeviceDef>> Device::getDevicesDef() {
     return toReturn;
 }
 
-std::shared_ptr<Device> Device::createDevice(std::shared_ptr<DeviceDef> deviceDef) {
+std::shared_ptr<Device> Device::createDevice(std::shared_ptr<DeviceDef> deviceDef, void *pd) {
 
     if (deviceDef == nullptr) {
         return nullptr;
     }
 
+    auto window = (ANativeWindow *)pd;
+
     auto deviceIndex = (uint64_t)deviceDef->native;
 
     // check if deviceIndex is in range;
     uint32_t gpuCount = 0;
-    vkEnumeratePhysicalDevices(*instance, &gpuCount, nullptr);
+    vkEnumeratePhysicalDevices(getInstance(), &gpuCount, nullptr);
     if (deviceIndex>gpuCount) {
         return nullptr;
     }
 
     std::vector<VkPhysicalDevice> gpus(gpuCount);
-    vkEnumeratePhysicalDevices(*instance, &gpuCount, gpus.data());
+    vkEnumeratePhysicalDevices(getInstance(), &gpuCount, gpus.data());
 
     auto gpu = gpus[deviceIndex];
+
+    uint32_t extensionCount;
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extensionCount, nullptr);
+
+    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extensionCount, availableExtensions.data());
+
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","%d device extensions supported,", extensionCount);
+    for (int a=0; a<extensionCount; a++) {
+        __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu"," - %s v%d", availableExtensions[a].extensionName, availableExtensions[a].specVersion);
+    }
+
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","pepe1");
+    const VkAndroidSurfaceCreateInfoKHR create_info{
+        .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
+        .pNext = nullptr,
+        .flags = 0,
+        .window = window
+    };
+
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","pepe2");
+    VkSurfaceKHR surface;
+    if (vkCreateAndroidSurfaceKHR(getInstance(), &create_info, nullptr, &surface) != VK_SUCCESS) {
+        return nullptr;
+    }
+
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","pepe3");
+    VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+        gpu,
+        surface,
+        &surfaceCapabilities
+    ) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","vkGetPhysicalDeviceSurfaceCapabilitiesKHR error");
+        return nullptr;
+    }
+
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","surface capabilities:");
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","  minImageCount: %d",surfaceCapabilities.minImageCount);
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","  maxImageCount: %d",surfaceCapabilities.maxImageCount);
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","  currentExtent: [%d, %d]",surfaceCapabilities.currentExtent.width, surfaceCapabilities.currentExtent.height);
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","  minImageExtent: [%d, %d]",surfaceCapabilities.minImageExtent.width, surfaceCapabilities.minImageExtent.height);
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","  maxImageExtent: [%d, %d]",surfaceCapabilities.maxImageExtent.width, surfaceCapabilities.maxImageExtent.height);
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","  maxImageArrayLayers: %d",surfaceCapabilities.maxImageArrayLayers);
 
     VkPhysicalDeviceFeatures deviceFeatures;
     vkGetPhysicalDeviceFeatures(gpu, &deviceFeatures);
@@ -184,10 +241,29 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<DeviceDef> deviceDe
     std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
     vkGetPhysicalDeviceQueueFamilyProperties(gpu, &queueFamilyCount, queueFamilies.data());
 
+    int queueFamilyIndex = -1;
+    for (int a=0; a<queueFamilyCount; a++) {
+        VkBool32 pSupported;
+        if (vkGetPhysicalDeviceSurfaceSupportKHR(gpu, a, surface, &pSupported) == VK_SUCCESS) {
+            if (pSupported) {
+                queueFamilyIndex = a;
+                break;
+            }
+        }
+    }
+    if (queueFamilyIndex == -1) {
+        __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","queueFamilyIndex = -1");
+        return nullptr;
+    }
+    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","queueFamilyIndex = %d", queueFamilyIndex);
+
+    std::vector<const char *>deviceExtensions;
+    deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+
     float priority = 1.0;
     VkDeviceQueueCreateInfo queueCreateInfo{};
     queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = 0;
+    queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &priority;
 
@@ -196,6 +272,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<DeviceDef> deviceDe
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.queueCreateInfoCount = 1;
     createInfo.pEnabledFeatures = &deviceFeatures;
+    createInfo.enabledExtensionCount = deviceExtensions.size();
+    createInfo.ppEnabledExtensionNames = &deviceExtensions[0];
 
     VkDevice toReturn;
     if (vkCreateDevice(gpu, &createInfo, nullptr, &toReturn) != VK_SUCCESS) {
