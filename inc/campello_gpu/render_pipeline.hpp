@@ -3,7 +3,7 @@
 namespace systems::leal::campello_gpu
 {
 
-    class Pipeline
+    class RenderPipeline
     {
     };
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include <vulkan/vulkan.h>
 
 namespace systems::leal::campello_gpu {
@@ -10,6 +11,10 @@ namespace systems::leal::campello_gpu {
         VkDevice device;
         VkQueue graphicsQueue;
         VkPhysicalDevice physicalDevice;
+        VkSurfaceKHR surface;
+        VkSwapchainKHR swapchain;
+        VkExtent2D imageExtent;
+        std::vector<VkImageView> swapchainImageViews;
     };
 
 }

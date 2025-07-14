@@ -12,6 +12,9 @@
 #include <campello_gpu/texture_usage.hpp>
 #include <campello_gpu/pixel_format.hpp>
 #include <campello_gpu/feature.hpp>
+#include <campello_gpu/render_pipeline.hpp>
+#include <campello_gpu/render_pipeline_descriptor.hpp>
+#include <campello_gpu/shader_module.hpp>
 
 namespace systems::leal::campello_gpu
 {
@@ -24,8 +27,6 @@ namespace systems::leal::campello_gpu
         void *native;
 
         Device(void *data);
-
-        uint32_t getPixelFormatSize(PixelFormat format);
 
     public:
         ~Device();
@@ -40,6 +41,10 @@ namespace systems::leal::campello_gpu
 
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage);
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage, void *data);
+
+        std::shared_ptr<ShaderModule> createShaderModule(const uint8_t *buffer, uint64_t size);
+
+        std::shared_ptr<RenderPipeline> createRenderPipeline(const RenderPipelineDescriptor &descriptor);
 
         static std::shared_ptr<Device> createDefaultDevice(void *pd);
         static std::shared_ptr<Device> createDevice(std::shared_ptr<DeviceDef> deviceDef, void *pd);

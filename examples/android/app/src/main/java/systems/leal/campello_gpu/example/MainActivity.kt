@@ -1,5 +1,7 @@
 package systems.leal.campello_gpu.example
 
+import android.content.res.Configuration
+import android.os.Bundle
 import android.view.View
 import com.google.androidgamesdk.GameActivity
 
@@ -8,6 +10,12 @@ class MainActivity : GameActivity() {
         init {
             System.loadLibrary("example")
         }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        supportActionBar?.hide()
+        //actionBar?.hide()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

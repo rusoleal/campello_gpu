@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace systems::leal::campello_gpu
 {
 
@@ -131,5 +133,8 @@ namespace systems::leal::campello_gpu
         // astc_12x12_unorm,
         astc_12x12_unorm_srgb = 200,
     };
+
+    uint32_t getPixelFormatSize(PixelFormat format);
+    std::string pixelFormatToString(PixelFormat format);
 
 }

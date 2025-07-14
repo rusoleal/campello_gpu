@@ -33,8 +33,7 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
             auto device = Device::createDefaultDevice(pApp->window);
             if (device != nullptr) {
 
-                //auto view = View::createView(pApp->window, device);
-                //aout << "View: " << view << std::endl;
+                pApp->userData = new std::shared_ptr<Device>(device);
 
                 auto buffer1 = device->createBuffer(10, BufferUsage::vertex);
                 uint8_t buffer[256 * 256 * 4];
@@ -49,19 +48,17 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
 
                 status = texture1->upload(0, 256 * 256 * 4, buffer);
                 aout << "upload texture status: " << status << std::endl;
+
+                auto assetManager = pApp->activity->assetManager;
+                //assetManager->
             }
             break;
         }
         case APP_CMD_TERM_WINDOW:
-            // The window is being destroyed. Use this to clean up your userData to avoid leaking
-            // resources.
-            //
-            // We have to check if userData is assigned just in case this comes in really quickly
             if (pApp->userData) {
-                //
-                //auto *pRenderer = reinterpret_cast<Renderer *>(pApp->userData);
-                //pApp->userData = nullptr;
-                //delete pRenderer;
+                auto *device = reinterpret_cast<std::shared_ptr<Device> *>(pApp->userData);
+                pApp->userData = nullptr;
+                delete device;
             }
             break;
         default:
