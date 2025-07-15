@@ -607,6 +607,12 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
     }
 }
 
+std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
+
+
+    return nullptr;
+}
+
 std::string systems::leal::campello_gpu::getVersion()
 {
     return std::to_string(campello_gpu_VERSION_MAJOR) + "." + std::to_string(campello_gpu_VERSION_MINOR) + "." + std::to_string(campello_gpu_VERSION_PATCH);

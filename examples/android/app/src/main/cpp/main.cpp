@@ -50,7 +50,14 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
                 aout << "upload texture status: " << status << std::endl;
 
                 auto assetManager = pApp->activity->assetManager;
-                //assetManager->
+                auto asset = AAssetManager_open(assetManager, "shader.spv", AASSET_MODE_BUFFER);
+                auto assetLength = AAsset_getLength(asset);
+                auto assetData = AAsset_getBuffer(asset);
+                auto shaderModule = device->createShaderModule((uint8_t *)assetData, assetLength);
+                AAsset_close(asset);
+
+                auto renderPipeline = device->createRenderPipeline({});
+                aout << "renderPipeline: " << renderPipeline << std::endl;
             }
             break;
         }

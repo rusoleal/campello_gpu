@@ -4,6 +4,7 @@
 #include <vector>
 #include <campello_gpu/depth_stencil_descriptor.hpp>
 #include <campello_gpu/fragment_descriptor.hpp>
+#include <campello_gpu/vertex_descriptor.hpp>
 
 namespace systems::leal::campello_gpu {
 
@@ -23,6 +24,12 @@ namespace systems::leal::campello_gpu {
          * Depth testing and stencil operations can still be used.
          */
         std::optional<FragmentDescriptor> fragment;
+
+        /**
+         * An object (see vertex object structure) describing the vertex shader entry point of the
+         * pipeline and its input buffer layouts.
+         */
+        VertexDescriptor vertex;
 
     };
 
