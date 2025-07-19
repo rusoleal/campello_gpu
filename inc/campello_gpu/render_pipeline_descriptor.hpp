@@ -5,10 +5,13 @@
 #include <campello_gpu/depth_stencil_descriptor.hpp>
 #include <campello_gpu/fragment_descriptor.hpp>
 #include <campello_gpu/vertex_descriptor.hpp>
+#include <campello_gpu/primitive_topology.hpp>
+#include <campello_gpu/cull_mode.hpp>
+#include <campello_gpu/front_face.hpp>
 
 namespace systems::leal::campello_gpu {
 
-    class RenderPipelineDescriptor
+    struct RenderPipelineDescriptor
     {
         /**
          * An object (see depthStencil object structure) describing depth-stencil properties
@@ -30,6 +33,22 @@ namespace systems::leal::campello_gpu {
          * pipeline and its input buffer layouts.
          */
         VertexDescriptor vertex;
+
+        /**
+         * An enumerated value that defines which polygon orientation will be culled, if any.
+         */
+        CullMode cullMode;
+
+        /**
+         * An enumerated value that defines which polygons are considered front-facing.
+         */
+        FrontFace frontFace;
+
+        /**
+         * An enumerated value that defines the type of primitive to be constructed from the
+         * specified vertex inputs.
+         */
+        PrimitiveTopology topology;
 
     };
 

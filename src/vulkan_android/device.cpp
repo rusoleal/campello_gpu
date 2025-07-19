@@ -23,21 +23,21 @@ std::string queueFlagsToString(VkQueueFlags flags)
 {
     std::vector<std::string> stringFlags;
     if (flags & VK_QUEUE_GRAPHICS_BIT)
-        stringFlags.push_back("VK_QUEUE_GRAPHICS_BIT");
+        stringFlags.emplace_back("VK_QUEUE_GRAPHICS_BIT");
     if (flags & VK_QUEUE_COMPUTE_BIT)
-        stringFlags.push_back("VK_QUEUE_COMPUTE_BIT");
+        stringFlags.emplace_back("VK_QUEUE_COMPUTE_BIT");
     if (flags & VK_QUEUE_TRANSFER_BIT)
-        stringFlags.push_back("VK_QUEUE_TRANSFER_BIT");
+        stringFlags.emplace_back("VK_QUEUE_TRANSFER_BIT");
     if (flags & VK_QUEUE_SPARSE_BINDING_BIT)
-        stringFlags.push_back("VK_QUEUE_SPARSE_BINDING_BIT");
+        stringFlags.emplace_back("VK_QUEUE_SPARSE_BINDING_BIT");
     if (flags & VK_QUEUE_PROTECTED_BIT)
-        stringFlags.push_back("VK_QUEUE_PROTECTED_BIT");
+        stringFlags.emplace_back("VK_QUEUE_PROTECTED_BIT");
     if (flags & VK_QUEUE_VIDEO_DECODE_BIT_KHR)
-        stringFlags.push_back("VK_QUEUE_VIDEO_DECODE_BIT_KHR");
+        stringFlags.emplace_back("VK_QUEUE_VIDEO_DECODE_BIT_KHR");
     if (flags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR)
-        stringFlags.push_back("VK_QUEUE_VIDEO_ENCODE_BIT_KHR");
+        stringFlags.emplace_back("VK_QUEUE_VIDEO_ENCODE_BIT_KHR");
     if (flags & VK_QUEUE_OPTICAL_FLOW_BIT_NV)
-        stringFlags.push_back("VK_QUEUE_OPTICAL_FLOW_BIT_NV");
+        stringFlags.emplace_back("VK_QUEUE_OPTICAL_FLOW_BIT_NV");
     // if (flags&VK_QUEUE_DATA_GRAPH_BIT_ARM) stringFlags.push_back("VK_QUEUE_DATA_GRAPH_BIT_ARM");
 
     std::string toReturn = "[";
@@ -124,7 +124,7 @@ Device::~Device()
 {
     if (native != nullptr)
     {
-        DeviceData *deviceData = (DeviceData *)native;
+        auto deviceData = (DeviceData *)native;
         vkDestroyDevice(deviceData->device, nullptr);
         delete deviceData;
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Device::~Device()");
@@ -404,6 +404,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<DeviceDef> deviceDe
     deviceData->swapchain = swapchain;
     deviceData->imageExtent = surfaceCapabilities.currentExtent;
     deviceData->swapchainImageViews = swapchainImageViews;
+    deviceData->surfaceFormat = surfaceFormats[0];
 
     return std::shared_ptr<Device>(new Device(deviceData));
 }
@@ -471,7 +472,7 @@ std::shared_ptr<Texture> Device::createTexture(
         return nullptr;
     }
 
-    TextureHandle *toReturn = new TextureHandle();
+    auto toReturn = new TextureHandle();
     toReturn->device = deviceData->device;
     toReturn->buffer = buffer;
     toReturn->image = image;
@@ -501,6 +502,7 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
     VkBufferUsageFlags vkUsage = 0;
     if ((int)usage & (int)BufferUsage::vertex)
         vkUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.usage = vkUsage;
 
     auto deviceData = (DeviceData *)this->native;
 
@@ -609,7 +611,166 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
 
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
 
+    auto deviceData = (DeviceData *)this->native;
 
+    std::vector<VkPipelineShaderStageCreateInfo> stages;
+
+    VkPipelineShaderStageCreateInfo vertexShaderStageInfo;
+    vertexShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    vertexShaderStageInfo.pNext = nullptr;
+    vertexShaderStageInfo.flags = 0;
+    vertexShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+    vertexShaderStageInfo.module = ((ShaderModuleHandle *)descriptor.vertex.module->native)->shaderModule;
+    vertexShaderStageInfo.pName = descriptor.vertex.entryPoint.c_str();
+    vertexShaderStageInfo.pSpecializationInfo = nullptr;
+    stages.push_back(vertexShaderStageInfo);
+
+    if (descriptor.fragment.has_value()) {
+        VkPipelineShaderStageCreateInfo fragmentShaderStageInfo;
+        fragmentShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragmentShaderStageInfo.pNext = nullptr;
+        fragmentShaderStageInfo.flags = 0;
+        fragmentShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragmentShaderStageInfo.module = ((ShaderModuleHandle *)descriptor.fragment.value().module->native)->shaderModule;
+        fragmentShaderStageInfo.pName = descriptor.fragment.value().entryPoint.c_str();
+        fragmentShaderStageInfo.pSpecializationInfo = nullptr;
+        stages.push_back(fragmentShaderStageInfo);
+    }
+
+    std::vector<VkDynamicState> dynamicStates = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamicState;
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.pNext = nullptr;
+    dynamicState.flags = 0;
+    dynamicState.dynamicStateCount = dynamicStates.size();
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo;
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.pNext = nullptr;
+    vertexInputInfo.flags = 0;
+    vertexInputInfo.vertexBindingDescriptionCount = 0;
+    vertexInputInfo.vertexAttributeDescriptionCount = 0;
+    vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+    vertexInputInfo.pVertexBindingDescriptions = nullptr;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly;
+    inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssembly.pNext = nullptr;
+    inputAssembly.flags = 0;
+    VkPrimitiveTopology topology;
+    switch (descriptor.topology) {
+        case PrimitiveTopology::lineList:
+            topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+            break;
+        case PrimitiveTopology::lineStrip:
+            topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+            break;
+        case PrimitiveTopology::pointList:
+            topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+            break;
+        case PrimitiveTopology::triangleList:
+            topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            break;
+        case PrimitiveTopology::triangleStrip:
+            topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+            break;
+    }
+    inputAssembly.topology = topology;
+    inputAssembly.primitiveRestartEnable = false;
+
+    VkPipelineViewportStateCreateInfo viewportState;
+    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportState.pNext = nullptr;
+    viewportState.flags = 0;
+    viewportState.viewportCount = 1;
+    viewportState.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer;
+    rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer.pNext = nullptr;
+    rasterizer.flags = 0;
+    rasterizer.depthClampEnable = false;
+    rasterizer.rasterizerDiscardEnable = false;
+    rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    VkCullModeFlagBits cullMode;
+    switch (descriptor.cullMode) {
+        case CullMode::none:
+            cullMode = VK_CULL_MODE_NONE;
+            break;
+        case CullMode::front:
+            cullMode = VK_CULL_MODE_FRONT_BIT;
+            break;
+        case CullMode::back:
+            cullMode = VK_CULL_MODE_BACK_BIT;
+            break;
+    }
+    rasterizer.cullMode = cullMode;
+    VkFrontFace frontFace;
+    switch (descriptor.frontFace) {
+        case FrontFace::cw:
+            frontFace = VK_FRONT_FACE_CLOCKWISE;
+            break;
+        case FrontFace::ccw:
+            frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+            break;
+    }
+    rasterizer.frontFace = frontFace;
+    rasterizer.depthBiasEnable = false;
+    rasterizer.depthBiasSlopeFactor = 1.0;
+    rasterizer.lineWidth = 1.0;
+
+    VkPipelineMultisampleStateCreateInfo multisampling;
+    multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampling.pNext = nullptr;
+    multisampling.flags = 0;
+    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampling.sampleShadingEnable = false;
+
+    // TODO
+    VkPipelineDepthStencilStateCreateInfo depthStencil;
+
+    VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {};
+    pipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    pipelineRenderingCreateInfo.pNext = nullptr;
+    pipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    pipelineRenderingCreateInfo.pColorAttachmentFormats = &deviceData->surfaceFormat.format;
+
+    VkGraphicsPipelineCreateInfo pipelineInfo = {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.pNext = &pipelineRenderingCreateInfo;
+    pipelineInfo.stageCount = 2,
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterizer;
+    pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
+    pipelineInfo.layout = pipelineLayout;
+    pipelineInfo.renderPass = nullptr;
+    pipelineInfo.basePipelineHandle = nullptr;
+    pipelineInfo.basePipelineIndex = -1;
+
+    VkPipeline pipeline;
+    if (vkCreateGraphicsPipelines(
+        deviceData->device,
+        VK_NULL_HANDLE,
+        1,
+        &pipelineInfo,
+        nullptr,
+        &pipeline
+    ) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateGraphicsPipelines() error");
+        return nullptr;
+    }
+
+    
     return nullptr;
 }
 

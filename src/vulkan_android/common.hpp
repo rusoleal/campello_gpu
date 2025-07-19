@@ -15,6 +15,7 @@ namespace systems::leal::campello_gpu {
         VkSwapchainKHR swapchain;
         VkExtent2D imageExtent;
         std::vector<VkImageView> swapchainImageViews;
+        VkSurfaceFormatKHR surfaceFormat;
     };
 
 }
