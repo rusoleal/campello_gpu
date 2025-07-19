@@ -15,6 +15,7 @@ add_library(${PROJECT_NAME} SHARED
     src/vulkan_android/texture.cpp
     src/vulkan_android/view.cpp
     src/vulkan_android/shader_module.cpp
+    src/vulkan_android/render_pipeline.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}

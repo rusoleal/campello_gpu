@@ -7,9 +7,11 @@
 #include <campello_gpu/device_def.hpp>
 #include <campello_gpu/pixel_format.hpp>
 #include <campello_gpu/shader_module.hpp>
+#include <campello_gpu/render_pipeline.hpp>
 #include "buffer_handle.hpp"
 #include "texture_handle.hpp"
 #include "shader_module_handle.hpp"
+#include "render_pipeline_handle.hpp"
 #include "common.hpp"
 
 using namespace systems::leal::campello_gpu;
@@ -613,7 +615,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
 
     auto deviceData = (DeviceData *)this->native;
 
-    std::vector<VkPipelineShaderStageCreateInfo> stages;
+    std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
 
     VkPipelineShaderStageCreateInfo vertexShaderStageInfo;
     vertexShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -623,7 +625,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     vertexShaderStageInfo.module = ((ShaderModuleHandle *)descriptor.vertex.module->native)->shaderModule;
     vertexShaderStageInfo.pName = descriptor.vertex.entryPoint.c_str();
     vertexShaderStageInfo.pSpecializationInfo = nullptr;
-    stages.push_back(vertexShaderStageInfo);
+    shaderStages.push_back(vertexShaderStageInfo);
 
     if (descriptor.fragment.has_value()) {
         VkPipelineShaderStageCreateInfo fragmentShaderStageInfo;
@@ -634,7 +636,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         fragmentShaderStageInfo.module = ((ShaderModuleHandle *)descriptor.fragment.value().module->native)->shaderModule;
         fragmentShaderStageInfo.pName = descriptor.fragment.value().entryPoint.c_str();
         fragmentShaderStageInfo.pSpecializationInfo = nullptr;
-        stages.push_back(fragmentShaderStageInfo);
+        shaderStages.push_back(fragmentShaderStageInfo);
     }
 
     std::vector<VkDynamicState> dynamicStates = {
@@ -734,6 +736,33 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     // TODO
     VkPipelineDepthStencilStateCreateInfo depthStencil;
 
+    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
+    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    colorBlendAttachment.blendEnable = false;
+
+    VkPipelineColorBlendStateCreateInfo colorBlending = {};
+    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlending.pNext = nullptr;
+    colorBlending.flags = 0;
+    colorBlending.logicOpEnable = false;
+    colorBlending.logicOp = VK_LOGIC_OP_COPY;
+    colorBlending.attachmentCount = 1;
+    colorBlending.pAttachments = &colorBlendAttachment;
+
+    // uniforms
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.pNext = nullptr;
+    pipelineLayoutInfo.flags = 0;
+    pipelineLayoutInfo.setLayoutCount = 0;
+    pipelineLayoutInfo.pushConstantRangeCount = 0;
+
+    VkPipelineLayout  pipelineLayout = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(deviceData->device,&pipelineLayoutInfo, nullptr,&pipelineLayout) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreatePipelineLayout() error");
+        return nullptr;
+    }
+
     VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {};
     pipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     pipelineRenderingCreateInfo.pNext = nullptr;
@@ -744,7 +773,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineInfo.pNext = &pipelineRenderingCreateInfo;
     pipelineInfo.stageCount = 2,
-    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
     pipelineInfo.pViewportState = &viewportState;
@@ -753,8 +782,8 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout;
-    pipelineInfo.renderPass = nullptr;
-    pipelineInfo.basePipelineHandle = nullptr;
+    pipelineInfo.renderPass = VK_NULL_HANDLE;
+    pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     pipelineInfo.basePipelineIndex = -1;
 
     VkPipeline pipeline;
@@ -770,8 +799,11 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         return nullptr;
     }
 
-    
-    return nullptr;
+    auto toReturn = new RenderPipelineHandle();
+    toReturn->device = deviceData->device;
+    toReturn->pipeline = pipeline;
+
+    return std::shared_ptr<RenderPipeline>(new RenderPipeline(toReturn));
 }
 
 std::string systems::leal::campello_gpu::getVersion()

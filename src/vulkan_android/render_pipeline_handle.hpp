@@ -4,10 +4,9 @@
 
 namespace systems::leal::campello_gpu
 {
-
-    struct ShaderModuleHandle
+    struct RenderPipelineHandle
     {
         VkDevice device;
-        VkShaderModule shaderModule;
+        VkPipeline pipeline;
     };
 }
