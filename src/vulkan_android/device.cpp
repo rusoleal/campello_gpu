@@ -615,6 +615,11 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
 
     auto deviceData = (DeviceData *)this->native;
 
+    if (descriptor.vertex.module == nullptr) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "createRenderPipeline() error. descriptor.vertex.module must be a valid ShaderModule object.");
+        return nullptr;
+    }
+
     std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
 
     VkPipelineShaderStageCreateInfo vertexShaderStageInfo;

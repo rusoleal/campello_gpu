@@ -56,7 +56,14 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
                 auto shaderModule = device->createShaderModule((uint8_t *)assetData, assetLength);
                 AAsset_close(asset);
 
-                auto renderPipeline = device->createRenderPipeline({});
+                RenderPipelineDescriptor pipelineDescriptor;
+                pipelineDescriptor.vertex.module = shaderModule;
+                pipelineDescriptor.vertex.entryPoint = "vertMain";
+                FragmentDescriptor fd = {};
+                fd.module = shaderModule;
+                fd.entryPoint = "fragMain";
+                pipelineDescriptor.fragment = fd;
+                auto renderPipeline = device->createRenderPipeline(pipelineDescriptor);
                 aout << "renderPipeline: " << renderPipeline << std::endl;
             }
             break;
@@ -142,6 +149,8 @@ void android_main(struct android_app *pApp) {
 
             // Render a frame
             //pRenderer->render();
+
+            aout << "Render..." << std::endl;
         }
     } while (!pApp->destroyRequested);
 }

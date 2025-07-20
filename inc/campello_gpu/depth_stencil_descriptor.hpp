@@ -1,5 +1,7 @@
 #pragma once
 
+#include <campello_gpu/pixel_format.hpp>
+
 namespace systems::leal::campello_gpu {
 
     /**

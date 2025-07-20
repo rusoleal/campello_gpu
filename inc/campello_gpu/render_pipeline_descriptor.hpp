@@ -50,6 +50,7 @@ namespace systems::leal::campello_gpu {
          */
         PrimitiveTopology topology;
 
+        RenderPipelineDescriptor();
     };
 
 }
