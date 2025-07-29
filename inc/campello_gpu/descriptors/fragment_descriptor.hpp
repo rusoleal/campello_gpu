@@ -2,7 +2,7 @@
 
 #include <memory>
 #include <vector>
-#include <campello_gpu/pixel_format.hpp>
+#include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/shader_module.hpp>
 
 namespace systems::leal::campello_gpu {

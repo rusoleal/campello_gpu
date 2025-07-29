@@ -3,15 +3,16 @@
 namespace systems::leal::campello_gpu
 {
 
-    class ShaderModule
+    class ComputePipeline
     {
     private:
         friend class Device;
         void *native;
-        ShaderModule(void *pd);
+
+        ComputePipeline(void *data);
 
     public:
-        ~ShaderModule();
+        ~ComputePipeline();
     };
 
 }

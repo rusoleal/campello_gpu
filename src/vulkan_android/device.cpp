@@ -4,14 +4,18 @@
 #include <android/log.h>
 #include "campello_gpu_config.h"
 #include <campello_gpu/device.hpp>
-#include <campello_gpu/device_def.hpp>
-#include <campello_gpu/pixel_format.hpp>
+#include <campello_gpu/adapter.hpp>
+#include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/shader_module.hpp>
 #include <campello_gpu/render_pipeline.hpp>
 #include "buffer_handle.hpp"
 #include "texture_handle.hpp"
 #include "shader_module_handle.hpp"
 #include "render_pipeline_handle.hpp"
+#include "sampler_handle.hpp"
+#include "query_set_handle.hpp"
+#include "compute_pipeline_handle.hpp"
+#include "pipeline_layout_handle.hpp"
 #include "common.hpp"
 
 using namespace systems::leal::campello_gpu;
@@ -82,7 +86,7 @@ VkInstance systems::leal::campello_gpu::getInstance()
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appInfo.pApplicationName = "test";
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.pEngineName = "campello_cpu";
+    appInfo.pEngineName = "campello_gpu";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.apiVersion = VK_API_VERSION_1_0;
     appInfo.pNext = nullptr;
@@ -141,7 +145,7 @@ Device::~Device()
 std::shared_ptr<Device> Device::createDefaultDevice(void *pd)
 {
 
-    auto devicesDef = getDevicesDef();
+    auto devicesDef = getAdapters();
     if (devicesDef.empty())
     {
         return nullptr;
@@ -150,10 +154,10 @@ std::shared_ptr<Device> Device::createDefaultDevice(void *pd)
     return createDevice(devicesDef[0], pd);
 }
 
-std::vector<std::shared_ptr<DeviceDef>> Device::getDevicesDef()
+std::vector<std::shared_ptr<Adapter>> Device::getAdapters()
 {
 
-    std::vector<std::shared_ptr<DeviceDef>> toReturn;
+    std::vector<std::shared_ptr<Adapter>> toReturn;
 
     uint32_t gpuCount = 0;
     vkEnumeratePhysicalDevices(getInstance(), &gpuCount, nullptr);
@@ -189,15 +193,15 @@ std::vector<std::shared_ptr<DeviceDef>> Device::getDevicesDef()
             __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "gpu[%d].queueuFamily[%d].minImageTransferGranularity.depth = %d", a, b, queueFamilies[b].minImageTransferGranularity.depth);
         }
 
-        auto deviceDef = std::shared_ptr<DeviceDef>(new DeviceDef());
-        deviceDef->native = (void *)a; // index on physicalDevice list
+        auto deviceDef = std::shared_ptr<Adapter>(new Adapter());
+        deviceDef->native = (void *)(uint64_t)a; // index on physicalDevice list
         toReturn.push_back(deviceDef);
     }
 
     return toReturn;
 }
 
-std::shared_ptr<Device> Device::createDevice(std::shared_ptr<DeviceDef> deviceDef, void *pd)
+std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef, void *pd)
 {
 
     if (deviceDef == nullptr)
@@ -809,6 +813,161 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     toReturn->pipeline = pipeline;
 
     return std::shared_ptr<RenderPipeline>(new RenderPipeline(toReturn));
+}
+
+std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipelineDescriptor &descriptor) {
+
+    auto deviceData = (DeviceData *)this->native;
+
+    VkComputePipelineCreateInfo info;
+    info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    info.pNext = nullptr;
+    info.flags = 0;
+    info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    info.stage.pNext = nullptr;
+    info.stage.flags = 0;
+    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info.stage.module = ((ShaderModuleHandle *)descriptor.compute.module->native)->shaderModule;
+    info.stage.pName = descriptor.compute.entryPoint.c_str();
+    info.stage.pSpecializationInfo = nullptr;
+    info.layout = ((PipelineLayoutHandle *)descriptor.layout->native)->layout;
+    info.basePipelineHandle = VK_NULL_HANDLE;
+    info.basePipelineIndex = -1;
+
+    VkPipeline pipeline;
+    if (vkCreateComputePipelines(
+        deviceData->device,
+        VK_NULL_HANDLE,
+        1,
+        &info,
+        nullptr,
+        &pipeline
+    ) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateComputePipelines() error");
+        return nullptr;
+    }
+
+    auto toReturn = new ComputePipelineHandle();
+    toReturn->device = deviceData->device;
+    toReturn->pipeline = pipeline;
+
+    return std::shared_ptr<ComputePipeline>(new ComputePipeline(toReturn));
+}
+
+
+VkFilter filterModeToVkFilter(FilterMode filter) {
+    switch (filter) {
+        case FilterMode::fmLinear:
+        case FilterMode::fmLinearMipmapLinear:
+        case FilterMode::fmLinearMipmapNearest:
+            return VK_FILTER_LINEAR;
+        default:
+            return VK_FILTER_NEAREST;
+    }
+}
+
+VkSamplerMipmapMode getMipmapMode(const SamplerDescriptor &descriptor) {
+    if (descriptor.minFilter == FilterMode::fmLinearMipmapLinear ||
+        descriptor.minFilter == FilterMode::fmNearestMipmapLinear ||
+        descriptor.magFilter == FilterMode::fmNearestMipmapLinear ||
+        descriptor.magFilter == FilterMode::fmLinearMipmapLinear) {
+        return VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    }
+    return VK_SAMPLER_MIPMAP_MODE_NEAREST;
+}
+
+VkSamplerAddressMode getAddressMode(WrapMode mode) {
+    switch(mode) {
+        case WrapMode::repeat: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        case WrapMode::clampToEdge: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        case WrapMode::mirrorRepeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    }
+}
+
+VkCompareOp getCompareOp(CompareOp op) {
+    switch (op) {
+        case CompareOp::never: return VK_COMPARE_OP_NEVER;
+        case CompareOp::less: return VK_COMPARE_OP_LESS;
+        case CompareOp::equal: return VK_COMPARE_OP_EQUAL;
+        case CompareOp::lessEqual: return VK_COMPARE_OP_LESS_OR_EQUAL;
+        case CompareOp::greater: return VK_COMPARE_OP_GREATER;
+        case CompareOp::notEqual: return VK_COMPARE_OP_NOT_EQUAL;
+        case CompareOp::greaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+        case CompareOp::always: return VK_COMPARE_OP_ALWAYS;
+    }
+}
+
+std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor &descriptor) {
+
+    auto deviceData = (DeviceData *)this->native;
+
+    VkSamplerCreateInfo info;
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    info.pNext = nullptr;
+    info.flags = 0;
+    info.magFilter = filterModeToVkFilter(descriptor.magFilter);
+    info.minFilter = filterModeToVkFilter(descriptor.minFilter);
+    info.mipmapMode = getMipmapMode(descriptor);
+    info.addressModeU = getAddressMode(descriptor.addressModeU);
+    info.addressModeV = getAddressMode(descriptor.addressModeV);
+    info.addressModeW = getAddressMode(descriptor.addressModeW);
+    info.mipLodBias = 0.0;
+    info.anisotropyEnable = true;
+    info.maxAnisotropy = (float)descriptor.maxAnisotropy;
+    info.compareEnable = false;
+    if (descriptor.compare.has_value()) {
+        info.compareEnable = true;
+        info.compareOp = getCompareOp(descriptor.compare.value());
+    }
+    info.minLod = (float)descriptor.lodMinClamp;
+    info.maxLod = (float)descriptor.lodMaxClamp;
+    info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    info.unnormalizedCoordinates = false;
+
+    VkSampler sampler;
+    if (vkCreateSampler(deviceData->device, &info, nullptr, &sampler) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateSampler() error");
+        return nullptr;
+    }
+
+    auto toReturn = new SamplerHandle();
+    toReturn->device = deviceData->device;
+    toReturn->sampler = sampler;
+
+    return std::shared_ptr<Sampler>(new Sampler(toReturn));
+}
+
+std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor &descriptor) {
+
+    auto deviceData = (DeviceData *)this->native;
+
+    VkQueryPoolCreateInfo info;
+    info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    info.pNext = nullptr;
+    info.flags = 0;
+    info.queryType = descriptor.type == QuerySetType::occlusion ? VK_QUERY_TYPE_OCCLUSION : VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = descriptor.count;
+    info.pipelineStatistics = 0;
+
+    VkQueryPool queryPool;
+    if (vkCreateQueryPool(deviceData->device, &info, nullptr, &queryPool) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateQueryPool() error");
+        return nullptr;
+    }
+
+    auto toReturn = new QuerySetHandle();
+    toReturn->device = deviceData->device;
+    toReturn->queryPool = queryPool;
+
+    return std::shared_ptr<QuerySet>(new QuerySet(toReturn));
+}
+
+std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLayoutDescriptor &descriptor) {
+
+}
+
+std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayoutDescriptor &descriptor) {
+
 }
 
 std::string systems::leal::campello_gpu::getVersion()

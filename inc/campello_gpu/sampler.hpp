@@ -3,12 +3,16 @@
 namespace systems::leal::campello_gpu
 {
 
-    class Context
+    class Sampler
     {
     private:
+        friend class Device;
         void *native;
 
+        Sampler(void *pd);
+
     public:
-        Context();
+        ~Sampler();
     };
+
 }

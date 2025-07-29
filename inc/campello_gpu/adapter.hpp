@@ -1,20 +1,22 @@
 #pragma once
 
 #include <campello_gpu/device.hpp>
-#include <campello_gpu/feature.hpp>
+#include <campello_gpu/constants/feature.hpp>
 
-namespace systems::leal::campello_gpu {
+namespace systems::leal::campello_gpu
+{
 
-    class DeviceDef {
+    class Adapter
+    {
         friend class Device;
+
     private:
         void *native;
 
-        DeviceDef();
+        Adapter();
 
     public:
         std::set<Feature> getFeatures();
-
     };
 
 }

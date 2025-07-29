@@ -1,8 +1,8 @@
 #pragma once
 
 #include <stdint.h>
-#include <campello_gpu/pixel_format.hpp>
-#include <campello_gpu/texture_usage.hpp>
+#include <campello_gpu/constants/pixel_format.hpp>
+#include <campello_gpu/constants/texture_usage.hpp>
 
 namespace systems::leal::campello_gpu
 {

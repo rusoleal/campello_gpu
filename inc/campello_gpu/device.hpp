@@ -5,21 +5,31 @@
 #include <string>
 #include <vector>
 #include <campello_gpu/texture.hpp>
-#include <campello_gpu/texture_type.hpp>
 #include <campello_gpu/buffer.hpp>
-#include <campello_gpu/storage_mode.hpp>
-#include <campello_gpu/buffer_usage.hpp>
-#include <campello_gpu/texture_usage.hpp>
-#include <campello_gpu/pixel_format.hpp>
-#include <campello_gpu/feature.hpp>
 #include <campello_gpu/render_pipeline.hpp>
-#include <campello_gpu/render_pipeline_descriptor.hpp>
+#include <campello_gpu/compute_pipeline.hpp>
 #include <campello_gpu/shader_module.hpp>
+#include <campello_gpu/bind_group_layout.hpp>
+#include <campello_gpu/pipeline_layout.hpp>
+#include <campello_gpu/sampler.hpp>
+#include <campello_gpu/query_set.hpp>
+#include <campello_gpu/descriptors/render_pipeline_descriptor.hpp>
+#include <campello_gpu/descriptors/compute_pipeline_descriptor.hpp>
+#include <campello_gpu/descriptors/bind_group_layout_descriptor.hpp>
+#include <campello_gpu/descriptors/pipeline_layout_descriptor.hpp>
+#include <campello_gpu/descriptors/sampler_descriptor.hpp>
+#include <campello_gpu/descriptors/query_set_descriptor.hpp>
+#include <campello_gpu/constants/texture_type.hpp>
+#include <campello_gpu/constants/storage_mode.hpp>
+#include <campello_gpu/constants/buffer_usage.hpp>
+#include <campello_gpu/constants/texture_usage.hpp>
+#include <campello_gpu/constants/pixel_format.hpp>
+#include <campello_gpu/constants/feature.hpp>
 
 namespace systems::leal::campello_gpu
 {
 
-    class DeviceDef;
+    class Adapter;
 
     class Device
     {
@@ -41,14 +51,17 @@ namespace systems::leal::campello_gpu
 
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage);
         std::shared_ptr<Buffer> createBuffer(uint64_t size, BufferUsage usage, void *data);
-
         std::shared_ptr<ShaderModule> createShaderModule(const uint8_t *buffer, uint64_t size);
-
         std::shared_ptr<RenderPipeline> createRenderPipeline(const RenderPipelineDescriptor &descriptor);
+        std::shared_ptr<ComputePipeline> createComputePipeline(const ComputePipelineDescriptor &descriptor);
+        std::shared_ptr<BindGroupLayout> createBindGroupLayout(const BindGroupLayoutDescriptor &descriptor);
+        std::shared_ptr<PipelineLayout> createPipelineLayout(const PipelineLayoutDescriptor &descriptor);
+        std::shared_ptr<Sampler> createSampler(const SamplerDescriptor &descriptor);
+        std::shared_ptr<QuerySet> createQuerySet(const QuerySetDescriptor &descriptor);
 
         static std::shared_ptr<Device> createDefaultDevice(void *pd);
-        static std::shared_ptr<Device> createDevice(std::shared_ptr<DeviceDef> deviceDef, void *pd);
-        static std::vector<std::shared_ptr<DeviceDef>> getDevicesDef();
+        static std::shared_ptr<Device> createDevice(std::shared_ptr<Adapter> adapter, void *pd);
+        static std::vector<std::shared_ptr<Adapter>> getAdapters();
 
         static std::string getEngineVersion();
     };

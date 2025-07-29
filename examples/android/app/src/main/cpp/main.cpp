@@ -7,7 +7,6 @@
 #include <game-text-input/gametextinput.cpp>
 
 #include <campello_gpu/device.hpp>
-#include <campello_gpu/view.hpp>
 
 extern "C" {
 
@@ -56,14 +55,43 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
                 auto shaderModule = device->createShaderModule((uint8_t *)assetData, assetLength);
                 AAsset_close(asset);
 
-                RenderPipelineDescriptor pipelineDescriptor;
-                pipelineDescriptor.vertex.module = shaderModule;
-                pipelineDescriptor.vertex.entryPoint = "vertMain";
-                FragmentDescriptor fd = {};
-                fd.module = shaderModule;
-                fd.entryPoint = "fragMain";
-                pipelineDescriptor.fragment = fd;
-                auto renderPipeline = device->createRenderPipeline(pipelineDescriptor);
+                auto sampler = device->createSampler({
+                    .addressModeU = WrapMode::clampToEdge,
+                    .addressModeV = WrapMode::clampToEdge,
+                    .addressModeW = WrapMode::clampToEdge,
+                    .compare = {},
+                    .lodMinClamp = 0,
+                    .lodMaxClamp = 32,
+                    .maxAnisotropy = 1,
+                    .magFilter = FilterMode::fmNearest,
+                    .minFilter = FilterMode::fmNearest
+                });
+                aout << "sampler: " << sampler << std::endl;
+
+                auto querySet = device->createQuerySet({
+                    .count = 32,
+                    .type = QuerySetType::occlusion
+                });
+
+                auto computePipeline = device->createComputePipeline({
+
+                });
+
+                auto renderPipeline = device->createRenderPipeline({
+                    .depthStencil = {},
+                    .fragment = (FragmentDescriptor) {
+                            .module = shaderModule,
+                            .entryPoint = "fragMain"
+                    },
+                    .vertex = {
+                            .module = shaderModule,
+                            .entryPoint = "vertMain",
+                            .buffers = {}
+                    },
+                    .cullMode = CullMode::none,
+                    .frontFace = FrontFace::ccw,
+                    .topology = PrimitiveTopology::triangleList
+                });
                 aout << "renderPipeline: " << renderPipeline << std::endl;
             }
             break;
@@ -150,7 +178,7 @@ void android_main(struct android_app *pApp) {
             // Render a frame
             //pRenderer->render();
 
-            aout << "Render..." << std::endl;
+            //aout << "Render..." << std::endl;
         }
     } while (!pApp->destroyRequested);
 }

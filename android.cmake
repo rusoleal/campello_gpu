@@ -4,19 +4,17 @@ message(STATUS "Vulkan FOUND = ${Vulkan_FOUND}")
 message(STATUS "Vulkan Include = ${Vulkan_INCLUDE_DIR}")
 message(STATUS "Vulkan Lib = ${Vulkan_LIBRARY}")
 
-include_directories(src/vulkan_android/inc)
-
 add_library(${PROJECT_NAME} SHARED
     src/pi/utils.cpp
-    src/vulkan_android/context.cpp
     src/vulkan_android/device.cpp
-    src/vulkan_android/device_def.cpp
+    src/vulkan_android/adapter.cpp
     src/vulkan_android/buffer.cpp
     src/vulkan_android/texture.cpp
-    src/vulkan_android/view.cpp
     src/vulkan_android/shader_module.cpp
     src/vulkan_android/render_pipeline.cpp
-    src/vulkan_android/render_pipeline_descriptor.cpp
+    src/vulkan_android/compute_pipeline.cpp
+    src/vulkan_android/sampler.cpp
+    src/vulkan_android/query_set.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}

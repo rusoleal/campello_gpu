@@ -2,12 +2,12 @@
 
 #include <optional>
 #include <vector>
-#include <campello_gpu/depth_stencil_descriptor.hpp>
-#include <campello_gpu/fragment_descriptor.hpp>
-#include <campello_gpu/vertex_descriptor.hpp>
-#include <campello_gpu/primitive_topology.hpp>
-#include <campello_gpu/cull_mode.hpp>
-#include <campello_gpu/front_face.hpp>
+#include <campello_gpu/descriptors/depth_stencil_descriptor.hpp>
+#include <campello_gpu/descriptors/fragment_descriptor.hpp>
+#include <campello_gpu/descriptors/vertex_descriptor.hpp>
+#include <campello_gpu/constants/primitive_topology.hpp>
+#include <campello_gpu/constants/cull_mode.hpp>
+#include <campello_gpu/constants/front_face.hpp>
 
 namespace systems::leal::campello_gpu {
 
@@ -50,7 +50,7 @@ namespace systems::leal::campello_gpu {
          */
         PrimitiveTopology topology;
 
-        RenderPipelineDescriptor();
+        //RenderPipelineDescriptor();
     };
 
 }
