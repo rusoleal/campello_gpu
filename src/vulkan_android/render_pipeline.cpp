@@ -14,6 +14,7 @@ RenderPipeline::~RenderPipeline() {
     auto handle = (RenderPipelineHandle *)native;
 
     vkDestroyPipeline(handle->device, handle->pipeline, nullptr);
+    vkDestroyRenderPass(handle->device, handle->renderPass, nullptr);
 
     delete handle;
     __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","RenderPipeline::~RenderPipeline()");

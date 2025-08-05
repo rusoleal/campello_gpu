@@ -73,9 +73,8 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
                     .type = QuerySetType::occlusion
                 });
 
-                auto computePipeline = device->createComputePipeline({
-
-                });
+                /*auto computePipeline = device->createComputePipeline({
+                });*/
 
                 auto renderPipeline = device->createRenderPipeline({
                     .depthStencil = {},

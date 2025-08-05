@@ -15,6 +15,9 @@ add_library(${PROJECT_NAME} SHARED
     src/vulkan_android/compute_pipeline.cpp
     src/vulkan_android/sampler.cpp
     src/vulkan_android/query_set.cpp
+    src/vulkan_android/pipeline_layout.cpp
+    src/vulkan_android/command_encoder.cpp
+    src/vulkan_android/render_pass_encoder.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}

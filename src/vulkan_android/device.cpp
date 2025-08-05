@@ -16,6 +16,7 @@
 #include "query_set_handle.hpp"
 #include "compute_pipeline_handle.hpp"
 #include "pipeline_layout_handle.hpp"
+#include "command_encoder_handle.hpp"
 #include "common.hpp"
 
 using namespace systems::leal::campello_gpu;
@@ -653,14 +654,14 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
             VK_DYNAMIC_STATE_SCISSOR
     };
 
-    VkPipelineDynamicStateCreateInfo dynamicState;
+    VkPipelineDynamicStateCreateInfo dynamicState{};
     dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamicState.pNext = nullptr;
     dynamicState.flags = 0;
     dynamicState.dynamicStateCount = dynamicStates.size();
     dynamicState.pDynamicStates = dynamicStates.data();
 
-    VkPipelineVertexInputStateCreateInfo vertexInputInfo;
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.pNext = nullptr;
     vertexInputInfo.flags = 0;
@@ -669,7 +670,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     vertexInputInfo.pVertexAttributeDescriptions = nullptr;
     vertexInputInfo.pVertexBindingDescriptions = nullptr;
 
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly;
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     inputAssembly.pNext = nullptr;
     inputAssembly.flags = 0;
@@ -694,14 +695,14 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     inputAssembly.topology = topology;
     inputAssembly.primitiveRestartEnable = false;
 
-    VkPipelineViewportStateCreateInfo viewportState;
+    VkPipelineViewportStateCreateInfo viewportState{};
     viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     viewportState.pNext = nullptr;
     viewportState.flags = 0;
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
 
-    VkPipelineRasterizationStateCreateInfo rasterizer;
+    VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.pNext = nullptr;
     rasterizer.flags = 0;
@@ -735,7 +736,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     rasterizer.depthBiasSlopeFactor = 1.0;
     rasterizer.lineWidth = 1.0;
 
-    VkPipelineMultisampleStateCreateInfo multisampling;
+    VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisampling.pNext = nullptr;
     multisampling.flags = 0;
@@ -757,6 +758,10 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     colorBlending.logicOp = VK_LOGIC_OP_COPY;
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.blendConstants[0] = 0.0f;
+    colorBlending.blendConstants[1] = 0.0f;
+    colorBlending.blendConstants[2] = 0.0f;
+    colorBlending.blendConstants[3] = 0.0f;
 
     // uniforms
     VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
@@ -770,6 +775,37 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     if (vkCreatePipelineLayout(deviceData->device,&pipelineLayoutInfo, nullptr,&pipelineLayout) != VK_SUCCESS) {
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreatePipelineLayout() error");
         return nullptr;
+    }
+
+    VkAttachmentDescription colorAttachment{};
+    colorAttachment.format = deviceData->surfaceFormat.format;
+    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentReference colorAttachmentRef{};
+    colorAttachmentRef.attachment = 0;
+    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &colorAttachmentRef;
+
+    VkRenderPassCreateInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    renderPassInfo.attachmentCount = 1;
+    renderPassInfo.pAttachments = &colorAttachment;
+    renderPassInfo.subpassCount = 1;
+    renderPassInfo.pSubpasses = &subpass;
+
+    VkRenderPass renderPass;
+    if (vkCreateRenderPass(deviceData->device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create render pass!");
     }
 
     VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {};
@@ -791,7 +827,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout;
-    pipelineInfo.renderPass = VK_NULL_HANDLE;
+    pipelineInfo.renderPass = renderPass;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     pipelineInfo.basePipelineIndex = -1;
 
@@ -811,6 +847,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     auto toReturn = new RenderPipelineHandle();
     toReturn->device = deviceData->device;
     toReturn->pipeline = pipeline;
+    toReturn->renderPass = renderPass;
 
     return std::shared_ptr<RenderPipeline>(new RenderPipeline(toReturn));
 }
@@ -852,6 +889,16 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     toReturn->pipeline = pipeline;
 
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(toReturn));
+}
+
+std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
+
+    auto deviceData = (DeviceData *)this->native;
+
+    auto toReturn = new CommandEncoderHandle();
+    toReturn->device = deviceData->device;
+
+    return std::shared_ptr<CommandEncoder>(new CommandEncoder(toReturn));
 }
 
 
@@ -964,10 +1011,65 @@ std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor &descr
 
 std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLayoutDescriptor &descriptor) {
 
+    auto deviceData = (DeviceData *)this->native;
+
+    std::vector<VkDescriptorSetLayoutBinding> layoutBindings(descriptor.entries.size());
+    for (int a=0; a<descriptor.entries.size(); a++) {
+        auto &entry = descriptor.entries[a];
+        layoutBindings[a].binding = entry.binding;
+        switch (entry.type) {
+            case EntryObjectType::sampler:
+                layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+                break;
+            case EntryObjectType::buffer:
+                layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                break;
+            case EntryObjectType::texture:
+                layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                break;
+        }
+        layoutBindings[a].pImmutableSamplers = nullptr;
+        //layoutBindings[a].descriptorCount = entry.data.sampler.type
+    }
+
+    VkDescriptorSetLayoutCreateInfo info;
+    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.pNext = nullptr;
+    info.flags = 0;
+    info.bindingCount = descriptor.entries.size();
+    info.pBindings = layoutBindings.data();
+
+    VkDescriptorSetLayout layout;
+    if (vkCreateDescriptorSetLayout(deviceData->device, &info, nullptr, &layout) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateDescriptorSetLayout() error");
+        return nullptr;
+    }
+
+
 }
 
 std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayoutDescriptor &descriptor) {
 
+    auto deviceData = (DeviceData *)this->native;
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 0; // Optional
+    pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
+    pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
+    pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
+
+    VkPipelineLayout pipelineLayout;
+    if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreatePipelineLayout() error");
+        return nullptr;
+    }
+
+    auto toReturn = new PipelineLayoutHandle();
+    toReturn->device = deviceData->device;
+    toReturn->layout = pipelineLayout;
+
+    return std::shared_ptr<PipelineLayout>(new PipelineLayout(toReturn));
 }
 
 std::string systems::leal::campello_gpu::getVersion()

@@ -4,10 +4,8 @@
 
 namespace systems::leal::campello_gpu
 {
-    struct RenderPipelineHandle
+    struct CommandEncoderHandle
     {
         VkDevice device;
-        VkPipeline pipeline;
-        VkRenderPass renderPass;
     };
 }

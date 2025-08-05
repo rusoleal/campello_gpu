@@ -13,9 +13,11 @@
 #include <campello_gpu/pipeline_layout.hpp>
 #include <campello_gpu/sampler.hpp>
 #include <campello_gpu/query_set.hpp>
+#include <campello_gpu/command_encoder.hpp>
 #include <campello_gpu/descriptors/render_pipeline_descriptor.hpp>
 #include <campello_gpu/descriptors/compute_pipeline_descriptor.hpp>
 #include <campello_gpu/descriptors/bind_group_layout_descriptor.hpp>
+#include <campello_gpu/descriptors/bind_group_descriptor.hpp>
 #include <campello_gpu/descriptors/pipeline_layout_descriptor.hpp>
 #include <campello_gpu/descriptors/sampler_descriptor.hpp>
 #include <campello_gpu/descriptors/query_set_descriptor.hpp>
@@ -55,9 +57,11 @@ namespace systems::leal::campello_gpu
         std::shared_ptr<RenderPipeline> createRenderPipeline(const RenderPipelineDescriptor &descriptor);
         std::shared_ptr<ComputePipeline> createComputePipeline(const ComputePipelineDescriptor &descriptor);
         std::shared_ptr<BindGroupLayout> createBindGroupLayout(const BindGroupLayoutDescriptor &descriptor);
+        std::shared_ptr<BindGroup> createBindGroup(const BindGroupDescriptor &descriptor);
         std::shared_ptr<PipelineLayout> createPipelineLayout(const PipelineLayoutDescriptor &descriptor);
         std::shared_ptr<Sampler> createSampler(const SamplerDescriptor &descriptor);
         std::shared_ptr<QuerySet> createQuerySet(const QuerySetDescriptor &descriptor);
+        std::shared_ptr<CommandEncoder> createCommandEncoder();
 
         static std::shared_ptr<Device> createDefaultDevice(void *pd);
         static std::shared_ptr<Device> createDevice(std::shared_ptr<Adapter> adapter, void *pd);
