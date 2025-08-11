@@ -20,90 +20,117 @@ using namespace systems::leal::campello_gpu;
  * @param cmd the command to handle
  */
 void handle_cmd(android_app *pApp, int32_t cmd) {
-    switch (cmd) {
-        case APP_CMD_INIT_WINDOW: {
-            // A new window is created, associate a renderer with it. You may replace this with a
-            // "game" class if that suits your needs. Remember to change all instances of userData
-            // if you change the class here as a reinterpret_cast is dangerous this in the
-            // android_main function and the APP_CMD_TERM_WINDOW handler case.
-            //pApp->userData = new Renderer(pApp);
-            aout << "systems::leal::campello_gpu" << std::endl;
+    try {
+        switch (cmd) {
+            case APP_CMD_INIT_WINDOW: {
+                // A new window is created, associate a renderer with it. You may replace this with a
+                // "game" class if that suits your needs. Remember to change all instances of userData
+                // if you change the class here as a reinterpret_cast is dangerous this in the
+                // android_main function and the APP_CMD_TERM_WINDOW handler case.
+                //pApp->userData = new Renderer(pApp);
+                aout << "systems::leal::campello_gpu" << std::endl;
 
-            auto device = Device::createDefaultDevice(pApp->window);
-            if (device != nullptr) {
+                auto device = Device::createDefaultDevice(pApp->window);
+                if (device != nullptr) {
 
-                pApp->userData = new std::shared_ptr<Device>(device);
+                    pApp->userData = new std::shared_ptr<Device>(device);
 
-                auto buffer1 = device->createBuffer(10, BufferUsage::vertex);
-                uint8_t buffer[256 * 256 * 4];
-                auto status = buffer1->upload(0, 10, &buffer);
-                aout << "upload buffer status: " << status << std::endl;
+                    auto buffer1 = device->createBuffer(10, BufferUsage::vertex);
+                    uint8_t buffer[256 * 256 * 4];
+                    auto status = buffer1->upload(0, 10, &buffer);
+                    aout << "upload buffer status: " << status << std::endl;
 
-                auto buffer2 = device->createBuffer(10, BufferUsage::vertex, buffer);
-                aout << "buffer2: " << buffer2 << std::endl;
+                    auto buffer2 = device->createBuffer(10, BufferUsage::vertex, buffer);
+                    aout << "buffer2: " << buffer2 << std::endl;
 
-                auto texture1 = device->createTexture(TextureType::tt2d, PixelFormat::rgba8uint, 256, 256, 1, 1, 1, TextureUsage::textureBinding);
-                aout << "texture1: " << texture1 << std::endl;
+                    auto texture1 = device->createTexture(TextureType::tt2d, PixelFormat::rgba8uint, 256, 256, 1, 1, 1, TextureUsage::textureBinding);
+                    aout << "texture1: " << texture1 << std::endl;
 
-                status = texture1->upload(0, 256 * 256 * 4, buffer);
-                aout << "upload texture status: " << status << std::endl;
+                    status = texture1->upload(0, 256 * 256 * 4, buffer);
+                    aout << "upload texture status: " << status << std::endl;
 
-                auto assetManager = pApp->activity->assetManager;
-                auto asset = AAssetManager_open(assetManager, "shader.spv", AASSET_MODE_BUFFER);
-                auto assetLength = AAsset_getLength(asset);
-                auto assetData = AAsset_getBuffer(asset);
-                auto shaderModule = device->createShaderModule((uint8_t *)assetData, assetLength);
-                AAsset_close(asset);
+                    auto assetManager = pApp->activity->assetManager;
+                    auto asset = AAssetManager_open(assetManager, "shader.spv", AASSET_MODE_BUFFER);
+                    auto assetLength = AAsset_getLength(asset);
+                    auto assetData = AAsset_getBuffer(asset);
+                    auto shaderModule = device->createShaderModule((uint8_t *)assetData, assetLength);
+                    AAsset_close(asset);
 
-                auto sampler = device->createSampler({
-                    .addressModeU = WrapMode::clampToEdge,
-                    .addressModeV = WrapMode::clampToEdge,
-                    .addressModeW = WrapMode::clampToEdge,
-                    .compare = {},
-                    .lodMinClamp = 0,
-                    .lodMaxClamp = 32,
-                    .maxAnisotropy = 1,
-                    .magFilter = FilterMode::fmNearest,
-                    .minFilter = FilterMode::fmNearest
-                });
-                aout << "sampler: " << sampler << std::endl;
+                    auto sampler = device->createSampler({
+                            .addressModeU = WrapMode::clampToEdge,
+                            .addressModeV = WrapMode::clampToEdge,
+                            .addressModeW = WrapMode::clampToEdge,
+                            .compare = {},
+                            .lodMinClamp = 0,
+                            .lodMaxClamp = 32,
+                            .maxAnisotropy = 1,
+                            .magFilter = FilterMode::fmNearest,
+                            .minFilter = FilterMode::fmNearest
+                    });
+                    aout << "sampler: " << sampler << std::endl;
 
-                auto querySet = device->createQuerySet({
-                    .count = 32,
-                    .type = QuerySetType::occlusion
-                });
+                    auto querySet = device->createQuerySet({
+                            .count = 32,
+                            .type = QuerySetType::occlusion
+                    });
 
-                /*auto computePipeline = device->createComputePipeline({
-                });*/
+                    /*auto computePipeline = device->createComputePipeline({
+                    });*/
 
-                auto renderPipeline = device->createRenderPipeline({
-                    .depthStencil = {},
-                    .fragment = (FragmentDescriptor) {
-                            .module = shaderModule,
-                            .entryPoint = "fragMain"
-                    },
-                    .vertex = {
-                            .module = shaderModule,
-                            .entryPoint = "vertMain",
-                            .buffers = {}
-                    },
-                    .cullMode = CullMode::none,
-                    .frontFace = FrontFace::ccw,
-                    .topology = PrimitiveTopology::triangleList
-                });
-                aout << "renderPipeline: " << renderPipeline << std::endl;
+                    auto renderPipeline = device->createRenderPipeline({
+                            .depthStencil = {},
+                            .fragment = (FragmentDescriptor) {
+                                    .module = shaderModule,
+                                    .entryPoint = "fragMain"
+                            },
+                            .vertex = {
+                                    .module = shaderModule,
+                                    .entryPoint = "vertMain",
+                                    .buffers = {}
+                            },
+                            .cullMode = CullMode::none,
+                            .frontFace = FrontFace::ccw,
+                            .topology = PrimitiveTopology::triangleList
+                    });
+                    aout << "renderPipeline: " << renderPipeline << std::endl;
+
+                    auto encoder = device->createCommandEncoder();
+
+                    auto passEncoder = encoder->beginRenderPass({
+                        .colorAttachments = {{
+                            .clearValue = {0, 0, 0, 1},
+                            .depthSlice = 0,
+                            .loadOp = LoadOp::clear,
+                            .storeOp = StoreOp::store,
+                            .resolveTarget = nullptr,
+                            .view = nullptr
+                        }},
+                        .depthStencilAttachment = {},
+                        .occlusionQuerySet = nullptr,
+                        .timestampWrites = {}
+                    });
+
+                    passEncoder->setPipeline(renderPipeline);
+                    passEncoder->draw(3);
+                    passEncoder->end();
+
+
+
+                }
+                break;
             }
-            break;
+            case APP_CMD_TERM_WINDOW:
+                if (pApp->userData) {
+                    auto *device = reinterpret_cast<std::shared_ptr<Device> *>(pApp->userData);
+                    pApp->userData = nullptr;
+                    delete device;
+                }
+                break;
+            default:
+                break;
         }
-        case APP_CMD_TERM_WINDOW:
-            if (pApp->userData) {
-                auto *device = reinterpret_cast<std::shared_ptr<Device> *>(pApp->userData);
-                pApp->userData = nullptr;
-                delete device;
-            }
-            break;
-        default:
-            break;
+    } catch (const std::exception &e) {
+        aout << "exception: " << e.what() << std::endl;
     }
 }
 

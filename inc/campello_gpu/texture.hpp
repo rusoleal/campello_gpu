@@ -4,6 +4,8 @@
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/texture_usage.hpp>
 #include <campello_gpu/constants/texture_type.hpp>
+#include <campello_gpu/constants/aspect.hpp>
+#include <campello_gpu/texture_view.hpp>
 
 namespace systems::leal::campello_gpu
 {
@@ -20,7 +22,7 @@ namespace systems::leal::campello_gpu
     public:
         ~Texture();
 
-        std::shared_ptr<TextureView> createView(uint32_t arrayLayerCount=-1, Aspect aspect=Aspect::all, uint32_t baseArrayLayer=0, uint32_t baseMipLevel=0, TextureType dimension, PixelFormat format, );
+        std::shared_ptr<TextureView> createView(PixelFormat format, uint32_t arrayLayerCount=-1, Aspect aspect=Aspect::all, uint32_t baseArrayLayer=0, uint32_t baseMipLevel=0, TextureType dimension=TextureType::tt2d);
         bool upload(uint64_t offset, uint64_t length, void *data);
 
         uint32_t getDepthOrarrayLayers();

@@ -68,6 +68,11 @@ VkInstance systems::leal::campello_gpu::getInstance()
         return instance;
     }
 
+    uint32_t propertyCount=0;
+    vkEnumerateInstanceLayerProperties(&propertyCount, nullptr);
+    std::vector<VkLayerProperties> properties(propertyCount);
+    vkEnumerateInstanceLayerProperties(&propertyCount, properties.data());
+
     uint32_t extensionCount = 0;
     std::vector<VkExtensionProperties> extensions;
     vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
@@ -89,7 +94,7 @@ VkInstance systems::leal::campello_gpu::getInstance()
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "campello_gpu";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_0;
+    appInfo.apiVersion = VK_API_VERSION_1_3;
     appInfo.pNext = nullptr;
 
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Setting required extensions");
@@ -98,14 +103,18 @@ VkInstance systems::leal::campello_gpu::getInstance()
     requiredExtensions.push_back("VK_KHR_android_surface");
     // requiredExtensions.push_back("VK_KHR_get_surface_capabilities2");
 
+    const std::vector validationLayers = {
+            "VK_LAYER_KHRONOS_validation"
+    };
+
     VkInstanceCreateInfo instanceInfo;
     instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceInfo.pNext = nullptr;
     instanceInfo.flags = 0;
     instanceInfo.enabledExtensionCount = requiredExtensions.size();
     instanceInfo.ppEnabledExtensionNames = &requiredExtensions[0];
-    instanceInfo.enabledLayerCount = 0;
-    instanceInfo.ppEnabledLayerNames = nullptr;
+    instanceInfo.enabledLayerCount = validationLayers.size();
+    instanceInfo.ppEnabledLayerNames = validationLayers.data();
     instanceInfo.pApplicationInfo = &appInfo;
 
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Creating vulkan instance");
@@ -132,6 +141,9 @@ Device::~Device()
     if (native != nullptr)
     {
         auto deviceData = (DeviceData *)native;
+
+        vkDestroyCommandPool(deviceData->device, deviceData->commandPool, nullptr);
+
         vkDestroyDevice(deviceData->device, nullptr);
         delete deviceData;
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Device::~Device()");
@@ -353,7 +365,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     swapchainData.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     swapchainData.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     swapchainData.preTransform = surfaceCapabilities.currentTransform;
-    swapchainData.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    //swapchainData.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapchainData.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     swapchainData.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     swapchainData.clipped = true;
     swapchainData.oldSwapchain = 0;
@@ -403,6 +416,14 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         swapchainImageViews.push_back(imageView);
     }
 
+    VkCommandPoolCreateInfo commandPoolDescriptor = {};
+    commandPoolDescriptor.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    commandPoolDescriptor.pNext = nullptr;
+    commandPoolDescriptor.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    commandPoolDescriptor.queueFamilyIndex = queueFamilyIndex;
+    VkCommandPool commandPool;
+    vkCreateCommandPool(toReturn, &commandPoolDescriptor, nullptr, &commandPool);
+
     auto deviceData = new DeviceData();
     deviceData->device = toReturn;
     vkGetDeviceQueue(toReturn, 0, 0, &deviceData->graphicsQueue);
@@ -412,6 +433,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->imageExtent = surfaceCapabilities.currentExtent;
     deviceData->swapchainImageViews = swapchainImageViews;
     deviceData->surfaceFormat = surfaceFormats[0];
+    deviceData->commandPool = commandPool;
 
     return std::shared_ptr<Device>(new Device(deviceData));
 }
@@ -507,8 +529,16 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
     bufferInfo.size = size;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VkBufferUsageFlags vkUsage = 0;
-    if ((int)usage & (int)BufferUsage::vertex)
-        vkUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if ((int)usage & (int)BufferUsage::copySrc) vkUsage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if ((int)usage & (int)BufferUsage::copyDst) vkUsage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if ((int)usage & (int)BufferUsage::index) vkUsage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if ((int)usage & (int)BufferUsage::indirect) vkUsage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    //if ((int)usage & (int)BufferUsage::mapRead) vkUsage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    //if ((int)usage & (int)BufferUsage::mapWrite) vkUsage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    //if ((int)usage & (int)BufferUsage::queryResolve) vkUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if ((int)usage & (int)BufferUsage::storage) vkUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if ((int)usage & (int)BufferUsage::uniform) vkUsage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if ((int)usage & (int)BufferUsage::vertex) vkUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     bufferInfo.usage = vkUsage;
 
     auto deviceData = (DeviceData *)this->native;
@@ -585,7 +615,7 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
 {
     auto deviceData = (DeviceData *)this->native;
 
-    VkShaderModuleCreateInfo info;
+    VkShaderModuleCreateInfo info = {};
     info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     info.pNext = nullptr;
     info.pCode = (uint32_t *)buffer;
@@ -895,8 +925,21 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
 
     auto deviceData = (DeviceData *)this->native;
 
+    VkCommandBufferAllocateInfo info = {};
+    info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    info.pNext = nullptr;
+    info.commandPool = deviceData->commandPool;
+    info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    info.commandBufferCount = 1;
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer);
+
     auto toReturn = new CommandEncoderHandle();
     toReturn->device = deviceData->device;
+    toReturn->commandPool = deviceData->commandPool;
+    toReturn->commandBuffer = commandBuffer;
+    toReturn->imageExtent = deviceData->imageExtent;
+    toReturn->swapchainImageViews = deviceData->swapchainImageViews;
 
     return std::shared_ptr<CommandEncoder>(new CommandEncoder(toReturn));
 }
