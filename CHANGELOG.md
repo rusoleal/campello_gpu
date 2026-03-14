@@ -2,6 +2,13 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.1.1] - 2026-03-14
+
+### Fixed
+- `Buffer::upload` on Metal: corrected return type from `void` to `bool` to match the public header declaration; now returns `true` on success
+
+---
+
 ## [0.1.0] - 2026-03-14
 
 ### Added

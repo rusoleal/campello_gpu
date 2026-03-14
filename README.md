@@ -111,7 +111,3 @@ computePass->end();
 auto commandBuffer = encoder->finish();
 // submit via platform-specific queue
 ```
-
-## Version
-
-Current version: **0.1.0**

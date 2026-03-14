@@ -17,12 +17,13 @@ uint64_t Buffer::getLength() {
     return ((MTL::Buffer *)native)->length();
 }
 
-void Buffer::upload(uint64_t offset, uint64_t size, void *data) {
+bool Buffer::upload(uint64_t offset, uint64_t size, void *data) {
 
     uint8_t *dst = (uint8_t *)((MTL::Buffer *)native)->contents();
     memcpy(dst+offset,data, size);
-    
+
     ((MTL::Buffer *)native)->didModifyRange(NS::Range::Make(offset, size));
+    return true;
 }
 
 
