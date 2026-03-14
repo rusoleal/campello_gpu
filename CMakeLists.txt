@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.1.1)
+project(campello_gpu VERSION 0.2.0)
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -20,4 +20,24 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
     include(windows.cmake)
 elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     include(linux.cmake)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests
+#
+# BUILD_TESTS=ON            — universal tests (enums, utils, descriptors).
+#                             No GPU or library linking required.
+# BUILD_INTEGRATION_TESTS=ON — platform GPU tests. Requires a working device.
+#                             Implies BUILD_TESTS=ON.
+# ---------------------------------------------------------------------------
+option(BUILD_TESTS             "Build unit tests (universal, no GPU)"    OFF)
+option(BUILD_INTEGRATION_TESTS "Build GPU integration tests (per-platform)" OFF)
+
+if(BUILD_INTEGRATION_TESTS)
+    set(BUILD_TESTS ON)
+endif()
+
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()

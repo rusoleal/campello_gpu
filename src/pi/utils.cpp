@@ -1,5 +1,9 @@
 #include <campello_gpu/device.hpp>
 
+// getPixelFormatSize and pixelFormatToString live in src/pi/pixel_format.cpp
+// so they can be compiled into all platform builds and the universal test
+// target without pulling in device/buffer symbols.
+
 using namespace systems::leal::campello_gpu;
 
 std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage, void *data) {
@@ -11,6 +15,7 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage, v
     return toReturn;
 }
 
+#if 0 // moved to src/pi/pixel_format.cpp
 uint32_t systems::leal::campello_gpu::getPixelFormatSize(PixelFormat format) {
 
     switch (format) {
@@ -289,4 +294,4 @@ std::string systems::leal::campello_gpu::pixelFormatToString(PixelFormat format)
     }
 
 }
-
+#endif // moved to src/pi/pixel_format.cpp

@@ -1,0 +1,66 @@
+cmake_minimum_required(VERSION 3.22.1)
+
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.14.0
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+# ---------------------------------------------------------------------------
+# Universal tests — no GPU required, no library linking.
+# src/pi/utils.cpp is compiled directly here because it is not part of the
+# macOS/iOS cmake builds (only android.cmake includes it). This keeps
+# universal tests truly cross-platform.
+# ---------------------------------------------------------------------------
+add_executable(campello_gpu_universal_tests
+    universal/test_constants.cpp
+    universal/test_pixel_format.cpp
+    universal/test_descriptors.cpp
+    ${CMAKE_SOURCE_DIR}/src/pi/pixel_format.cpp
+)
+target_include_directories(campello_gpu_universal_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/inc
+    ${CMAKE_BINARY_DIR}
+)
+target_link_libraries(campello_gpu_universal_tests
+    GTest::gtest_main
+)
+set_target_properties(campello_gpu_universal_tests PROPERTIES
+    CXX_STANDARD 17
+)
+
+# ---------------------------------------------------------------------------
+# Integration tests — require a real GPU device, link against campello_gpu.
+# Build only when BUILD_INTEGRATION_TESTS=ON.
+#
+# NOTE: Metal (macOS) integration tests require the Metal implementation in
+# src/metal/device.cpp to match the public Device API declared in
+# inc/campello_gpu/device.hpp (createDefaultDevice / getAdapters).
+# Until that alignment is done, macOS integration tests will be skipped at
+# runtime via GTEST_SKIP().
+# ---------------------------------------------------------------------------
+if(BUILD_INTEGRATION_TESTS)
+    add_executable(campello_gpu_integration_tests
+        platform/test_device.cpp
+        platform/test_buffer.cpp
+    )
+    target_include_directories(campello_gpu_integration_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/inc
+        ${CMAKE_BINARY_DIR}
+    )
+    target_link_libraries(campello_gpu_integration_tests
+        campello_gpu
+        GTest::gtest_main
+    )
+    set_target_properties(campello_gpu_integration_tests PROPERTIES
+        CXX_STANDARD 17
+    )
+    include(GoogleTest)
+    gtest_discover_tests(campello_gpu_integration_tests)
+endif()
+
+include(GoogleTest)
+gtest_discover_tests(campello_gpu_universal_tests)

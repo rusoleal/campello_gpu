@@ -5,6 +5,7 @@ message(STATUS "Vulkan Include = ${Vulkan_INCLUDE_DIR}")
 message(STATUS "Vulkan Lib = ${Vulkan_LIBRARY}")
 
 add_library(${PROJECT_NAME} SHARED
+    src/pi/pixel_format.cpp
     src/pi/utils.cpp
     src/vulkan_android/device.cpp
     src/vulkan_android/adapter.cpp

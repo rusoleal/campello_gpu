@@ -2,6 +2,8 @@
 #find_package(Metal)
 
 add_library(${PROJECT_NAME} SHARED
+    src/pi/pixel_format.cpp
+    src/metal/adapter.cpp
     src/metal/buffer.cpp
     src/metal/context.cpp
     src/metal/device.cpp
