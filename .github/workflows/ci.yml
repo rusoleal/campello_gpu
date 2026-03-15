@@ -1,0 +1,122 @@
+name: CI
+
+# Run on every push and every pull-request, across all branches.
+on:
+  push:
+  pull_request:
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Universal tests — no GPU required.
+  # Covers enum values, pixel format utilities, and descriptor construction.
+  # Runs on macOS, Linux, and Windows using the platform's native toolchain.
+  # ---------------------------------------------------------------------------
+  universal-tests:
+    name: Universal tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            name: macOS
+          - os: ubuntu-latest
+            name: Linux
+          - os: windows-latest
+            name: Windows
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DBUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --target campello_gpu_universal_tests
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -R campello_gpu_universal_tests
+
+  # ---------------------------------------------------------------------------
+  # Metal integration tests — macOS only.
+  # GitHub-hosted macOS runners are real Apple hardware with a GPU, so Metal
+  # is available and integration tests can run end-to-end.
+  # ---------------------------------------------------------------------------
+  metal-integration:
+    name: Metal integration tests (macOS)
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DBUILD_INTEGRATION_TESTS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # iOS build check — compile the Metal backend for the iOS simulator.
+  # No tests are executed: there is no test runner without a connected device
+  # or a fully configured simulator environment.
+  # Code signing is disabled so the check works on any runner without a cert.
+  # ---------------------------------------------------------------------------
+  build-ios:
+    name: Build check (iOS / Metal)
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (iOS simulator)
+        run: |
+          cmake -B build \
+            -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
+            -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY=""
+
+      - name: Build
+        run: cmake --build build --config Release
+
+  # ---------------------------------------------------------------------------
+  # Android build check — cross-compile the Vulkan backend with the NDK.
+  # No tests are executed: running on-device tests requires a connected device
+  # or a Vulkan-capable emulator, neither of which is available on GH runners.
+  #
+  # NOTE: this job is expected to fail at link time until the remaining Vulkan
+  # implementations are added (bind_group, texture_view, command_buffer, etc.).
+  # continue-on-error keeps the overall workflow green during that period.
+  # ---------------------------------------------------------------------------
+  build-android:
+    name: Build check (Android / Vulkan)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # remove once missing Vulkan implementations land
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Configure (arm64-v8a, API 28)
+        run: |
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_ROOT/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build

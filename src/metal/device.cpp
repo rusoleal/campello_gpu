@@ -195,7 +195,7 @@ std::set<Feature> Device::getFeatures() {
 }
 
 std::string Device::getEngineVersion() {
-    return "0.3.0";
+    return "0.3.1";
 }
 
 std::shared_ptr<Texture> Device::createTexture(
@@ -416,5 +416,5 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 }
 
 std::string getVersion() {
-    return "0.3.0";
+    return "0.3.1";
 }

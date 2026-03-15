@@ -2,6 +2,22 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.1] - 2026-03-15
+
+### Fixed
+- `RenderPassEncoder` / `ComputePassEncoder` constructors — `renderCommandEncoder()` and `computeCommandEncoder()` return autoreleased Metal objects; the missing `retain()` call caused EXC_BAD_ACCESS when the run loop's autorelease pool drained at the end of each rendered frame
+
+### Added
+- `.github/workflows/ci.yml` — GitHub Actions CI pipeline triggered on every push and pull-request:
+  - **Universal tests** on macOS, Linux, and Windows (no GPU required)
+  - **Metal integration tests** on macOS (GH-hosted runners are real Apple hardware)
+  - **iOS build check** — cross-compiles the Metal backend for the iOS simulator (arm64, no code signing required)
+  - **Android build check** — cross-compiles the Vulkan backend with the NDK (`arm64-v8a`, API 28); marked `continue-on-error` until remaining Vulkan implementations are complete
+- `ios.cmake` — CMake platform file for iOS; identical Metal backend to `macos.cmake`, target platform/sysroot handled by CMake toolchain
+- `linux.cmake` — placeholder CMake platform file for Linux; builds `src/pi/` only so CMake can configure and universal tests can run without a Vulkan backend
+
+---
+
 ## [0.3.0] - 2026-03-15
 
 ### Added

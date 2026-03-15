@@ -88,8 +88,8 @@
 
 ## Build system
 
-- [ ] `ios.cmake` is referenced in `CMakeLists.txt` but the file does not exist — iOS builds will fail immediately
-- [ ] `linux.cmake` is referenced in `CMakeLists.txt` but does not exist
+- [x] `ios.cmake` — created; mirrors `macos.cmake` (same Metal backend, CMake handles sysroot/arch)
+- [x] `linux.cmake` — created; placeholder stub that builds `src/pi/` only so universal tests can configure and run
 - [x] Add `src/pi/utils.cpp` to `macos.cmake`
 - [ ] Add `src/pi/utils.cpp` to `windows.cmake` once DirectX `createBuffer` is wired up
 
