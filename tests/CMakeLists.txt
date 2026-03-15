@@ -17,8 +17,10 @@ FetchContent_MakeAvailable(googletest)
 # ---------------------------------------------------------------------------
 add_executable(campello_gpu_universal_tests
     universal/test_constants.cpp
+    universal/test_constants_extended.cpp
     universal/test_pixel_format.cpp
     universal/test_descriptors.cpp
+    universal/test_descriptors_extended.cpp
     ${CMAKE_SOURCE_DIR}/src/pi/pixel_format.cpp
 )
 target_include_directories(campello_gpu_universal_tests PRIVATE
@@ -41,6 +43,8 @@ if(BUILD_INTEGRATION_TESTS)
     add_executable(campello_gpu_integration_tests
         platform/test_device.cpp
         platform/test_buffer.cpp
+        platform/test_texture.cpp
+        platform/test_command_encoder.cpp
     )
     target_include_directories(campello_gpu_integration_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/inc
@@ -54,7 +58,10 @@ if(BUILD_INTEGRATION_TESTS)
         CXX_STANDARD 20
     )
     include(GoogleTest)
-    gtest_discover_tests(campello_gpu_integration_tests)
+    # PRE_TEST defers test-list discovery to ctest time, which is required for
+    # cross-compiled targets (e.g. Android) where the host cannot run the binary.
+    gtest_discover_tests(campello_gpu_integration_tests
+        DISCOVERY_MODE PRE_TEST)
 endif()
 
 include(GoogleTest)

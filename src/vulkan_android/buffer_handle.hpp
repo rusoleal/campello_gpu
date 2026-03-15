@@ -5,9 +5,10 @@
 namespace systems::leal::campello_gpu {
 
     struct BufferHandle {
-        VkDevice device;
-        VkBuffer buffer;
+        VkDevice       device;
+        VkBuffer       buffer;
         VkDeviceMemory memory;
+        uint64_t       size;
     };
 
 }

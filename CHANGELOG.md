@@ -2,6 +2,30 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.3] - 2026-03-15
+
+### Added
+- Extended universal test suite — 38 new tests with zero GPU dependency:
+  - `test_constants_extended.cpp`: `ShaderStage` flag uniqueness and combination, `TextureUsage` flag uniqueness, `TextureType` values, `IndexFormat`, `CullMode`, `FrontFace`, `CompareOp` (8 values), `StencilOp` (8 values), `PrimitiveTopology` (5 values), `StorageMode`, `Aspect`, `ColorSpace`, `ComponentType` (glTF numeric values), `AccessorType`, `StepMode`
+  - `test_descriptors_extended.cpp`: `StencilDescriptor`, `DepthStencilDescriptor` (optional stencil faces), `VertexAttribute/Layout/Descriptor`, `ColorState`, `ColorWrite` flags, `FragmentDescriptor`, `RenderPipelineDescriptor` (optional fields), `ColorAttachment`, `LoadOp`/`StoreOp`, `BeginRenderPassDescriptor`, `BindGroupDescriptor`, `ComputeDescriptor`, `ComputePipelineDescriptor`
+- Extended integration test suite — 20 new GPU tests covering `Texture` and `CommandEncoder`:
+  - `test_texture.cpp`: all 8 getter methods (`getWidth`, `getHeight`, `getFormat`, `getDimension`, `getMipLevelCount`, `getSampleCount`, `getUsage`, `getDepthOrArrayLayers`), `createView` (explicit args, multiple views), `upload`
+  - `test_command_encoder.cpp`: `finish()` without a pass, multiple concurrent encoders, `clearBuffer` (full and partial range), `copyBufferToBuffer` (aligned and with offsets), `beginComputePass`, `writeTimestamp`, `resolveQuerySet`
+
+### Fixed
+- **Vulkan** `texture.cpp`: `getDimension()` declared `uint32_t` in the implementation but `TextureType` in the header — corrected return type
+- **Vulkan** `compute_pass_encoder.cpp`: missing `#include <vector>` caused build failure on Android NDK clang
+- **Vulkan** `device.cpp`: `VK_LAYER_KHRONOS_validation` hard-required at instance creation; emulators/devices without the layer returned `VK_ERROR_LAYER_NOT_PRESENT` and crashed — validation layer now only enabled when present
+- **Vulkan** `device.cpp`: `getAdapters()` passed `nullptr` to `vkEnumeratePhysicalDevices` when `getInstance()` failed — added null guard
+- **Vulkan** `device.cpp`: `createDevice()` crashed on `vkCreateAndroidSurfaceKHR` when `pd == nullptr` (headless/test mode) — surface, swapchain, and semaphore creation are now skipped entirely when no window handle is provided
+- **Vulkan** `device.cpp`: `vkGetDeviceQueue` always used queue family index `0` — now uses the resolved `queueFamilyIndex`
+- **CMake** `tests/CMakeLists.txt`: `gtest_discover_tests` ran the integration test binary on the host at build time, which fails for cross-compiled Android targets and deleted the binary — switched to `DISCOVERY_MODE PRE_TEST`
+
+### Changed
+- Android NDK target API raised from 30 to 35 to expose Vulkan 1.3 core symbols (`vkCmdBeginRendering`, `vkCmdEndRendering`) in the linker stub
+
+---
+
 ## [0.3.2] - 2026-03-15
 
 ### Added

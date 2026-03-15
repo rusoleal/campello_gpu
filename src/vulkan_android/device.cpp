@@ -5,6 +5,9 @@
 #include "campello_gpu_config.h"
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/adapter.hpp>
+#include <campello_gpu/bind_group.hpp>
+#include <campello_gpu/bind_group_layout.hpp>
+#include <campello_gpu/command_buffer.hpp>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/shader_module.hpp>
 #include <campello_gpu/render_pipeline.hpp>
@@ -16,6 +19,9 @@
 #include "query_set_handle.hpp"
 #include "compute_pipeline_handle.hpp"
 #include "pipeline_layout_handle.hpp"
+#include "bind_group_handle.hpp"
+#include "bind_group_layout_handle.hpp"
+#include "command_buffer_handle.hpp"
 #include "command_encoder_handle.hpp"
 #include "common.hpp"
 
@@ -103,18 +109,24 @@ VkInstance systems::leal::campello_gpu::getInstance()
     requiredExtensions.push_back("VK_KHR_android_surface");
     // requiredExtensions.push_back("VK_KHR_get_surface_capabilities2");
 
-    const std::vector validationLayers = {
-            "VK_LAYER_KHRONOS_validation"
-    };
+    // Only request validation layers that are actually present on this device.
+    const char *wantedLayer = "VK_LAYER_KHRONOS_validation";
+    std::vector<const char *> enabledLayers;
+    for (uint32_t i = 0; i < propertyCount; ++i) {
+        if (strcmp(properties[i].layerName, wantedLayer) == 0) {
+            enabledLayers.push_back(wantedLayer);
+            break;
+        }
+    }
 
     VkInstanceCreateInfo instanceInfo;
     instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceInfo.pNext = nullptr;
     instanceInfo.flags = 0;
     instanceInfo.enabledExtensionCount = requiredExtensions.size();
-    instanceInfo.ppEnabledExtensionNames = &requiredExtensions[0];
-    instanceInfo.enabledLayerCount = validationLayers.size();
-    instanceInfo.ppEnabledLayerNames = validationLayers.data();
+    instanceInfo.ppEnabledExtensionNames = requiredExtensions.data();
+    instanceInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayers.size());
+    instanceInfo.ppEnabledLayerNames = enabledLayers.empty() ? nullptr : enabledLayers.data();
     instanceInfo.pApplicationInfo = &appInfo;
 
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Creating vulkan instance");
@@ -169,11 +181,13 @@ std::shared_ptr<Device> Device::createDefaultDevice(void *pd)
 
 std::vector<std::shared_ptr<Adapter>> Device::getAdapters()
 {
-
     std::vector<std::shared_ptr<Adapter>> toReturn;
 
+    VkInstance inst = getInstance();
+    if (!inst) return toReturn;
+
     uint32_t gpuCount = 0;
-    vkEnumeratePhysicalDevices(getInstance(), &gpuCount, nullptr);
+    vkEnumeratePhysicalDevices(inst, &gpuCount, nullptr);
 
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "gpuCount=%d", gpuCount);
 
@@ -181,7 +195,7 @@ std::vector<std::shared_ptr<Adapter>> Device::getAdapters()
     std::vector<VkPhysicalDevice> gpus(gpuCount);
 
     // Second call: Get the GPU handles
-    vkEnumeratePhysicalDevices(getInstance(), &gpuCount, gpus.data());
+    vkEnumeratePhysicalDevices(inst, &gpuCount, gpus.data());
 
     // Now, 'gpus' contains a list of VkPhysicalDevice handles
     for (int a = 0; a < gpuCount; a++)
@@ -258,44 +272,35 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         .flags = 0,
         .window = window};
 
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "pepe2");
-    VkSurfaceKHR surface;
-    if (vkCreateAndroidSurfaceKHR(getInstance(), &create_info, nullptr, &surface) != VK_SUCCESS)
-    {
-        return nullptr;
-    }
-
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "pepe3");
+    // Surface and swapchain creation are only possible with a real ANativeWindow.
+    // When window == nullptr (headless / test mode) we skip them entirely.
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
-    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-            gpu,
-            surface,
-            &surfaceCapabilities) != VK_SUCCESS)
-    {
-        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkGetPhysicalDeviceSurfaceCapabilitiesKHR error");
-        return nullptr;
-    }
+    std::vector<VkSurfaceFormatKHR> surfaceFormats;
 
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "surface capabilities:");
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "  minImageCount: %d", surfaceCapabilities.minImageCount);
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "  maxImageCount: %d", surfaceCapabilities.maxImageCount);
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "  currentExtent: [%d, %d]", surfaceCapabilities.currentExtent.width, surfaceCapabilities.currentExtent.height);
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "  minImageExtent: [%d, %d]", surfaceCapabilities.minImageExtent.width, surfaceCapabilities.minImageExtent.height);
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "  maxImageExtent: [%d, %d]", surfaceCapabilities.maxImageExtent.width, surfaceCapabilities.maxImageExtent.height);
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "  maxImageArrayLayers: %d", surfaceCapabilities.maxImageArrayLayers);
+    if (window != nullptr)
+    {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "pepe2");
+        if (vkCreateAndroidSurfaceKHR(getInstance(), &create_info, nullptr, &surface) != VK_SUCCESS)
+        {
+            return nullptr;
+        }
 
-    uint32_t surfaceFormatCount;
-    if (vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, nullptr) != VK_SUCCESS)
-    {
-        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkGetPhysicalDeviceSurfaceFormatsKHR error");
-        return nullptr;
-    }
-    std::vector<VkSurfaceFormatKHR> surfaceFormats(surfaceFormatCount);
-    vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, surfaceFormats.data());
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "surface formats:");
-    for (int a = 0; a < surfaceFormatCount; a++)
-    {
-        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "  %s %d", pixelFormatToString(nativeToPixelFormat(surfaceFormats[a].format)).c_str(), surfaceFormats[a].colorSpace);
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "pepe3");
+        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &surfaceCapabilities) != VK_SUCCESS)
+        {
+            __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkGetPhysicalDeviceSurfaceCapabilitiesKHR error");
+            return nullptr;
+        }
+
+        uint32_t surfaceFormatCount;
+        if (vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, nullptr) != VK_SUCCESS)
+        {
+            __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkGetPhysicalDeviceSurfaceFormatsKHR error");
+            return nullptr;
+        }
+        surfaceFormats.resize(surfaceFormatCount);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, surfaceFormats.data());
     }
 
     VkPhysicalDeviceFeatures deviceFeatures;
@@ -309,14 +314,19 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     int queueFamilyIndex = -1;
     for (int a = 0; a < queueFamilyCount; a++)
     {
-        VkBool32 pSupported;
-        if (vkGetPhysicalDeviceSurfaceSupportKHR(gpu, a, surface, &pSupported) == VK_SUCCESS)
+        if (surface != VK_NULL_HANDLE)
         {
-            if (pSupported)
+            VkBool32 pSupported;
+            if (vkGetPhysicalDeviceSurfaceSupportKHR(gpu, a, surface, &pSupported) == VK_SUCCESS && pSupported)
             {
                 queueFamilyIndex = a;
                 break;
             }
+        }
+        else if (queueFamilies[a].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        {
+            queueFamilyIndex = a;
+            break;
         }
     }
     if (queueFamilyIndex == -1)
@@ -327,7 +337,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "queueFamilyIndex = %d", queueFamilyIndex);
 
     std::vector<const char *> deviceExtensions;
-    deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (surface != VK_NULL_HANDLE)
+        deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 
     float priority = 1.0;
     VkDeviceQueueCreateInfo queueCreateInfo{};
@@ -351,69 +362,61 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         return nullptr;
     }
 
-    // create swapchain
-    VkSwapchainCreateInfoKHR swapchainData = {};
-    swapchainData.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    swapchainData.pNext = nullptr;
-    swapchainData.flags = 0;
-    swapchainData.surface = surface;
-    swapchainData.minImageCount = std::min(std::max((int)surfaceCapabilities.minImageCount, 3), (int)surfaceCapabilities.maxImageCount);
-    swapchainData.imageFormat = surfaceFormats[0].format;         // TODO
-    swapchainData.imageColorSpace = surfaceFormats[0].colorSpace; // TODO
-    swapchainData.imageExtent = surfaceCapabilities.currentExtent;
-    swapchainData.imageArrayLayers = 1;
-    swapchainData.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    swapchainData.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    swapchainData.preTransform = surfaceCapabilities.currentTransform;
-    //swapchainData.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    swapchainData.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
-    swapchainData.presentMode = VK_PRESENT_MODE_FIFO_KHR;
-    swapchainData.clipped = true;
-    swapchainData.oldSwapchain = 0;
-
-    VkSwapchainKHR swapchain;
-    if (vkCreateSwapchainKHR(
-            toReturn,
-            &swapchainData,
-            nullptr,
-            &swapchain) != VK_SUCCESS)
-    {
-        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateSwapchainKHR() error");
-        return nullptr;
-    }
-
-    // get swapchain images
-    uint32_t swapchainImageCount;
-    if (vkGetSwapchainImagesKHR(toReturn, swapchain, &swapchainImageCount, nullptr) != VK_SUCCESS)
-    {
-        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkGetSwapchainImagesKHR() error");
-        return nullptr;
-    }
-    std::vector<VkImage> swapchainImages(swapchainImageCount);
+    // create swapchain (only when a real surface is available)
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
-    vkGetSwapchainImagesKHR(toReturn, swapchain, &swapchainImageCount, swapchainImages.data());
-    for (int a = 0; a < swapchainImageCount; a++)
-    {
-        VkImageViewCreateInfo info = {};
-        info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        info.pNext = nullptr;
-        info.flags = 0;
-        info.image = swapchainImages[a];
-        info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        info.format = swapchainData.imageFormat;
-        info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-        info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-        info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-        info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-        info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        info.subresourceRange.baseMipLevel = 0;
-        info.subresourceRange.levelCount = 1;
-        info.subresourceRange.baseArrayLayer = 0;
-        info.subresourceRange.layerCount = 1;
+    VkExtent2D imageExtent = {};
 
-        VkImageView imageView;
-        vkCreateImageView(toReturn, &info, nullptr, &imageView);
-        swapchainImageViews.push_back(imageView);
+    if (surface != VK_NULL_HANDLE && !surfaceFormats.empty())
+    {
+        VkSwapchainCreateInfoKHR swapchainData = {};
+        swapchainData.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        swapchainData.pNext = nullptr;
+        swapchainData.flags = 0;
+        swapchainData.surface = surface;
+        swapchainData.minImageCount = std::min(std::max((int)surfaceCapabilities.minImageCount, 3), (int)surfaceCapabilities.maxImageCount);
+        swapchainData.imageFormat = surfaceFormats[0].format;
+        swapchainData.imageColorSpace = surfaceFormats[0].colorSpace;
+        swapchainData.imageExtent = surfaceCapabilities.currentExtent;
+        swapchainData.imageArrayLayers = 1;
+        swapchainData.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        swapchainData.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        swapchainData.preTransform = surfaceCapabilities.currentTransform;
+        swapchainData.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+        swapchainData.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        swapchainData.clipped = true;
+        swapchainData.oldSwapchain = 0;
+        imageExtent = surfaceCapabilities.currentExtent;
+
+        if (vkCreateSwapchainKHR(toReturn, &swapchainData, nullptr, &swapchain) != VK_SUCCESS)
+        {
+            __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateSwapchainKHR() error");
+            return nullptr;
+        }
+
+        uint32_t swapchainImageCount;
+        if (vkGetSwapchainImagesKHR(toReturn, swapchain, &swapchainImageCount, nullptr) != VK_SUCCESS)
+        {
+            __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkGetSwapchainImagesKHR() error");
+            return nullptr;
+        }
+        swapchainImages.resize(swapchainImageCount);
+        vkGetSwapchainImagesKHR(toReturn, swapchain, &swapchainImageCount, swapchainImages.data());
+        for (uint32_t a = 0; a < swapchainImageCount; a++)
+        {
+            VkImageViewCreateInfo info = {};
+            info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+            info.image = swapchainImages[a];
+            info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            info.format = swapchainData.imageFormat;
+            info.components = { VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY };
+            info.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            VkImageView imageView;
+            vkCreateImageView(toReturn, &info, nullptr, &imageView);
+            swapchainImageViews.push_back(imageView);
+        }
     }
 
     VkCommandPoolCreateInfo commandPoolDescriptor = {};
@@ -424,16 +427,44 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     VkCommandPool commandPool;
     vkCreateCommandPool(toReturn, &commandPoolDescriptor, nullptr, &commandPool);
 
+    // Create a general-purpose descriptor pool.
+    VkDescriptorPoolSize poolSizes[] = {
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         100 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         100 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          100 },
+        { VK_DESCRIPTOR_TYPE_SAMPLER,                100 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          100 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
+    };
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.maxSets       = 100;
+    poolInfo.poolSizeCount = 6;
+    poolInfo.pPoolSizes    = poolSizes;
+    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    vkCreateDescriptorPool(toReturn, &poolInfo, nullptr, &descriptorPool);
+
+    // Create sync primitives for swapchain acquire/present.
+    VkSemaphoreCreateInfo semInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
+    VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
+    vkCreateSemaphore(toReturn, &semInfo, nullptr, &imageAvailableSemaphore);
+    vkCreateSemaphore(toReturn, &semInfo, nullptr, &renderFinishedSemaphore);
+
     auto deviceData = new DeviceData();
     deviceData->device = toReturn;
-    vkGetDeviceQueue(toReturn, 0, 0, &deviceData->graphicsQueue);
-    deviceData->physicalDevice = gpu;
-    deviceData->surface = surface;
-    deviceData->swapchain = swapchain;
-    deviceData->imageExtent = surfaceCapabilities.currentExtent;
-    deviceData->swapchainImageViews = swapchainImageViews;
-    deviceData->surfaceFormat = surfaceFormats[0];
-    deviceData->commandPool = commandPool;
+    vkGetDeviceQueue(toReturn, queueFamilyIndex, 0, &deviceData->graphicsQueue);
+    deviceData->physicalDevice           = gpu;
+    deviceData->surface                  = surface;
+    deviceData->swapchain                = swapchain;
+    deviceData->imageExtent              = imageExtent;
+    deviceData->swapchainImages          = swapchainImages;
+    deviceData->swapchainImageViews      = swapchainImageViews;
+    deviceData->surfaceFormat            = surfaceFormats.empty() ? VkSurfaceFormatKHR{} : surfaceFormats[0];
+    deviceData->commandPool              = commandPool;
+    deviceData->descriptorPool           = descriptorPool;
+    deviceData->imageAvailableSemaphore  = imageAvailableSemaphore;
+    deviceData->renderFinishedSemaphore  = renderFinishedSemaphore;
 
     return std::shared_ptr<Device>(new Device(deviceData));
 }
@@ -501,10 +532,36 @@ std::shared_ptr<Texture> Device::createTexture(
         return nullptr;
     }
 
+    // Create a default image view for this texture.
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image    = image;
+    viewInfo.viewType = (type == TextureType::tt3d) ? VK_IMAGE_VIEW_TYPE_3D
+                      : (type == TextureType::tt1d) ? VK_IMAGE_VIEW_TYPE_1D
+                                                    : VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format   = pixelFormatToNative(pixelFormat);
+    viewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel   = 0;
+    viewInfo.subresourceRange.levelCount     = mipLevels;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount     = 1;
+
+    VkImageView defaultView = VK_NULL_HANDLE;
+    vkCreateImageView(deviceData->device, &viewInfo, nullptr, &defaultView);
+
     auto toReturn = new TextureHandle();
-    toReturn->device = deviceData->device;
-    toReturn->buffer = buffer;
-    toReturn->image = image;
+    toReturn->device      = deviceData->device;
+    toReturn->buffer      = buffer;
+    toReturn->image       = image;
+    toReturn->defaultView = defaultView;
+    toReturn->width       = width;
+    toReturn->height      = height;
+    toReturn->depth       = depth;
+    toReturn->mipLevels   = mipLevels;
+    toReturn->samples     = samples;
+    toReturn->pixelFormat = pixelFormat;
+    toReturn->usage       = usageMode;
+    toReturn->textureType = type;
 
     return std::shared_ptr<Texture>(new Texture(toReturn));
 }
@@ -565,31 +622,38 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
     VkDeviceMemory memoryHandle;
     if (vkAllocateMemory(deviceData->device, &allocInfo, nullptr, &memoryHandle) != VK_SUCCESS)
     {
+        vkDestroyBuffer(deviceData->device, bufferHandle, nullptr);
         return nullptr;
-        // TODO destroy bufferHandle
     }
+
+    vkBindBufferMemory(deviceData->device, bufferHandle, memoryHandle, 0);
 
     BufferHandle *toReturn = new BufferHandle();
     toReturn->device = deviceData->device;
     toReturn->buffer = bufferHandle;
     toReturn->memory = memoryHandle;
+    toReturn->size   = size;
 
     return std::shared_ptr<Buffer>(new Buffer(toReturn));
 }
 
 std::string Device::getName()
 {
-    return "unknown";
+    auto deviceData = (DeviceData *)this->native;
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(deviceData->physicalDevice, &props);
+    return props.deviceName;
 }
 
 std::set<Feature> Device::getFeatures()
 {
+    auto deviceData = (DeviceData *)this->native;
 
     VkPhysicalDeviceProperties deviceProperties;
-    vkGetPhysicalDeviceProperties((VkPhysicalDevice)native, &deviceProperties);
+    vkGetPhysicalDeviceProperties(deviceData->physicalDevice, &deviceProperties);
 
     VkPhysicalDeviceFeatures deviceFeatures;
-    vkGetPhysicalDeviceFeatures((VkPhysicalDevice)native, &deviceFeatures);
+    vkGetPhysicalDeviceFeatures(deviceData->physicalDevice, &deviceFeatures);
 
     std::set<Feature> toReturn;
 
@@ -608,7 +672,7 @@ std::set<Feature> Device::getFeatures()
 
 std::string Device::getEngineVersion()
 {
-    return "unknown";
+    return getVersion();
 }
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, uint64_t size)
@@ -935,11 +999,17 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer);
 
     auto toReturn = new CommandEncoderHandle();
-    toReturn->device = deviceData->device;
-    toReturn->commandPool = deviceData->commandPool;
-    toReturn->commandBuffer = commandBuffer;
-    toReturn->imageExtent = deviceData->imageExtent;
-    toReturn->swapchainImageViews = deviceData->swapchainImageViews;
+    toReturn->device                    = deviceData->device;
+    toReturn->commandPool               = deviceData->commandPool;
+    toReturn->commandBuffer             = commandBuffer;
+    toReturn->imageExtent               = deviceData->imageExtent;
+    toReturn->swapchain                 = deviceData->swapchain;
+    toReturn->graphicsQueue             = deviceData->graphicsQueue;
+    toReturn->imageAvailableSemaphore   = deviceData->imageAvailableSemaphore;
+    toReturn->renderFinishedSemaphore   = deviceData->renderFinishedSemaphore;
+    toReturn->swapchainImages           = deviceData->swapchainImages;
+    toReturn->swapchainImageViews       = deviceData->swapchainImageViews;
+    toReturn->currentImageIndex         = 0;
 
     return std::shared_ptr<CommandEncoder>(new CommandEncoder(toReturn));
 }
@@ -1057,30 +1127,44 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
     auto deviceData = (DeviceData *)this->native;
 
     std::vector<VkDescriptorSetLayoutBinding> layoutBindings(descriptor.entries.size());
-    for (int a=0; a<descriptor.entries.size(); a++) {
-        auto &entry = descriptor.entries[a];
-        layoutBindings[a].binding = entry.binding;
+    for (int a = 0; a < (int)descriptor.entries.size(); a++) {
+        const auto &entry = descriptor.entries[a];
+        layoutBindings[a].binding         = entry.binding;
+        layoutBindings[a].descriptorCount = 1;
+        layoutBindings[a].pImmutableSamplers = nullptr;
+
+        // Map visibility bitmask to Vulkan stage flags.
+        VkShaderStageFlags stageFlags = 0;
+        if ((int)entry.visibility & (int)ShaderStage::vertex)   stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
+        if ((int)entry.visibility & (int)ShaderStage::fragment) stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+        if ((int)entry.visibility & (int)ShaderStage::compute)  stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+        layoutBindings[a].stageFlags = stageFlags;
+
         switch (entry.type) {
             case EntryObjectType::sampler:
                 layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
                 break;
-            case EntryObjectType::buffer:
-                layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                break;
             case EntryObjectType::texture:
                 layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
                 break;
+            case EntryObjectType::buffer:
+                switch (entry.data.buffer.type) {
+                    case EntryObjectBufferType::uniform:
+                        layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                        break;
+                    case EntryObjectBufferType::storage:
+                    case EntryObjectBufferType::readOnlyStorage:
+                        layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        break;
+                }
+                break;
         }
-        layoutBindings[a].pImmutableSamplers = nullptr;
-        //layoutBindings[a].descriptorCount = entry.data.sampler.type
     }
 
-    VkDescriptorSetLayoutCreateInfo info;
-    info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    info.pNext = nullptr;
-    info.flags = 0;
-    info.bindingCount = descriptor.entries.size();
-    info.pBindings = layoutBindings.data();
+    VkDescriptorSetLayoutCreateInfo info{};
+    info.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    info.bindingCount = static_cast<uint32_t>(descriptor.entries.size());
+    info.pBindings    = layoutBindings.data();
 
     VkDescriptorSetLayout layout;
     if (vkCreateDescriptorSetLayout(deviceData->device, &info, nullptr, &layout) != VK_SUCCESS) {
@@ -1088,7 +1172,10 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
         return nullptr;
     }
 
-
+    auto toReturn = new BindGroupLayoutHandle();
+    toReturn->device = deviceData->device;
+    toReturn->layout = layout;
+    return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(toReturn));
 }
 
 std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayoutDescriptor &descriptor) {
@@ -1113,6 +1200,121 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
     toReturn->layout = pipelineLayout;
 
     return std::shared_ptr<PipelineLayout>(new PipelineLayout(toReturn));
+}
+
+std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor) {
+
+    auto deviceData = (DeviceData *)this->native;
+
+    // Get the VkDescriptorSetLayout from the layout handle.
+    auto layoutHandle = (BindGroupLayoutHandle *)descriptor.layout->native;
+
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool     = deviceData->descriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts        = &layoutHandle->layout;
+
+    VkDescriptorSet descriptorSet;
+    if (vkAllocateDescriptorSets(deviceData->device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkAllocateDescriptorSets() error");
+        return nullptr;
+    }
+
+    std::vector<VkWriteDescriptorSet>  writes;
+    std::vector<VkDescriptorBufferInfo> bufferInfos(descriptor.entries.size());
+    std::vector<VkDescriptorImageInfo>  imageInfos(descriptor.entries.size());
+
+    for (int a = 0; a < (int)descriptor.entries.size(); a++) {
+        const auto &entry = descriptor.entries[a];
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = descriptorSet;
+        write.dstBinding      = entry.binding;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+
+        if (std::holds_alternative<BufferBinding>(entry.resource)) {
+            const auto &bb     = std::get<BufferBinding>(entry.resource);
+            auto bufHandle     = (BufferHandle *)bb.buffer->native;
+            bufferInfos[a].buffer = bufHandle->buffer;
+            bufferInfos[a].offset = bb.offset;
+            bufferInfos[a].range  = bb.size;
+            write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            write.pBufferInfo     = &bufferInfos[a];
+            writes.push_back(write);
+        } else if (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource)) {
+            const auto &tex  = std::get<std::shared_ptr<Texture>>(entry.resource);
+            auto texHandle   = (TextureHandle *)tex->native;
+            imageInfos[a].imageView   = texHandle->defaultView;
+            imageInfos[a].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfos[a].sampler     = VK_NULL_HANDLE;
+            write.descriptorType      = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            write.pImageInfo          = &imageInfos[a];
+            writes.push_back(write);
+        } else if (std::holds_alternative<std::shared_ptr<Sampler>>(entry.resource)) {
+            const auto &samp = std::get<std::shared_ptr<Sampler>>(entry.resource);
+            auto sampHandle  = (SamplerHandle *)samp->native;
+            imageInfos[a].sampler     = sampHandle->sampler;
+            imageInfos[a].imageView   = VK_NULL_HANDLE;
+            imageInfos[a].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            write.descriptorType      = VK_DESCRIPTOR_TYPE_SAMPLER;
+            write.pImageInfo          = &imageInfos[a];
+            writes.push_back(write);
+        }
+    }
+
+    if (!writes.empty()) {
+        vkUpdateDescriptorSets(deviceData->device,
+                               static_cast<uint32_t>(writes.size()),
+                               writes.data(), 0, nullptr);
+    }
+
+    auto toReturn = new BindGroupHandle();
+    toReturn->descriptorSet = descriptorSet;
+    return std::shared_ptr<BindGroup>(new BindGroup(toReturn));
+}
+
+void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
+
+    auto deviceData = (DeviceData *)this->native;
+    auto cbHandle   = (CommandBufferHandle *)commandBuffer->native;
+
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.waitSemaphoreCount   = 1;
+    submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphore;
+    submitInfo.pWaitDstStageMask    = &waitStage;
+    submitInfo.commandBufferCount   = 1;
+    submitInfo.pCommandBuffers      = &cbHandle->commandBuffer;
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
+
+    if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Device::submit: vkQueueSubmit failed");
+        return;
+    }
+
+    if (cbHandle->hasSwapchain) {
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores    = &deviceData->renderFinishedSemaphore;
+        presentInfo.swapchainCount     = 1;
+        presentInfo.pSwapchains        = &deviceData->swapchain;
+        presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
+
+        VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+            __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                                "Device::submit: vkQueuePresentKHR failed");
+        }
+    }
+
+    // Wait for the frame to finish before the caller can reuse the command buffer.
+    vkQueueWaitIdle(deviceData->graphicsQueue);
 }
 
 std::string systems::leal::campello_gpu::getVersion()
