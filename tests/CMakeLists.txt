@@ -29,7 +29,7 @@ target_link_libraries(campello_gpu_universal_tests
     GTest::gtest_main
 )
 set_target_properties(campello_gpu_universal_tests PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
 )
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ if(BUILD_INTEGRATION_TESTS)
         GTest::gtest_main
     )
     set_target_properties(campello_gpu_integration_tests PROPERTIES
-        CXX_STANDARD 17
+        CXX_STANDARD 20
     )
     include(GoogleTest)
     gtest_discover_tests(campello_gpu_integration_tests)

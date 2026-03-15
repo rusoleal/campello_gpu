@@ -11,46 +11,74 @@
 
 namespace systems::leal::campello_gpu {
 
+    /**
+     * @brief Full configuration for creating a `RenderPipeline`.
+     *
+     * Describes every fixed-function and programmable stage of the rasterization
+     * pipeline. Pass this to `Device::createRenderPipeline()`.
+     *
+     * @code
+     * RenderPipelineDescriptor desc{};
+     * desc.vertex.module     = vertShader;
+     * desc.vertex.entryPoint = "vertexMain";
+     * desc.fragment          = FragmentDescriptor{ fragShader, "fragmentMain", { colorState } };
+     * desc.topology          = PrimitiveTopology::triangleList;
+     * desc.cullMode          = CullMode::none;
+     * desc.frontFace         = FrontFace::ccw;
+     * auto pipeline = device->createRenderPipeline(desc);
+     * @endcode
+     */
     struct RenderPipelineDescriptor
     {
         /**
-         * An object (see depthStencil object structure) describing depth-stencil properties
-         * including testing, operations, and bias.
+         * @brief Optional depth/stencil state for the pipeline.
+         *
+         * Describes depth testing, stencil operations, and polygon bias. Omit
+         * (leave as `std::nullopt`) for passes that have no depth attachment.
          */
         std::optional<DepthStencilDescriptor> depthStencil;
 
         /**
-         * An object (see fragment object structure) describing the fragment shader entry point
-         * of the pipeline and its output colors. If no fragment shader entry point is defined,
-         * the pipeline will not produce any color attachment outputs, but it still performs
-         * rasterization and produces depth values based on the vertex position output.
-         * Depth testing and stencil operations can still be used.
+         * @brief Optional fragment stage configuration.
+         *
+         * Describes the fragment shader entry point and its color outputs.
+         * If omitted, the pipeline performs depth-only rasterization — no color
+         * attachments are written, but depth testing and stencil ops still apply.
          */
         std::optional<FragmentDescriptor> fragment;
 
         /**
-         * An object (see vertex object structure) describing the vertex shader entry point of the
-         * pipeline and its input buffer layouts.
+         * @brief Vertex stage configuration (required).
+         *
+         * Describes the vertex shader entry point and the buffer layouts that
+         * supply per-vertex or per-instance data.
          */
         VertexDescriptor vertex;
 
         /**
-         * An enumerated value that defines which polygon orientation will be culled, if any.
+         * @brief Which polygon orientation to cull, if any.
+         *
+         * Use `CullMode::none` to disable culling, `CullMode::back` to discard
+         * back-facing triangles, or `CullMode::front` for shadow-volume techniques.
          */
         CullMode cullMode;
 
         /**
-         * An enumerated value that defines which polygons are considered front-facing.
+         * @brief Which winding order defines a front-facing polygon.
+         *
+         * `FrontFace::ccw` (counter-clockwise) matches the convention used by
+         * WebGPU, OpenGL, and most asset exporters. `FrontFace::cw` matches
+         * Direct3D conventions.
          */
         FrontFace frontFace;
 
         /**
-         * An enumerated value that defines the type of primitive to be constructed from the
-         * specified vertex inputs.
+         * @brief Primitive assembly topology.
+         *
+         * Controls how the input vertices are assembled into geometric primitives
+         * (points, lines, or triangles).
          */
         PrimitiveTopology topology;
-
-        //RenderPipelineDescriptor();
     };
 
 }

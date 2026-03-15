@@ -5,9 +5,31 @@
 namespace systems::leal::campello_gpu
 {
 
+    /**
+     * @brief Pixel format of a texture or render target attachment.
+     *
+     * Numeric values are assigned to match Metal's `MTLPixelFormat` constants
+     * where possible, enabling zero-cost casting on the Metal backend.
+     *
+     * Format naming convention:
+     * - Component order (e.g. `rgba`, `bgra`, `rg`, `r`)
+     * - Bits per component (e.g. `8`, `16`, `32`)
+     * - Component data type suffix:
+     *   - `unorm`  — unsigned normalised `[0, 1]`
+     *   - `snorm`  — signed normalised `[-1, 1]`
+     *   - `uint`   — unsigned integer
+     *   - `sint`   — signed integer
+     *   - `float`  — IEEE 754 floating-point
+     *   - `ufloat` — unsigned floating-point
+     *   - `srgb`   — sRGB gamma-encoded variant
+     *
+     * Helper functions:
+     * - `getPixelFormatSize(format)` — returns bytes-per-pixel.
+     * - `pixelFormatToString(format)` — returns a human-readable name.
+     */
     enum class PixelFormat
     {
-        invalid = 0,
+        invalid = 0, ///< Placeholder / unset value.
         // 8-bit formats
         r8unorm = 10,
         r8snorm = 12,

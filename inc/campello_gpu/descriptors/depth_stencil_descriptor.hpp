@@ -6,103 +6,128 @@
 
 namespace systems::leal::campello_gpu {
 
+    /**
+     * @brief Stencil test configuration for one face (front or back) of a primitive.
+     *
+     * Defines the comparison function and the operations applied to the stencil
+     * buffer depending on whether the stencil and depth tests pass or fail.
+     */
     struct StencilDescriptor {
-
         /**
-         * An enumerated value specifying the comparison operation used when testing fragments
-         * against depthStencilAttachment stencil values.
-         * If omitted, compare defaults to "always".
+         * @brief Comparison function used for the stencil test.
+         *
+         * The current stencil value is compared with the stencil reference value using
+         * this function. Defaults to `CompareOp::always` (always passes).
          */
         CompareOp compare;
 
         /**
-         * An enumerated value specifying the stencil operation performed if the fragment depth
-         * comparison described by depthCompare fails.
-         * If omitted, depthFailOp defaults to "keep".
+         * @brief Stencil operation when the stencil test passes but the depth test fails.
+         *
+         * Defaults to `StencilOp::keep`.
          */
         StencilOp depthFailOp;
 
         /**
-         * An enumerated value specifying the stencil operation performed if the fragment stencil
-         * comparison test described by compare fails.
-         * If omitted, failOp defaults to "keep".
+         * @brief Stencil operation when the stencil test fails.
+         *
+         * Defaults to `StencilOp::keep`.
          */
         StencilOp failOp;
 
         /**
-         * An enumerated value specifying the stencil operation performed if the fragment stencil
-         * comparison test described by compare passes.
-         * If omitted, passOp defaults to "keep".
+         * @brief Stencil operation when both the stencil and depth tests pass.
+         *
+         * Defaults to `StencilOp::keep`.
          */
         StencilOp passOp;
     };
 
     /**
-     * An object describing depth-stencil properties including testing, operations, 
-     * and bias.
+     * @brief Depth/stencil state for a `RenderPipeline`.
+     *
+     * Configures depth testing, depth writes, polygon depth bias, stencil testing,
+     * and stencil write masks. Set as `RenderPipelineDescriptor::depthStencil`.
+     *
+     * @code
+     * DepthStencilDescriptor ds{};
+     * ds.format           = PixelFormat::depth32float;
+     * ds.depthWriteEnabled = true;
+     * ds.depthCompare     = CompareOp::less;
+     * @endcode
      */
     struct DepthStencilDescriptor {
-
         /**
-         * A number representing a constant depth bias that is added to each fragment.
-         * If omitted, depthBias defaults to 0.
+         * @brief Constant bias added to the depth of every fragment.
+         *
+         * Useful for shadow map rendering to avoid self-shadowing. Defaults to 0.
          */
         double depthBias;
 
         /**
-         * A number representing the maximum depth bias of a fragment.
-         * If omitted, depthBiasClamp defaults to 0.
+         * @brief Maximum absolute value of the depth bias applied to a fragment.
+         *
+         * Clamps the total bias to prevent excessive depth offsets. Defaults to 0
+         * (no clamp).
          */
         double depthBiasClamp;
 
         /**
-         * A number representing a depth bias that scales with the fragment's slope.
-         * If omitted, depthBiasSlopeScale defaults to 0.
+         * @brief Depth bias that scales with the slope of the polygon surface.
+         *
+         * Helps reduce shadow acne on sloped surfaces. Defaults to 0.
          */
         double depthBiasSlopeScale;
 
         /**
-         * Comparison operation used to test fragment depths against depthStencilAttachment
-         * depth values.
+         * @brief Comparison function used for depth testing.
+         *
+         * A fragment passes the depth test when this comparison between the
+         * fragment depth and the stored depth value returns `true`.
          */
         CompareOp depthCompare;
 
         /**
-         * A boolean. A value of true specifies that the GPURenderPipeline can modify
-         * depthStencilAttachment depth values after creation. Setting it to false means
-         * it cannot.
+         * @brief Whether this pipeline may write new depth values to the attachment.
+         *
+         * Set to `true` for opaque geometry passes. Set to `false` for transparent
+         * or read-only depth passes.
          */
         bool depthWriteEnabled;
 
         /**
-         * An enumerated value specifying the depthStencilAttachment format that the
-         * GPURenderPipeline will be compatible with.
+         * @brief Pixel format of the depth/stencil attachment this pipeline targets.
+         *
+         * Must match the format of the `TextureView` supplied as
+         * `DepthStencilAttachment::view` in the render pass descriptor.
          */
         PixelFormat format;
 
         /**
-         * An object that defines how stencil comparisons and operations are performed
-         * for back-facing primitives.
+         * @brief Stencil configuration for back-facing primitives.
+         *
+         * Leave as `std::nullopt` to disable stencil testing for back faces.
          */
         std::optional<StencilDescriptor> stencilBack;
 
         /**
-         * An object that defines how stencil comparisons and operations are performed
-         * for front-facing primitives.
+         * @brief Stencil configuration for front-facing primitives.
+         *
+         * Leave as `std::nullopt` to disable stencil testing for front faces.
          */
         std::optional<StencilDescriptor> stencilFront;
 
         /**
-         * A bitmask controlling which depthStencilAttachment stencil value bits are read
-         * when performing stencil comparison tests.
-         * If omitted, stencilReadMask defaults to 0xFFFFFFFF.
+         * @brief Bitmask of stencil bits that are read during stencil comparison tests.
+         *
+         * Defaults to `0xFFFFFFFF` (all bits readable).
          */
         uint32_t stencilReadMask;
 
         /**
-         * A bitmask controlling which depthStencilAttachment stencil value bits are written
-         * to when performing stencil operations.
-         * If omitted, stencilWriteMask defaults to 0xFFFFFFFF.
+         * @brief Bitmask of stencil bits that may be written by stencil operations.
+         *
+         * Defaults to `0xFFFFFFFF` (all bits writable).
          */
         uint32_t stencilWriteMask;
     };

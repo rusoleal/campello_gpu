@@ -6,18 +6,22 @@
 
 namespace systems::leal::campello_gpu {
 
+    /**
+     * @brief Configuration for the compute shader stage of a `ComputePipeline`.
+     *
+     * Identifies the shader module and the entry point function name for a
+     * compute dispatch. Used as the `compute` field of `ComputePipelineDescriptor`.
+     */
     struct ComputeDescriptor {
-
         /**
-         * A ShaderModule object containing the shader code that this programmable stage will execute.
+         * @brief Shader module containing the compute entry point.
          */
         std::shared_ptr<ShaderModule> module;
 
         /**
-         * The name of the function in the module that this stage will use to perform its work.
+         * @brief Name of the compute function within `module`.
          */
         std::string entryPoint;
-    
     };
 
 }

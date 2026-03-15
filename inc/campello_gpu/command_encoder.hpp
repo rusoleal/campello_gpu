@@ -12,6 +12,31 @@ namespace systems::leal::campello_gpu
 {
     class Device;
 
+    /**
+     * @brief Records a sequence of GPU commands for later submission.
+     *
+     * A `CommandEncoder` is the primary object for building GPU work. Commands are
+     * recorded into it — render passes, compute passes, buffer copies, clears — and
+     * then finalized into a `CommandBuffer` via `finish()`. That buffer is submitted
+     * to the GPU with `Device::submit()`.
+     *
+     * Obtain a `CommandEncoder` from `Device::createCommandEncoder()`. A single encoder
+     * records commands for one `CommandBuffer`; create a new one each frame.
+     *
+     * **Typical frame loop:**
+     * @code
+     * auto encoder    = device->createCommandEncoder();
+     *
+     * auto renderPass = encoder->beginRenderPass(rpDesc);
+     * renderPass->setPipeline(pipeline);
+     * renderPass->setVertexBuffer(0, vertexBuffer, 0);
+     * renderPass->draw(3, 1, 0, 0);
+     * renderPass->end();
+     *
+     * auto cmdBuffer = encoder->finish();
+     * device->submit(cmdBuffer);
+     * @endcode
+     */
     class CommandEncoder
     {
         friend class Device;
@@ -21,17 +46,92 @@ namespace systems::leal::campello_gpu
     public:
 
         ~CommandEncoder();
-        std::shared_ptr<ComputePassEncoder> beginComputePass();
-        std::shared_ptr<RenderPassEncoder> beginRenderPass(const BeginRenderPassDescriptor &descriptor);
-        void clearBuffer(std::shared_ptr<Buffer> buffer, uint64_t offset, uint64_t size);
-        void copyBufferToBuffer(std::shared_ptr<Buffer> source, uint64_t sourceOffset, std::shared_ptr<Buffer> destination, uint64_t destinationOffset, uint64_t size);
-        void copyBufferToTexture(); // TODO
-        void copyTextureToBuffer(); // TODO
-        void copyTextureToTexture(); // TODO
-        std::shared_ptr<CommandBuffer> finish();
-        void resolveQuerySet(std::shared_ptr<QuerySet> querySet, uint32_t firstQuery, uint32_t queryCount, std::shared_ptr<Buffer> destination, uint64_t destinationOffset);
-        void writeTimestamp(std::shared_ptr<QuerySet> querySet, uint32_t queryIndex);
 
+        /**
+         * @brief Begins a compute pass and returns an encoder for it.
+         *
+         * All compute dispatches must happen inside a compute pass. Only one pass
+         * (render or compute) may be active on an encoder at a time.
+         *
+         * @return A `ComputePassEncoder` for recording compute commands.
+         */
+        std::shared_ptr<ComputePassEncoder> beginComputePass();
+
+        /**
+         * @brief Begins a render pass and returns an encoder for it.
+         *
+         * The `descriptor` specifies the color and depth/stencil attachments, their
+         * load/store actions, and clear values. Only one pass may be active at a time.
+         *
+         * @param descriptor Configuration for the render pass attachments.
+         * @return A `RenderPassEncoder` for recording draw commands.
+         */
+        std::shared_ptr<RenderPassEncoder> beginRenderPass(const BeginRenderPassDescriptor &descriptor);
+
+        /**
+         * @brief Fills a region of a buffer with zeros.
+         *
+         * @param buffer The target buffer.
+         * @param offset Byte offset within the buffer at which to start clearing.
+         * @param size   Number of bytes to clear.
+         */
+        void clearBuffer(std::shared_ptr<Buffer> buffer, uint64_t offset, uint64_t size);
+
+        /**
+         * @brief Copies a region of bytes from one buffer to another.
+         *
+         * @param source             Source buffer.
+         * @param sourceOffset       Byte offset within the source.
+         * @param destination        Destination buffer.
+         * @param destinationOffset  Byte offset within the destination.
+         * @param size               Number of bytes to copy.
+         */
+        void copyBufferToBuffer(std::shared_ptr<Buffer> source, uint64_t sourceOffset,
+                                std::shared_ptr<Buffer> destination, uint64_t destinationOffset,
+                                uint64_t size);
+
+        void copyBufferToTexture();  ///< @todo Not yet implemented.
+        void copyTextureToBuffer();  ///< @todo Not yet implemented.
+        void copyTextureToTexture(); ///< @todo Not yet implemented.
+
+        /**
+         * @brief Finalizes command recording and returns the completed command buffer.
+         *
+         * After calling `finish()` the encoder must not be used again. The returned
+         * `CommandBuffer` is ready to be submitted with `Device::submit()`.
+         *
+         * @return A `CommandBuffer` containing all recorded commands.
+         */
+        std::shared_ptr<CommandBuffer> finish();
+
+        /**
+         * @brief Copies query results from a `QuerySet` into a `Buffer`.
+         *
+         * Resolves `queryCount` query slots starting at `firstQuery` from `querySet`
+         * into `destination` at `destinationOffset`. The resolved data is 8 bytes
+         * (uint64) per query slot.
+         *
+         * @param querySet            The query set to read from.
+         * @param firstQuery          Index of the first query slot to resolve.
+         * @param queryCount          Number of query slots to resolve.
+         * @param destination         Buffer that receives the resolved values.
+         * @param destinationOffset   Byte offset within the destination buffer.
+         */
+        void resolveQuerySet(std::shared_ptr<QuerySet> querySet, uint32_t firstQuery,
+                             uint32_t queryCount, std::shared_ptr<Buffer> destination,
+                             uint64_t destinationOffset);
+
+        /**
+         * @brief Records a GPU timestamp into a `QuerySet` slot.
+         *
+         * The GPU writes its current clock value into slot `queryIndex` of `querySet`
+         * when this command executes. Resolve the value to a buffer later with
+         * `resolveQuerySet()`.
+         *
+         * @param querySet   The query set that receives the timestamp.
+         * @param queryIndex Index of the slot to write into.
+         */
+        void writeTimestamp(std::shared_ptr<QuerySet> querySet, uint32_t queryIndex);
     };
 
 }

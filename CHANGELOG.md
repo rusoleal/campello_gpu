@@ -2,6 +2,17 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.2] - 2026-03-15
+
+### Added
+- Doxygen-style documentation (`/** */` / `///`) for the entire public API surface:
+  - All core handle classes (`Adapter`, `Buffer`, `Texture`, `TextureView`, `Sampler`, `ShaderModule`, `RenderPipeline`, `ComputePipeline`, `PipelineLayout`, `BindGroup`, `BindGroupLayout`, `QuerySet`, `CommandBuffer`, `CommandEncoder`, `RenderPassEncoder`, `ComputePassEncoder`, `Device`)
+  - All descriptor structs (`BeginRenderPassDescriptor`, `BindGroupDescriptor`, `BindGroupLayoutDescriptor`, `QuerySetDescriptor`, `PipelineLayoutDescriptor`, `RenderPipelineDescriptor`, `VertexDescriptor`, `FragmentDescriptor`, `DepthStencilDescriptor`, `SamplerDescriptor`, `ComputePipelineDescriptor`, `ComputeDescriptor`)
+  - All constant enums (`BufferUsage`, `TextureUsage`, `PixelFormat`, `PrimitiveTopology`, `CullMode`, `FrontFace`, `FilterMode`, `WrapMode`, `CompareOp`, `StencilOp`, `IndexFormat`, `TextureType`, `Feature`, `ShaderStage`, `Aspect`, `StorageMode`, `QuerySetType`, `ColorSpace`)
+  - `State` placeholder class
+
+---
+
 ## [0.3.1] - 2026-03-15
 
 ### Fixed
