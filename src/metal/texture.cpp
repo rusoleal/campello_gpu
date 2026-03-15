@@ -58,8 +58,20 @@ TextureUsage Texture::getUsage() {
 }
 
 bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
-    // Not yet implemented for Metal textures.
-    return false;
+    auto *tex    = static_cast<MTL::Texture *>(native);
+    uint32_t w   = (uint32_t)tex->width();
+    uint32_t h   = (uint32_t)tex->height();
+    uint32_t d   = (uint32_t)tex->depth();
+
+    // Compute bytes-per-row from the pixel format size stored in the texture.
+    // We use the raw length / height as the row stride since callers are expected
+    // to pass tightly-packed data for mip level 0.
+    NS::UInteger bytesPerRow   = (h > 0) ? (length / h) : length;
+    NS::UInteger bytesPerImage = length;
+
+    MTL::Region region = MTL::Region::Make3D(0, 0, 0, w, h, d);
+    tex->replaceRegion(region, 0, 0, data, bytesPerRow, bytesPerImage);
+    return true;
 }
 
 std::shared_ptr<TextureView> Texture::createView(
@@ -69,6 +81,21 @@ std::shared_ptr<TextureView> Texture::createView(
     uint32_t baseArrayLayer,
     uint32_t baseMipLevel,
     TextureType dimension) {
-    // Not yet implemented for Metal textures.
-    return nullptr;
+
+    auto *tex = static_cast<MTL::Texture *>(native);
+
+    MTL::TextureType mtlType;
+    switch (dimension) {
+        case TextureType::tt1d: mtlType = MTL::TextureType1D;  break;
+        case TextureType::tt3d: mtlType = MTL::TextureType3D;  break;
+        default:                mtlType = MTL::TextureType2D;  break;
+    }
+
+    NS::Range mipRange   = NS::Range::Make(baseMipLevel, tex->mipmapLevelCount() - baseMipLevel);
+    NS::Range sliceRange = NS::Range::Make(baseArrayLayer, arrayLayerCount > 0 ? arrayLayerCount : 1);
+
+    auto *view = tex->newTextureView(
+        (MTL::PixelFormat)format, mtlType, mipRange, sliceRange);
+    if (!view) return nullptr;
+    return std::shared_ptr<TextureView>(new TextureView(view));
 }

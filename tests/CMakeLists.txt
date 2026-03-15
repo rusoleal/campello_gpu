@@ -35,12 +35,7 @@ set_target_properties(campello_gpu_universal_tests PROPERTIES
 # ---------------------------------------------------------------------------
 # Integration tests — require a real GPU device, link against campello_gpu.
 # Build only when BUILD_INTEGRATION_TESTS=ON.
-#
-# NOTE: Metal (macOS) integration tests require the Metal implementation in
-# src/metal/device.cpp to match the public Device API declared in
-# inc/campello_gpu/device.hpp (createDefaultDevice / getAdapters).
-# Until that alignment is done, macOS integration tests will be skipped at
-# runtime via GTEST_SKIP().
+# Supported platforms: macOS/iOS (Metal), Android (Vulkan).
 # ---------------------------------------------------------------------------
 if(BUILD_INTEGRATION_TESTS)
     add_executable(campello_gpu_integration_tests

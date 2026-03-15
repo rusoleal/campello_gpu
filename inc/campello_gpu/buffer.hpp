@@ -9,6 +9,9 @@ namespace systems::leal::campello_gpu
     class Buffer
     {
         friend class Device;
+        friend class CommandEncoder;
+        friend class RenderPassEncoder;
+        friend class ComputePassEncoder;
         void *native;
 
         Buffer(void *pd);

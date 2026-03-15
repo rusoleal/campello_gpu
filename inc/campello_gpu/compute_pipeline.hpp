@@ -7,6 +7,7 @@ namespace systems::leal::campello_gpu
     {
     private:
         friend class Device;
+        friend class ComputePassEncoder;
         void *native;
 
         ComputePipeline(void *data);

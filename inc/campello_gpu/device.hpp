@@ -62,6 +62,7 @@ namespace systems::leal::campello_gpu
         std::shared_ptr<Sampler> createSampler(const SamplerDescriptor &descriptor);
         std::shared_ptr<QuerySet> createQuerySet(const QuerySetDescriptor &descriptor);
         std::shared_ptr<CommandEncoder> createCommandEncoder();
+        void submit(std::shared_ptr<CommandBuffer> commandBuffer);
 
         static std::shared_ptr<Device> createDefaultDevice(void *pd);
         static std::shared_ptr<Device> createDevice(std::shared_ptr<Adapter> adapter, void *pd);

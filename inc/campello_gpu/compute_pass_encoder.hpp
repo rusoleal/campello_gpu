@@ -9,6 +9,7 @@ namespace systems::leal::campello_gpu {
 
     class ComputePassEncoder {
     private:
+        friend class CommandEncoder;
         void *native;
         ComputePassEncoder(void *pd);
     public:

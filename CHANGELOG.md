@@ -2,6 +2,46 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.0] - 2026-03-15
+
+### Added
+- **Complete Metal/macOS backend** — all public API methods now fully implemented:
+  - `Device::createShaderModule()` — loads compiled `.metallib` via `dispatch_data`
+  - `Device::createRenderPipeline()` — full MTL PSO with vertex/fragment functions, color attachments, depth format, and vertex descriptor
+  - `Device::createComputePipeline()` — MTL compute PSO
+  - `Device::createSampler()` — full filter/wrap/compare/anisotropy mapping
+  - `Device::createQuerySet()` — backed by shared `MTL::Buffer` (8 bytes/slot)
+  - `Device::createCommandEncoder()` — creates `MTL::CommandBuffer` from stored command queue
+  - `Device::createBindGroupLayout()`, `createBindGroup()`, `createPipelineLayout()` — no-op placeholders (Metal uses implicit binding)
+  - `CommandEncoder` — `beginRenderPass`, `beginComputePass`, `clearBuffer`, `copyBufferToBuffer`, `resolveQuerySet`, `finish`
+  - `RenderPassEncoder` — `draw`, `drawIndexed`, `drawIndirect`, `drawIndexedIndirect`, `setPipeline`, `setVertexBuffer`, `setIndexBuffer`, `setViewport`, `setScissorRect`, `setStencilReference`, `beginOcclusionQuery`, `endOcclusionQuery`, `end`
+  - `ComputePassEncoder` — `setPipeline`, `dispatchWorkgroups`, `dispatchWorkgroupsIndirect`, `setBindGroup`, `end`
+  - `CommandBuffer` — wraps `MTL::CommandBuffer`
+  - `TextureView` — `createView()` via `MTL::Texture::newTextureView`
+  - `Texture::upload()` — via `MTL::Texture::replaceRegion`
+  - `Device::getEngineVersion()` — returns current version string
+- `Device::submit(shared_ptr<CommandBuffer>)` — commits the recorded command buffer; closes the frame loop story on all backends
+- `TextureView::fromNative(void*)` — static bridge factory to wrap a platform-native texture handle (e.g. `id<MTLTexture>`) into a `TextureView`; retained on construction, released on destruction
+- `MetalDeviceData` internal struct — holds `MTL::Device*` and `MTL::CommandQueue*` together behind `Device::native`
+- `MetalRenderEncoderData` internal struct — stores `MTL::RenderCommandEncoder*` plus index buffer state for `setIndexBuffer` + `drawIndexed`
+- `MetalComputeEncoderData` internal struct — stores `MTL::ComputeCommandEncoder*` plus current pipeline for threadgroup size derivation
+- **Triangle example** (`examples/apple/`) — `Renderer.mm` fully rewritten to use campello_gpu for all GPU work; only `view.currentDrawable` and `[drawable present]` remain as native calls
+- `TODO.md` — comprehensive task list covering bugs and missing implementations across Metal, Vulkan, and DirectX backends
+- Integration tests for Metal (`tests/platform/`) — 14 device tests and 7 buffer tests covering all newly implemented factory methods; all pass on macOS with Metal
+
+### Fixed
+- `RenderPassEncoder` / `ComputePassEncoder` constructors — `renderCommandEncoder()` and `computeCommandEncoder()` return autoreleased objects; missing `retain()` caused EXC_BAD_ACCESS when the run loop's autorelease pool drained after each rendered frame
+- `BindGroupDescriptor` — replaced raw `union` containing `std::shared_ptr` members (which implicitly deleted the destructor) with `std::variant<BufferBinding, shared_ptr<Texture>, shared_ptr<Sampler>>`
+- macOS example `Renderer.mm` — replaced stale `Device::getDefaultDevice()` / `getDevices()` calls (removed API) with `Device::getAdapters()`
+- `friend class Device` added to `BindGroupLayout` so `Device::createBindGroupLayout()` can construct instances
+
+### Changed
+- `macos.cmake` — added `src/pi/utils.cpp` and all 13 new Metal source files to the library target
+- `examples/apple/campello_test/Shaders.metal` — replaced textured-box shader with a minimal triangle shader (`vertexMain` / `fragmentMain`) using hardcoded positions and per-vertex colours; no vertex buffer required
+- Integration test `tryCreateDevice()` — enabled `Device::createDefaultDevice(nullptr)` path for `__APPLE__` (was returning `nullptr`, skipping all tests)
+
+---
+
 ## [0.2.0] - 2026-03-14
 
 ### Added

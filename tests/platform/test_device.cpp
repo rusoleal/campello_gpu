@@ -2,21 +2,21 @@
 //
 // These tests require a real GPU device. They are compiled only when
 // BUILD_INTEGRATION_TESTS=ON (see tests/CMakeLists.txt).
-//
-// Platform API notes
-// ------------------
-// The Metal (macOS/iOS) implementation in src/metal/device.cpp is not yet
-// aligned with the public Device API declared in inc/campello_gpu/device.hpp.
-// Metal implements Device::getDefaultDevice() / Device::getDevices(), whereas
-// the public API declares Device::createDefaultDevice(void*) / getAdapters().
-//
-// Until that alignment is done, macOS integration tests call GTEST_SKIP()
-// when the device cannot be created through the public API. This makes the
-// test suite forward-compatible: once the Metal backend is updated the skip
-// condition will stop triggering.
 
 #include <gtest/gtest.h>
 #include <campello_gpu/device.hpp>
+#include <campello_gpu/descriptors/sampler_descriptor.hpp>
+#include <campello_gpu/descriptors/query_set_descriptor.hpp>
+#include <campello_gpu/descriptors/pipeline_layout_descriptor.hpp>
+#include <campello_gpu/descriptors/bind_group_layout_descriptor.hpp>
+#include <campello_gpu/descriptors/bind_group_descriptor.hpp>
+#include <campello_gpu/constants/query_set_type.hpp>
+#include <campello_gpu/constants/filter_mode.hpp>
+#include <campello_gpu/constants/wrap_mode.hpp>
+#include <campello_gpu/constants/texture_usage.hpp>
+#include <campello_gpu/constants/texture_type.hpp>
+#include <campello_gpu/constants/pixel_format.hpp>
+#include <campello_gpu/constants/buffer_usage.hpp>
 
 using namespace systems::leal::campello_gpu;
 
@@ -24,21 +24,12 @@ using namespace systems::leal::campello_gpu;
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Returns a Device or nullptr. Isolates platform differences here so that
-// individual tests don't need to repeat the same guard logic.
 static std::shared_ptr<Device> tryCreateDevice() {
 #if defined(__ANDROID__)
-    // On Android the caller owns the ANativeWindow. In automated tests there
-    // is no window available, so we pass nullptr and expect the driver to cope
-    // (compute-only or headless contexts). Adjust if your driver requires a
-    // real surface.
     return Device::createDefaultDevice(nullptr);
 #elif defined(__APPLE__)
-    // Metal's createDefaultDevice is not yet wired up in src/metal/device.cpp.
-    // Return nullptr so callers can GTEST_SKIP().
-    return nullptr;
+    return Device::createDefaultDevice(nullptr);
 #elif defined(_WIN32)
-    // DirectX 12 implementation is in progress.
     return nullptr;
 #else
     return nullptr;
@@ -46,12 +37,11 @@ static std::shared_ptr<Device> tryCreateDevice() {
 }
 
 // ---------------------------------------------------------------------------
-// getEngineVersion — no GPU required, safe on every platform
+// getEngineVersion — no GPU required
 // ---------------------------------------------------------------------------
 
 TEST(Device, GetEngineVersionReturnsString) {
     std::string version = Device::getEngineVersion();
-    // The contract is simply that it returns *something* (even "unknown").
     EXPECT_FALSE(version.empty());
 }
 
@@ -60,9 +50,9 @@ TEST(Device, GetEngineVersionReturnsString) {
 // ---------------------------------------------------------------------------
 
 TEST(Device, GetAdaptersReturnsAtLeastOneOnSupportedPlatform) {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) || defined(__APPLE__)
     auto adapters = Device::getAdapters();
-    EXPECT_FALSE(adapters.empty()) << "Expected at least one Vulkan adapter";
+    EXPECT_FALSE(adapters.empty()) << "Expected at least one GPU adapter";
 #else
     GTEST_SKIP() << "getAdapters not yet implemented for this platform";
 #endif
@@ -93,6 +83,140 @@ TEST(Device, GetFeaturesDoesNotThrow) {
     if (!device) {
         GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
     }
-    // Features are a set; it may be empty on minimal hardware.
     EXPECT_NO_THROW(device->getFeatures());
+}
+
+// ---------------------------------------------------------------------------
+// createSampler
+// ---------------------------------------------------------------------------
+
+TEST(Device, CreateSamplerReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    SamplerDescriptor desc{};
+    desc.addressModeU = WrapMode::clampToEdge;
+    desc.addressModeV = WrapMode::clampToEdge;
+    desc.addressModeW = WrapMode::clampToEdge;
+    desc.minFilter    = FilterMode::fmLinear;
+    desc.magFilter    = FilterMode::fmLinear;
+    desc.lodMinClamp  = 0.0;
+    desc.lodMaxClamp  = 32.0;
+    desc.maxAnisotropy = 1.0;
+
+    auto sampler = device->createSampler(desc);
+    EXPECT_NE(sampler, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// createTexture
+// ---------------------------------------------------------------------------
+
+TEST(Device, CreateTexture2DReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    auto texture = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        64, 64, 1, 1, 1, TextureUsage::textureBinding);
+    EXPECT_NE(texture, nullptr);
+}
+
+TEST(Device, CreateTextureDimensionsMatchRequest) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    auto texture = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        128, 64, 1, 1, 1, TextureUsage::textureBinding);
+    ASSERT_NE(texture, nullptr);
+    EXPECT_EQ(texture->getWidth(),  128u);
+    EXPECT_EQ(texture->getHeight(),  64u);
+    EXPECT_EQ(texture->getFormat(), PixelFormat::rgba8unorm);
+    EXPECT_EQ(texture->getDimension(), TextureType::tt2d);
+    EXPECT_EQ(texture->getMipLevelCount(), 1u);
+    EXPECT_EQ(texture->getSampleCount(),   1u);
+}
+
+// ---------------------------------------------------------------------------
+// createQuerySet
+// ---------------------------------------------------------------------------
+
+TEST(Device, CreateQuerySetReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    QuerySetDescriptor desc{};
+    desc.count = 8;
+    desc.type  = QuerySetType::occlusion;
+
+    auto querySet = device->createQuerySet(desc);
+    EXPECT_NE(querySet, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// createPipelineLayout / createBindGroupLayout / createBindGroup
+// ---------------------------------------------------------------------------
+
+TEST(Device, CreatePipelineLayoutReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    PipelineLayoutDescriptor desc{};
+    auto layout = device->createPipelineLayout(desc);
+    EXPECT_NE(layout, nullptr);
+}
+
+TEST(Device, CreateBindGroupLayoutReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    BindGroupLayoutDescriptor desc{};
+    auto layout = device->createBindGroupLayout(desc);
+    EXPECT_NE(layout, nullptr);
+}
+
+TEST(Device, CreateBindGroupReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    BindGroupLayoutDescriptor layoutDesc{};
+    auto layout = device->createBindGroupLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+
+    BindGroupDescriptor desc{};
+    desc.layout = layout;
+    auto bindGroup = device->createBindGroup(desc);
+    EXPECT_NE(bindGroup, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// createCommandEncoder
+// ---------------------------------------------------------------------------
+
+TEST(Device, CreateCommandEncoderReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    auto encoder = device->createCommandEncoder();
+    EXPECT_NE(encoder, nullptr);
+}
+
+TEST(Device, CommandEncoderFinishReturnsCommandBuffer) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto cmdBuffer = encoder->finish();
+    EXPECT_NE(cmdBuffer, nullptr);
 }

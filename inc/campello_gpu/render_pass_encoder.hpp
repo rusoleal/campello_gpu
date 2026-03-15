@@ -10,6 +10,7 @@ namespace systems::leal::campello_gpu
     class RenderPassEncoder
     {
     private:
+        friend class CommandEncoder;
         void *native;
         RenderPassEncoder(void *pd);
     public:

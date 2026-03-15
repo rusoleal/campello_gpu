@@ -1,6 +1,6 @@
 // Platform integration tests for Buffer.
 //
-// Depends on a working Device (see test_device.cpp notes). All tests guard
+// Depends on a working Device (see test_device.cpp). All tests guard
 // against unavailable device creation with GTEST_SKIP().
 
 #include <gtest/gtest.h>
@@ -17,6 +17,10 @@ using namespace systems::leal::campello_gpu;
 static std::shared_ptr<Device> tryCreateDevice() {
 #if defined(__ANDROID__)
     return Device::createDefaultDevice(nullptr);
+#elif defined(__APPLE__)
+    return Device::createDefaultDevice(nullptr);
+#elif defined(_WIN32)
+    return nullptr;
 #else
     return nullptr;
 #endif
@@ -106,7 +110,6 @@ TEST(Buffer, CreateWithInitialData) {
     int values[] = {1, 2, 3, 4};
     const uint64_t byteSize = sizeof(values);
 
-    // Three-argument overload uploads data during creation (via utils.cpp).
     auto buffer = device->createBuffer(byteSize, BufferUsage::vertex, values);
     ASSERT_NE(buffer, nullptr);
     EXPECT_EQ(buffer->getLength(), byteSize);

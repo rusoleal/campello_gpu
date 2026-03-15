@@ -15,6 +15,38 @@
 		59F1E5902DF2EBD6001E8F13 /* device.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 59F1E58E2DF2EBD6001E8F13 /* device.cpp */; };
 		59F1E5922DF41669001E8F13 /* buffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 59F1E5912DF41669001E8F13 /* buffer.cpp */; };
 		59F1E5932DF41669001E8F13 /* buffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 59F1E5912DF41669001E8F13 /* buffer.cpp */; };
+		AA0001012DF00000001E8F13 /* adapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0001002DF00000001E8F13 /* adapter.cpp */; };
+		AA0001022DF00000001E8F13 /* adapter.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0001002DF00000001E8F13 /* adapter.cpp */; };
+		AA0001042DF00000001E8F13 /* pixel_format.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0001032DF00000001E8F13 /* pixel_format.cpp */; };
+		AA0001052DF00000001E8F13 /* pixel_format.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0001032DF00000001E8F13 /* pixel_format.cpp */; };
+		BB0001012DF00000001E8F13 /* bind_group.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000012DF00000001E8F13 /* bind_group.cpp */; };
+		BB0002012DF00000001E8F13 /* bind_group.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000012DF00000001E8F13 /* bind_group.cpp */; };
+		BB0001022DF00000001E8F13 /* bind_group_layout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000022DF00000001E8F13 /* bind_group_layout.cpp */; };
+		BB0002022DF00000001E8F13 /* bind_group_layout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000022DF00000001E8F13 /* bind_group_layout.cpp */; };
+		BB0001032DF00000001E8F13 /* command_buffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000032DF00000001E8F13 /* command_buffer.cpp */; };
+		BB0002032DF00000001E8F13 /* command_buffer.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000032DF00000001E8F13 /* command_buffer.cpp */; };
+		BB0001042DF00000001E8F13 /* command_encoder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000042DF00000001E8F13 /* command_encoder.cpp */; };
+		BB0002042DF00000001E8F13 /* command_encoder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000042DF00000001E8F13 /* command_encoder.cpp */; };
+		BB0001052DF00000001E8F13 /* compute_pass_encoder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000052DF00000001E8F13 /* compute_pass_encoder.cpp */; };
+		BB0002052DF00000001E8F13 /* compute_pass_encoder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000052DF00000001E8F13 /* compute_pass_encoder.cpp */; };
+		BB0001062DF00000001E8F13 /* compute_pipeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000062DF00000001E8F13 /* compute_pipeline.cpp */; };
+		BB0002062DF00000001E8F13 /* compute_pipeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000062DF00000001E8F13 /* compute_pipeline.cpp */; };
+		BB0001072DF00000001E8F13 /* pipeline_layout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000072DF00000001E8F13 /* pipeline_layout.cpp */; };
+		BB0002072DF00000001E8F13 /* pipeline_layout.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000072DF00000001E8F13 /* pipeline_layout.cpp */; };
+		BB0001082DF00000001E8F13 /* query_set.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000082DF00000001E8F13 /* query_set.cpp */; };
+		BB0002082DF00000001E8F13 /* query_set.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000082DF00000001E8F13 /* query_set.cpp */; };
+		BB0001092DF00000001E8F13 /* render_pass_encoder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000092DF00000001E8F13 /* render_pass_encoder.cpp */; };
+		BB0002092DF00000001E8F13 /* render_pass_encoder.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB0000092DF00000001E8F13 /* render_pass_encoder.cpp */; };
+		BB00010A2DF00000001E8F13 /* render_pipeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000A2DF00000001E8F13 /* render_pipeline.cpp */; };
+		BB00020A2DF00000001E8F13 /* render_pipeline.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000A2DF00000001E8F13 /* render_pipeline.cpp */; };
+		BB00010B2DF00000001E8F13 /* sampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000B2DF00000001E8F13 /* sampler.cpp */; };
+		BB00020B2DF00000001E8F13 /* sampler.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000B2DF00000001E8F13 /* sampler.cpp */; };
+		BB00010C2DF00000001E8F13 /* shader_module.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000C2DF00000001E8F13 /* shader_module.cpp */; };
+		BB00020C2DF00000001E8F13 /* shader_module.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000C2DF00000001E8F13 /* shader_module.cpp */; };
+		BB00010D2DF00000001E8F13 /* texture_view.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000D2DF00000001E8F13 /* texture_view.cpp */; };
+		BB00020D2DF00000001E8F13 /* texture_view.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000D2DF00000001E8F13 /* texture_view.cpp */; };
+		BB00010E2DF00000001E8F13 /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000E2DF00000001E8F13 /* utils.cpp */; };
+		BB00020E2DF00000001E8F13 /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = BB00000E2DF00000001E8F13 /* utils.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -25,6 +57,22 @@
 		59F1E58A2DF2D551001E8F13 /* texture.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = texture.cpp; path = ../../../src/metal/texture.cpp; sourceTree = SOURCE_ROOT; };
 		59F1E58E2DF2EBD6001E8F13 /* device.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = device.cpp; path = ../../../src/metal/device.cpp; sourceTree = SOURCE_ROOT; };
 		59F1E5912DF41669001E8F13 /* buffer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = buffer.cpp; path = ../../../src/metal/buffer.cpp; sourceTree = SOURCE_ROOT; };
+		AA0001002DF00000001E8F13 /* adapter.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = adapter.cpp; path = ../../../src/metal/adapter.cpp; sourceTree = SOURCE_ROOT; };
+		AA0001032DF00000001E8F13 /* pixel_format.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = pixel_format.cpp; path = ../../../src/pi/pixel_format.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000012DF00000001E8F13 /* bind_group.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = bind_group.cpp; path = ../../../src/metal/bind_group.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000022DF00000001E8F13 /* bind_group_layout.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = bind_group_layout.cpp; path = ../../../src/metal/bind_group_layout.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000032DF00000001E8F13 /* command_buffer.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = command_buffer.cpp; path = ../../../src/metal/command_buffer.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000042DF00000001E8F13 /* command_encoder.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = command_encoder.cpp; path = ../../../src/metal/command_encoder.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000052DF00000001E8F13 /* compute_pass_encoder.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = compute_pass_encoder.cpp; path = ../../../src/metal/compute_pass_encoder.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000062DF00000001E8F13 /* compute_pipeline.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = compute_pipeline.cpp; path = ../../../src/metal/compute_pipeline.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000072DF00000001E8F13 /* pipeline_layout.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = pipeline_layout.cpp; path = ../../../src/metal/pipeline_layout.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000082DF00000001E8F13 /* query_set.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = query_set.cpp; path = ../../../src/metal/query_set.cpp; sourceTree = SOURCE_ROOT; };
+		BB0000092DF00000001E8F13 /* render_pass_encoder.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = render_pass_encoder.cpp; path = ../../../src/metal/render_pass_encoder.cpp; sourceTree = SOURCE_ROOT; };
+		BB00000A2DF00000001E8F13 /* render_pipeline.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = render_pipeline.cpp; path = ../../../src/metal/render_pipeline.cpp; sourceTree = SOURCE_ROOT; };
+		BB00000B2DF00000001E8F13 /* sampler.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = sampler.cpp; path = ../../../src/metal/sampler.cpp; sourceTree = SOURCE_ROOT; };
+		BB00000C2DF00000001E8F13 /* shader_module.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = shader_module.cpp; path = ../../../src/metal/shader_module.cpp; sourceTree = SOURCE_ROOT; };
+		BB00000D2DF00000001E8F13 /* texture_view.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = texture_view.cpp; path = ../../../src/metal/texture_view.cpp; sourceTree = SOURCE_ROOT; };
+		BB00000E2DF00000001E8F13 /* utils.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = utils.cpp; path = ../../../src/pi/utils.cpp; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -91,11 +139,27 @@
 		5931C1D92DF59C13001918ED /* campello */ = {
 			isa = PBXGroup;
 			children = (
+				AA0001002DF00000001E8F13 /* adapter.cpp */,
+				BB0000012DF00000001E8F13 /* bind_group.cpp */,
+				BB0000022DF00000001E8F13 /* bind_group_layout.cpp */,
 				59F1E5912DF41669001E8F13 /* buffer.cpp */,
-				59F1E58E2DF2EBD6001E8F13 /* device.cpp */,
-				59F1E58A2DF2D551001E8F13 /* texture.cpp */,
-				59F1E5892DF2D35C001E8F13 /* Metal.hpp */,
+				BB0000032DF00000001E8F13 /* command_buffer.cpp */,
+				BB0000042DF00000001E8F13 /* command_encoder.cpp */,
+				BB0000052DF00000001E8F13 /* compute_pass_encoder.cpp */,
+				BB0000062DF00000001E8F13 /* compute_pipeline.cpp */,
 				59F1E5852DF2D32D001E8F13 /* context.cpp */,
+				59F1E58E2DF2EBD6001E8F13 /* device.cpp */,
+				59F1E5892DF2D35C001E8F13 /* Metal.hpp */,
+				AA0001032DF00000001E8F13 /* pixel_format.cpp */,
+				BB0000072DF00000001E8F13 /* pipeline_layout.cpp */,
+				BB0000082DF00000001E8F13 /* query_set.cpp */,
+				BB0000092DF00000001E8F13 /* render_pass_encoder.cpp */,
+				BB00000A2DF00000001E8F13 /* render_pipeline.cpp */,
+				BB00000B2DF00000001E8F13 /* sampler.cpp */,
+				BB00000C2DF00000001E8F13 /* shader_module.cpp */,
+				59F1E58A2DF2D551001E8F13 /* texture.cpp */,
+				BB00000D2DF00000001E8F13 /* texture_view.cpp */,
+				BB00000E2DF00000001E8F13 /* utils.cpp */,
 			);
 			path = campello;
 			sourceTree = "<group>";
@@ -226,10 +290,26 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA0001012DF00000001E8F13 /* adapter.cpp in Sources */,
+				BB0001012DF00000001E8F13 /* bind_group.cpp in Sources */,
+				BB0001022DF00000001E8F13 /* bind_group_layout.cpp in Sources */,
 				59F1E5922DF41669001E8F13 /* buffer.cpp in Sources */,
-				59F1E5902DF2EBD6001E8F13 /* device.cpp in Sources */,
+				BB0001032DF00000001E8F13 /* command_buffer.cpp in Sources */,
+				BB0001042DF00000001E8F13 /* command_encoder.cpp in Sources */,
+				BB0001052DF00000001E8F13 /* compute_pass_encoder.cpp in Sources */,
+				BB0001062DF00000001E8F13 /* compute_pipeline.cpp in Sources */,
 				59F1E5872DF2D32D001E8F13 /* context.cpp in Sources */,
+				59F1E5902DF2EBD6001E8F13 /* device.cpp in Sources */,
+				AA0001042DF00000001E8F13 /* pixel_format.cpp in Sources */,
+				BB0001072DF00000001E8F13 /* pipeline_layout.cpp in Sources */,
+				BB0001082DF00000001E8F13 /* query_set.cpp in Sources */,
+				BB0001092DF00000001E8F13 /* render_pass_encoder.cpp in Sources */,
+				BB00010A2DF00000001E8F13 /* render_pipeline.cpp in Sources */,
+				BB00010B2DF00000001E8F13 /* sampler.cpp in Sources */,
+				BB00010C2DF00000001E8F13 /* shader_module.cpp in Sources */,
 				59F1E58B2DF2D551001E8F13 /* texture.cpp in Sources */,
+				BB00010D2DF00000001E8F13 /* texture_view.cpp in Sources */,
+				BB00010E2DF00000001E8F13 /* utils.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -237,10 +317,26 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AA0001022DF00000001E8F13 /* adapter.cpp in Sources */,
+				BB0002012DF00000001E8F13 /* bind_group.cpp in Sources */,
+				BB0002022DF00000001E8F13 /* bind_group_layout.cpp in Sources */,
 				59F1E5932DF41669001E8F13 /* buffer.cpp in Sources */,
-				59F1E58F2DF2EBD6001E8F13 /* device.cpp in Sources */,
+				BB0002032DF00000001E8F13 /* command_buffer.cpp in Sources */,
+				BB0002042DF00000001E8F13 /* command_encoder.cpp in Sources */,
+				BB0002052DF00000001E8F13 /* compute_pass_encoder.cpp in Sources */,
+				BB0002062DF00000001E8F13 /* compute_pipeline.cpp in Sources */,
 				59F1E5862DF2D32D001E8F13 /* context.cpp in Sources */,
+				59F1E58F2DF2EBD6001E8F13 /* device.cpp in Sources */,
+				AA0001052DF00000001E8F13 /* pixel_format.cpp in Sources */,
+				BB0002072DF00000001E8F13 /* pipeline_layout.cpp in Sources */,
+				BB0002082DF00000001E8F13 /* query_set.cpp in Sources */,
+				BB0002092DF00000001E8F13 /* render_pass_encoder.cpp in Sources */,
+				BB00020A2DF00000001E8F13 /* render_pipeline.cpp in Sources */,
+				BB00020B2DF00000001E8F13 /* sampler.cpp in Sources */,
+				BB00020C2DF00000001E8F13 /* shader_module.cpp in Sources */,
 				59F1E58C2DF2D551001E8F13 /* texture.cpp in Sources */,
+				BB00020D2DF00000001E8F13 /* texture_view.cpp in Sources */,
+				BB00020E2DF00000001E8F13 /* utils.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
