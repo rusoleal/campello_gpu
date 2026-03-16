@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/compute_pipeline.hpp>
 #include <campello_gpu/bind_group.hpp>

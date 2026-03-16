@@ -672,7 +672,12 @@ std::set<Feature> Device::getFeatures()
 
 std::string Device::getEngineVersion()
 {
-    return getVersion();
+    uint32_t version = VK_API_VERSION_1_0;
+    vkEnumerateInstanceVersion(&version);
+    return "Vulkan " +
+        std::to_string(VK_API_VERSION_MAJOR(version)) + "." +
+        std::to_string(VK_API_VERSION_MINOR(version)) + "." +
+        std::to_string(VK_API_VERSION_PATCH(version));
 }
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, uint64_t size)
@@ -1315,6 +1320,13 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 
     // Wait for the frame to finish before the caller can reuse the command buffer.
     vkQueueWaitIdle(deviceData->graphicsQueue);
+}
+
+std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
+    // On Vulkan/Android the swapchain image is acquired per-frame via
+    // vkAcquireNextImageKHR. Use TextureView::fromNative() with the
+    // VkImageView for the current image instead.
+    return nullptr;
 }
 
 std::string systems::leal::campello_gpu::getVersion()

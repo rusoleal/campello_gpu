@@ -37,7 +37,7 @@ set_target_properties(campello_gpu_universal_tests PROPERTIES
 # ---------------------------------------------------------------------------
 # Integration tests — require a real GPU device, link against campello_gpu.
 # Build only when BUILD_INTEGRATION_TESTS=ON.
-# Supported platforms: macOS/iOS (Metal), Android (Vulkan).
+# Supported platforms: macOS/iOS (Metal), Android (Vulkan), Windows (DirectX 12).
 # ---------------------------------------------------------------------------
 if(BUILD_INTEGRATION_TESTS)
     add_executable(campello_gpu_integration_tests
@@ -45,6 +45,10 @@ if(BUILD_INTEGRATION_TESTS)
         platform/test_buffer.cpp
         platform/test_texture.cpp
         platform/test_command_encoder.cpp
+        platform/test_shader_module.cpp
+        platform/test_render_pipeline.cpp
+        platform/test_render_pass_encoder.cpp
+        platform/test_compute_pass_encoder.cpp
     )
     target_include_directories(campello_gpu_integration_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/inc

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.3.3)
+project(campello_gpu VERSION 0.3.4)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -40,4 +40,15 @@ endif()
 if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# ---------------------------------------------------------------------------
+# Examples
+#
+# BUILD_EXAMPLES=ON — platform-specific example applications.
+# ---------------------------------------------------------------------------
+option(BUILD_EXAMPLES "Build example applications" OFF)
+
+if(BUILD_EXAMPLES AND ${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
+    add_subdirectory(examples/windows/campello_example)
 endif()

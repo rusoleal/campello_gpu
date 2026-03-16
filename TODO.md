@@ -13,7 +13,7 @@
 - [ ] **[Vulkan]** `Device::createRenderPipeline()` — `VkPipelineDepthStencilStateCreateInfo depthStencil` is declared but never initialized or passed to the pipeline (`device.cpp:776`)
 - [ ] **[Vulkan]** Swapchain format/color-space selection always picks `surfaceFormats[0]` without any preference logic (`device.cpp:361–362`)
 - [ ] **[Vulkan]** Debug log strings `"pepe1"`, `"pepe2"`, `"pepe3"` left in production code (`device.cpp:254,261,268`)
-- [ ] **[DirectX]** `device.cpp` implements stale API (`getDefaultDevice`, `getDevices`, old `createBuffer`/`createTexture` signatures) — entire file is out of sync with `device.hpp` and will not compile
+- [x] **[DirectX]** `device.cpp` implements stale API (`getDefaultDevice`, `getDevices`, old `createBuffer`/`createTexture` signatures) — entire file is out of sync with `device.hpp` and will not compile
 
 ## Missing implementations — Vulkan/Android
 
@@ -70,28 +70,31 @@
 
 ## Missing implementations — DirectX/Windows
 
-- [ ] Rewrite `src/directx/device.cpp` to match the current `device.hpp` API (replace all stale method signatures)
-- [ ] `Device::getAdapters()` — not implemented
-- [ ] `Device::createDevice()` — not implemented (D3D12 adapter/device creation)
-- [ ] `Device::createBuffer()` — not implemented (D3D12 heap/resource)
-- [ ] `Device::createTexture()` — not implemented
-- [ ] `Device::createShaderModule()` — not implemented
-- [ ] `Device::createRenderPipeline()` — not implemented (D3D12 PSO)
-- [ ] `Device::createComputePipeline()` — not implemented
-- [ ] `Device::createBindGroupLayout()` / `createBindGroup()` — not implemented (D3D12 descriptor heap/tables)
-- [ ] `Device::createPipelineLayout()` — not implemented (root signature)
-- [ ] `Device::createSampler()` — not implemented
-- [ ] `Device::createQuerySet()` — not implemented
-- [ ] `Device::createCommandEncoder()` — not implemented (command allocator/list)
-- [ ] `CommandEncoder`, `RenderPassEncoder`, `ComputePassEncoder`, `CommandBuffer` — all missing
-- [ ] All resource classes (`Buffer`, `Texture`, `TextureView`, `ShaderModule`, `RenderPipeline`, `ComputePipeline`, `BindGroup`, `BindGroupLayout`, `PipelineLayout`, `Sampler`, `QuerySet`) — all missing
+- [x] Rewrite `src/directx/device.cpp` to match the current `device.hpp` API (replace all stale method signatures)
+- [x] `Device::getAdapters()` — D3D12 DXGI adapter enumeration (GPU preference ordering)
+- [x] `Device::createDevice()` — D3D12 device + command queue + descriptor heaps + fence
+- [x] `Device::createBuffer()` — D3D12 upload-heap committed resource, persistently mapped
+- [x] `Device::createTexture()` — D3D12 default-heap texture with RTV/DSV pre-allocation for render targets
+- [x] `Device::createShaderModule()` — stores raw DXIL/DXBC bytecode
+- [x] `Device::createRenderPipeline()` — D3D12 graphics PSO with root signature, rasterizer, blend, depth-stencil state
+- [x] `Device::createComputePipeline()` — D3D12 compute PSO with root signature
+- [x] `Device::createBindGroupLayout()` / `createBindGroup()` — D3D12 descriptor range / descriptor table handles
+- [x] `Device::createPipelineLayout()` — D3D12 root signature via universal helper
+- [x] `Device::createSampler()` — D3D12 sampler descriptor on shader-visible sampler heap
+- [x] `Device::createQuerySet()` — D3D12 query heap + readback buffer
+- [x] `Device::createCommandEncoder()` — D3D12 command allocator + command list
+- [x] `CommandEncoder` — `beginRenderPass`, `beginComputePass`, `clearBuffer`, `copyBufferToBuffer`, `writeTimestamp`, `resolveQuerySet`, `finish`
+- [x] `RenderPassEncoder` — `draw`, `drawIndexed`, `setPipeline`, `setVertexBuffer`, `setIndexBuffer`, `setViewport`, `setScissorRect`, `setStencilReference`, `end`
+- [x] `ComputePassEncoder` — `dispatchWorkgroups`, `setPipeline`, `setBindGroup`, `end`
+- [x] `CommandBuffer` — wraps D3D12 command list; `Device::submit` executes and waits via fence
+- [x] All resource classes (`Buffer`, `Texture`, `TextureView`, `ShaderModule`, `RenderPipeline`, `ComputePipeline`, `BindGroup`, `BindGroupLayout`, `PipelineLayout`, `Sampler`, `QuerySet`) — fully implemented
 
 ## Build system
 
 - [x] `ios.cmake` — created; mirrors `macos.cmake` (same Metal backend, CMake handles sysroot/arch)
 - [x] `linux.cmake` — created; placeholder stub that builds `src/pi/` only so universal tests can configure and run
 - [x] Add `src/pi/utils.cpp` to `macos.cmake`
-- [ ] Add `src/pi/utils.cpp` to `windows.cmake` once DirectX `createBuffer` is wired up
+- [x] Add `src/pi/utils.cpp` to `windows.cmake` once DirectX `createBuffer` is wired up
 
 ## Public API / headers
 

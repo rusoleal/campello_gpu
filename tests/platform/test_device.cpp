@@ -30,7 +30,7 @@ static std::shared_ptr<Device> tryCreateDevice() {
 #elif defined(__APPLE__)
     return Device::createDefaultDevice(nullptr);
 #elif defined(_WIN32)
-    return nullptr;
+    return Device::createDefaultDevice(nullptr);
 #else
     return nullptr;
 #endif
@@ -50,7 +50,7 @@ TEST(Device, GetEngineVersionReturnsString) {
 // ---------------------------------------------------------------------------
 
 TEST(Device, GetAdaptersReturnsAtLeastOneOnSupportedPlatform) {
-#if defined(__ANDROID__) || defined(__APPLE__)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32)
     auto adapters = Device::getAdapters();
     EXPECT_FALSE(adapters.empty()) << "Expected at least one GPU adapter";
 #else

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake:*)",
+      "Bash(build_test/tests/Debug/campello_gpu_integration_tests.exe 2>&1)",
+      "Bash(cmd /c \"build_test\\\\\\\\tests\\\\\\\\Debug\\\\\\\\campello_gpu_integration_tests.exe\" 2>&1)",
+      "Bash(cmd /c \"build_test\\\\\\\\tests\\\\\\\\Debug\\\\\\\\campello_gpu_integration_tests.exe --gtest_output=xml:test_results.xml & type test_results.xml\" 2>&1)",
+      "Bash(powershell -Command \"& 'build_test\\\\\\\\tests\\\\\\\\Debug\\\\\\\\campello_gpu_integration_tests.exe' 2>&1\")",
+      "Bash(powershell -Command \"& 'C:\\\\\\\\Users\\\\\\\\rusol\\\\\\\\source\\\\\\\\repos\\\\\\\\campello_gpu\\\\\\\\build_test\\\\\\\\tests\\\\\\\\Debug\\\\\\\\campello_gpu_integration_tests.exe' 2>&1\")"
+    ]
+  }
+}

@@ -1,7 +1,1 @@
-#include <campello_gpu/context.hpp>
-
-using namespace systems::leal::campello_gpu;
-
-Context::Context() {
-    
-}
+// DirectX context — no private implementation symbols needed.

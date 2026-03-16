@@ -1,4 +1,5 @@
 #include "Metal.hpp"
+#include "campello_gpu_config.h"
 #include "TargetConditionals.h"
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/adapter.hpp>
@@ -195,7 +196,17 @@ std::set<Feature> Device::getFeatures() {
 }
 
 std::string Device::getEngineVersion() {
-    return "0.3.3";
+    MTL::Device *d = MTL::CreateSystemDefaultDevice();
+    if (!d) return "Metal";
+    std::string result = "Metal";
+#if defined(MTL_GPU_FAMILY_METAL3) || defined(__MAC_13_0) || defined(__IPHONE_16_0)
+    if (d->supportsFamily(MTL::GPUFamilyMetal3)) result = "Metal 3";
+    else
+#endif
+    if (d->supportsFamily(MTL::GPUFamilyMac2))   result = "Metal 2";
+    else                                          result = "Metal 1";
+    d->release();
+    return result;
 }
 
 std::shared_ptr<Texture> Device::createTexture(
@@ -415,6 +426,14 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     static_cast<MTL::CommandBuffer *>(commandBuffer->native)->commit();
 }
 
+std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
+    // On Metal the swapchain is managed by MTKView. Use TextureView::fromNative()
+    // with the CAMetalDrawable's texture instead.
+    return nullptr;
+}
+
 std::string getVersion() {
-    return "0.3.3";
+    return std::to_string(campello_gpu_VERSION_MAJOR) + "." +
+           std::to_string(campello_gpu_VERSION_MINOR) + "." +
+           std::to_string(campello_gpu_VERSION_PATCH);
 }

@@ -1,0 +1,11 @@
+#include "common.hpp"
+#include <campello_gpu/shader_module.hpp>
+
+using namespace systems::leal::campello_gpu;
+
+ShaderModule::ShaderModule(void* pd) : native(pd) {}
+
+ShaderModule::~ShaderModule() {
+    if (!native) return;
+    delete static_cast<ShaderModuleHandle*>(native);
+}

@@ -2,6 +2,18 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.4] - 2026-03-16
+
+### Added
+- Extended Windows/DirectX 12 integration test suite — 36 new GPU tests across 4 new files and 1 existing file:
+  - `test_shader_module.cpp`: `createShaderModule` with arbitrary bytes, empty bytes, and multiple concurrent modules
+  - `test_render_pipeline.cpp`: `createRenderPipeline` null/empty vertex shader (expected-null paths); `createComputePipeline` null/empty compute shader, with and without a `PipelineLayout`
+  - `test_render_pass_encoder.cpp`: `beginRenderPass` (no attachments, `LoadOp::load`, `LoadOp::clear`); `setViewport` (origin zero and non-zero); `setScissorRect`; combined viewport + scissor; `setStencilReference` (zero and non-zero); `setVertexBuffer` (slot 0 and with byte offset); `setIndexBuffer` (`uint16` and `uint32`); `draw` and `drawIndexed`; `end` + `finish`; full off-screen clear pass end-to-end
+  - `test_compute_pass_encoder.cpp`: `dispatchWorkgroups` (single, large, and repeated dispatches); `end`; `setBindGroup` with null and with a real `BindGroup`; `finish` after `end` and after `dispatchWorkgroups`
+  - `test_command_encoder.cpp`: `Device::submit` with an empty command buffer
+
+---
+
 ## [0.3.3] - 2026-03-15
 
 ### Added

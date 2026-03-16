@@ -274,6 +274,18 @@ namespace systems::leal::campello_gpu
          * @return Version string in `MAJOR.MINOR.PATCH` format (e.g. `"0.3.1"`).
          */
         static std::string getEngineVersion();
+
+        /**
+         * @brief Returns a TextureView wrapping the current swapchain back buffer.
+         *
+         * Only valid when the device was created with a window handle (`pd != nullptr`).
+         * Call this once per frame before beginning a render pass that targets the
+         * swapchain. The view is valid until the next `submit()` call.
+         *
+         * @return A `TextureView` for the current back buffer, or `nullptr` if no
+         *         swapchain is present.
+         */
+        std::shared_ptr<TextureView> getSwapchainTextureView();
     };
 
     /**

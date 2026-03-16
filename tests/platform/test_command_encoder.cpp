@@ -24,6 +24,8 @@ static std::shared_ptr<Device> tryCreateDevice() {
     return Device::createDefaultDevice(nullptr);
 #elif defined(__APPLE__)
     return Device::createDefaultDevice(nullptr);
+#elif defined(_WIN32)
+    return Device::createDefaultDevice(nullptr);
 #else
     return nullptr;
 #endif
@@ -171,6 +173,24 @@ TEST(CommandEncoder, WriteTimestampDoesNotCrash) {
 
     auto cmdBuf = encoder->finish();
     EXPECT_NE(cmdBuf, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Device::submit
+// ---------------------------------------------------------------------------
+
+TEST(CommandEncoder, SubmitEmptyCommandBufferDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto cmdBuf = encoder->finish();
+    ASSERT_NE(cmdBuf, nullptr);
+
+    // An empty command list is valid to submit; the GPU should complete
+    // the fence wait without error.
+    EXPECT_NO_THROW(device->submit(cmdBuf));
 }
 
 TEST(CommandEncoder, ResolveQuerySetDoesNotCrash) {
