@@ -34,6 +34,8 @@ namespace systems::leal::campello_gpu
     {
     private:
         friend class Device;
+        friend class RenderPassEncoder;
+        friend class ComputePassEncoder;
         void *native;
 
         Texture(void *pd);

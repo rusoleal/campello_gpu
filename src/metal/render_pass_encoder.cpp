@@ -1,9 +1,19 @@
 #include "Metal.hpp"
+#include "render_pipeline_handle.hpp"
 #include <campello_gpu/render_pass_encoder.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/render_pipeline.hpp>
+#include <campello_gpu/bind_group.hpp>
+#include <campello_gpu/texture.hpp>
+#include <campello_gpu/sampler.hpp>
+#include <campello_gpu/descriptors/bind_group_descriptor.hpp>
 
 using namespace systems::leal::campello_gpu;
+
+// Mirrors the definition in device.cpp and bind_group.cpp.
+struct MetalBindGroupData {
+    std::vector<BindGroupEntryDescriptor> entries;
+};
 
 // Internal state needed to support setIndexBuffer + drawIndexed.
 struct MetalRenderEncoderData {
@@ -101,9 +111,11 @@ void RenderPassEncoder::setIndexBuffer(std::shared_ptr<Buffer> buffer,
 }
 
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
-    auto *enc = static_cast<MetalRenderEncoderData *>(native)->encoder;
-    enc->setRenderPipelineState(
-        static_cast<MTL::RenderPipelineState *>(pipeline->native));
+    auto *enc    = static_cast<MetalRenderEncoderData *>(native)->encoder;
+    auto *handle = static_cast<MetalRenderPipelineData *>(pipeline->native);
+    enc->setRenderPipelineState(handle->pipelineState);
+    if (handle->depthStencilState)
+        enc->setDepthStencilState(handle->depthStencilState);
 }
 
 void RenderPassEncoder::setScissorRect(float x, float y, float width, float height) {
@@ -135,4 +147,32 @@ void RenderPassEncoder::setViewport(float x, float y, float width, float height,
     vp.znear   = minDepth;
     vp.zfar    = maxDepth;
     static_cast<MetalRenderEncoderData *>(native)->encoder->setViewport(vp);
+}
+
+void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> bindGroup,
+                                     const std::vector<uint32_t> &dynamicOffsets,
+                                     uint64_t dynamicOffsetsStart,
+                                     uint64_t dynamicOffsetsLength) {
+    auto *enc    = static_cast<MetalRenderEncoderData *>(native)->encoder;
+    auto *bgData = static_cast<MetalBindGroupData *>(bindGroup->native);
+    if (!bgData) return;
+
+    for (const auto &entry : bgData->entries) {
+        if (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource)) {
+            auto *tex = static_cast<MTL::Texture *>(
+                std::get<std::shared_ptr<Texture>>(entry.resource)->native);
+            enc->setVertexTexture(tex, entry.binding);
+            enc->setFragmentTexture(tex, entry.binding);
+        } else if (std::holds_alternative<std::shared_ptr<Sampler>>(entry.resource)) {
+            auto *samp = static_cast<MTL::SamplerState *>(
+                std::get<std::shared_ptr<Sampler>>(entry.resource)->native);
+            enc->setVertexSamplerState(samp, entry.binding);
+            enc->setFragmentSamplerState(samp, entry.binding);
+        } else if (std::holds_alternative<BufferBinding>(entry.resource)) {
+            const auto &bb  = std::get<BufferBinding>(entry.resource);
+            auto       *buf = static_cast<MTL::Buffer *>(bb.buffer->native);
+            enc->setVertexBuffer(buf, bb.offset, entry.binding);
+            enc->setFragmentBuffer(buf, bb.offset, entry.binding);
+        }
+    }
 }

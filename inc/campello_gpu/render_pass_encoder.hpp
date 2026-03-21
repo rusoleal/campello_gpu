@@ -1,7 +1,9 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <campello_gpu/buffer.hpp>
+#include <campello_gpu/bind_group.hpp>
 #include <campello_gpu/constants/index_format.hpp>
 #include <campello_gpu/render_pipeline.hpp>
 
@@ -110,6 +112,24 @@ namespace systems::leal::campello_gpu
          */
         void setIndexBuffer(std::shared_ptr<Buffer> buffer, IndexFormat indexFormat,
                             uint64_t offset = 0, int64_t size = -1);
+
+        /**
+         * @brief Binds a `BindGroup` to the given index for subsequent draw calls.
+         *
+         * On Metal, iterates the group's entries and binds each resource directly on
+         * the encoder (textures and samplers to both vertex and fragment stages,
+         * buffers to both stages).
+         *
+         * @param index                  Binding group index in the pipeline layout.
+         * @param bindGroup              The resource group to bind.
+         * @param dynamicOffsets         Dynamic offsets for dynamic-offset bindings.
+         * @param dynamicOffsetsStart    First element in `dynamicOffsets` to use.
+         * @param dynamicOffsetsLength   Number of dynamic offsets to apply.
+         */
+        void setBindGroup(uint32_t index, std::shared_ptr<BindGroup> bindGroup,
+                          const std::vector<uint32_t> &dynamicOffsets = {},
+                          uint64_t dynamicOffsetsStart = 0,
+                          uint64_t dynamicOffsetsLength = 0);
 
         /**
          * @brief Sets the render pipeline for subsequent draw calls.

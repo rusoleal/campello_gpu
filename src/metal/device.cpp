@@ -1,4 +1,5 @@
 #include "Metal.hpp"
+#include "render_pipeline_handle.hpp"
 #include "campello_gpu_config.h"
 #include "TargetConditionals.h"
 #include <campello_gpu/device.hpp>
@@ -344,7 +345,21 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
                              << error->localizedDescription()->utf8String() << std::endl;
         return nullptr;
     }
-    return std::shared_ptr<RenderPipeline>(new RenderPipeline(pipelineState));
+
+    // Create a MTLDepthStencilState when depth testing is requested.
+    // This is a separate object from MTLRenderPipelineState and must be set
+    // on the encoder via setDepthStencilState: for depth testing to work.
+    MTL::DepthStencilState *depthStencilState = nullptr;
+    if (descriptor.depthStencil) {
+        auto *dsDesc = MTL::DepthStencilDescriptor::alloc()->init();
+        dsDesc->setDepthWriteEnabled(descriptor.depthStencil->depthWriteEnabled);
+        dsDesc->setDepthCompareFunction(toMTLCompare(descriptor.depthStencil->depthCompare));
+        depthStencilState = dev->newDepthStencilState(dsDesc);
+        dsDesc->release();
+    }
+
+    auto *handle = new MetalRenderPipelineData{ pipelineState, depthStencilState };
+    return std::shared_ptr<RenderPipeline>(new RenderPipeline(handle));
 }
 
 std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipelineDescriptor &descriptor) {
@@ -372,9 +387,13 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
     return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(nullptr));
 }
 
+struct MetalBindGroupData {
+    std::vector<BindGroupEntryDescriptor> entries;
+};
+
 std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor) {
-    // Metal binds resources directly on the encoder; no separate bind group object needed.
-    return std::shared_ptr<BindGroup>(new BindGroup(nullptr));
+    auto *data = new MetalBindGroupData{ descriptor.entries };
+    return std::shared_ptr<BindGroup>(new BindGroup(data));
 }
 
 std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayoutDescriptor &descriptor) {

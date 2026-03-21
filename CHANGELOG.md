@@ -2,6 +2,18 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.5] - 2026-03-21
+
+### Fixed
+- **Metal** `RenderPassEncoder::setBindGroup` — method was entirely absent from `RenderPassEncoder`; textures, samplers, and buffers bound via a `BindGroup` were never forwarded to the Metal encoder, making textured rendering impossible
+- **Metal** `Device::createBindGroup` — all resource entries from `BindGroupDescriptor` were discarded (`nullptr` stored); the bind group now retains a `MetalBindGroupData` struct containing the full entry list
+- **Metal** `BindGroup` destructor — now correctly frees the `MetalBindGroupData` allocation
+
+### Added
+- **Metal** `RenderPassEncoder::setBindGroup` — iterates bind group entries and calls the appropriate Metal encoder methods (`setFragmentTexture`/`setVertexTexture`, `setFragmentSamplerState`/`setVertexSamplerState`, `setFragmentBuffer`/`setVertexBuffer`) so textures, samplers, and buffers are bound to both pipeline stages
+
+---
+
 ## [0.3.4] - 2026-03-16
 
 ### Added
