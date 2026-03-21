@@ -2,6 +2,13 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.6] - 2026-03-21
+
+### Fixed
+- **Metal** `Device::createTexture` — depth/stencil pixel formats (`depth16unorm`, `depth32float`, `depth24plus_stencil8`, `depth32float_stencil8`, `stencil8`) were always created with `StorageModeManaged`, which is invalid on macOS; they are now created with `StorageModePrivate`
+
+---
+
 ## [0.3.5] - 2026-03-21
 
 ### Fixed

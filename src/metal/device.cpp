@@ -223,7 +223,15 @@ std::shared_ptr<Texture> Device::createTexture(
     pTextureDesc->setMipmapLevelCount(mipLevels > 0 ? mipLevels : 1);
     pTextureDesc->setSampleCount(samples > 0 ? samples : 1);
     pTextureDesc->setPixelFormat((MTL::PixelFormat)pixelFormat);
-    pTextureDesc->setStorageMode(MTL::StorageModeManaged);
+
+    // Depth/stencil textures must use StorageModePrivate on macOS; Managed is invalid.
+    bool isDepthStencil = (pixelFormat == PixelFormat::depth16unorm         ||
+                           pixelFormat == PixelFormat::depth32float          ||
+                           pixelFormat == PixelFormat::depth24plus_stencil8  ||
+                           pixelFormat == PixelFormat::depth32float_stencil8 ||
+                           pixelFormat == PixelFormat::stencil8);
+    pTextureDesc->setStorageMode(isDepthStencil ? MTL::StorageModePrivate
+                                                : MTL::StorageModeManaged);
 
     switch (type) {
         case TextureType::tt1d:
