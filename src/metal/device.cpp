@@ -313,8 +313,18 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         if (fn) fn->release();
 
         for (size_t i = 0; i < descriptor.fragment->targets.size(); i++) {
-            pipelineDesc->colorAttachments()->object(i)->setPixelFormat(
-                (MTL::PixelFormat)descriptor.fragment->targets[i].format);
+            const auto& cs = descriptor.fragment->targets[i];
+            auto* ca = pipelineDesc->colorAttachments()->object(i);
+            ca->setPixelFormat((MTL::PixelFormat)cs.format);
+            if (cs.blend) {
+                ca->setBlendingEnabled(true);
+                ca->setRgbBlendOperation(          (MTL::BlendOperation)cs.blend->color.operation);
+                ca->setSourceRGBBlendFactor(       (MTL::BlendFactor)   cs.blend->color.srcFactor);
+                ca->setDestinationRGBBlendFactor(  (MTL::BlendFactor)   cs.blend->color.dstFactor);
+                ca->setAlphaBlendOperation(        (MTL::BlendOperation)cs.blend->alpha.operation);
+                ca->setSourceAlphaBlendFactor(     (MTL::BlendFactor)   cs.blend->alpha.srcFactor);
+                ca->setDestinationAlphaBlendFactor((MTL::BlendFactor)   cs.blend->alpha.dstFactor);
+            }
         }
     }
 

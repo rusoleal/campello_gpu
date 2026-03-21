@@ -2,6 +2,16 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.7] - 2026-03-21
+
+### Added
+- **All backends** Alpha-blending support in `createRenderPipeline` — new public types `BlendFactor`, `BlendOperation`, `BlendComponent`, and `BlendState` in `fragment_descriptor.hpp`; `ColorState` gains an `std::optional<BlendState> blend` field. When set, blending is enabled for that color attachment; when absent (default), the attachment remains opaque
+- **Metal** `createRenderPipeline` — reads `ColorState::blend` and calls `setBlendingEnabled` / `setRgbBlendOperation` / `setSourceRGBBlendFactor` / `setDestinationRGBBlendFactor` / `setAlphaBlendOperation` / `setSourceAlphaBlendFactor` / `setDestinationAlphaBlendFactor` on each color attachment
+- **Vulkan** `createRenderPipeline` — reads `ColorState::blend` per target and builds a `VkPipelineColorBlendAttachmentState` vector with correct `VkBlendFactor` / `VkBlendOp` values (explicit mapping required as Vulkan and Metal factor orderings differ)
+- **DirectX 12** `createRenderPipeline` — reads `ColorState::blend` per target and fills `D3D12_RENDER_TARGET_BLEND_DESC` using `toD3D12Blend` / `toD3D12BlendOp` helpers; sets `IndependentBlendEnable = TRUE` when multiple render targets are present
+
+---
+
 ## [0.3.6] - 2026-03-21
 
 ### Fixed

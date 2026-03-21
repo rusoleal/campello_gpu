@@ -37,6 +37,33 @@ using namespace systems::leal::campello_gpu;
 
 // toDXGIFormat and isDepthFormat are defined as inline helpers in common.hpp
 
+static D3D12_BLEND toD3D12Blend(BlendFactor f) {
+    switch (f) {
+        case BlendFactor::zero:             return D3D12_BLEND_ZERO;
+        case BlendFactor::one:              return D3D12_BLEND_ONE;
+        case BlendFactor::srcColor:         return D3D12_BLEND_SRC_COLOR;
+        case BlendFactor::oneMinusSrcColor: return D3D12_BLEND_INV_SRC_COLOR;
+        case BlendFactor::srcAlpha:         return D3D12_BLEND_SRC_ALPHA;
+        case BlendFactor::oneMinusSrcAlpha: return D3D12_BLEND_INV_SRC_ALPHA;
+        case BlendFactor::dstColor:         return D3D12_BLEND_DEST_COLOR;
+        case BlendFactor::oneMinusDstColor: return D3D12_BLEND_INV_DEST_COLOR;
+        case BlendFactor::dstAlpha:         return D3D12_BLEND_DEST_ALPHA;
+        case BlendFactor::oneMinusDstAlpha: return D3D12_BLEND_INV_DEST_ALPHA;
+        default:                            return D3D12_BLEND_ONE;
+    }
+}
+
+static D3D12_BLEND_OP toD3D12BlendOp(BlendOperation op) {
+    switch (op) {
+        case BlendOperation::add:             return D3D12_BLEND_OP_ADD;
+        case BlendOperation::subtract:        return D3D12_BLEND_OP_SUBTRACT;
+        case BlendOperation::reverseSubtract: return D3D12_BLEND_OP_REV_SUBTRACT;
+        case BlendOperation::min:             return D3D12_BLEND_OP_MIN;
+        case BlendOperation::max:             return D3D12_BLEND_OP_MAX;
+        default:                              return D3D12_BLEND_OP_ADD;
+    }
+}
+
 static D3D12_COMPARISON_FUNC toD3D12Compare(CompareOp op) {
     switch (op) {
         case CompareOp::never:        return D3D12_COMPARISON_FUNC_NEVER;
@@ -632,23 +659,34 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
         descriptor.depthStencil ? descriptor.depthStencil->depthBiasSlopeScale : 0.0f;
 
     // Blend state — one entry per color target
-    psd.BlendState.AlphaToCoverageEnable  = FALSE;
-    psd.BlendState.IndependentBlendEnable = FALSE;
+    psd.BlendState.AlphaToCoverageEnable = FALSE;
     if (descriptor.fragment) {
+        psd.BlendState.IndependentBlendEnable = descriptor.fragment->targets.size() > 1 ? TRUE : FALSE;
         for (size_t i = 0; i < descriptor.fragment->targets.size() && i < 8; ++i) {
+            const auto& cs = descriptor.fragment->targets[i];
             auto& rt = psd.BlendState.RenderTarget[i];
-            rt.BlendEnable           = FALSE;
-            rt.SrcBlend              = D3D12_BLEND_ONE;
-            rt.DestBlend             = D3D12_BLEND_ZERO;
-            rt.BlendOp               = D3D12_BLEND_OP_ADD;
-            rt.SrcBlendAlpha         = D3D12_BLEND_ONE;
-            rt.DestBlendAlpha        = D3D12_BLEND_ZERO;
-            rt.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
             rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+            if (cs.blend) {
+                rt.BlendEnable    = TRUE;
+                rt.SrcBlend       = toD3D12Blend(cs.blend->color.srcFactor);
+                rt.DestBlend      = toD3D12Blend(cs.blend->color.dstFactor);
+                rt.BlendOp        = toD3D12BlendOp(cs.blend->color.operation);
+                rt.SrcBlendAlpha  = toD3D12Blend(cs.blend->alpha.srcFactor);
+                rt.DestBlendAlpha = toD3D12Blend(cs.blend->alpha.dstFactor);
+                rt.BlendOpAlpha   = toD3D12BlendOp(cs.blend->alpha.operation);
+            } else {
+                rt.BlendEnable    = FALSE;
+                rt.SrcBlend       = D3D12_BLEND_ONE;
+                rt.DestBlend      = D3D12_BLEND_ZERO;
+                rt.BlendOp        = D3D12_BLEND_OP_ADD;
+                rt.SrcBlendAlpha  = D3D12_BLEND_ONE;
+                rt.DestBlendAlpha = D3D12_BLEND_ZERO;
+                rt.BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+            }
         }
     } else {
-        psd.BlendState.RenderTarget[0].RenderTargetWriteMask =
-            D3D12_COLOR_WRITE_ENABLE_ALL;
+        psd.BlendState.IndependentBlendEnable = FALSE;
+        psd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     }
 
     // Depth-stencil state

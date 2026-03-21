@@ -715,6 +715,22 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
     }
 }
 
+static VkBlendFactor toVkBlendFactor(BlendFactor f) {
+    switch (f) {
+        case BlendFactor::zero:             return VK_BLEND_FACTOR_ZERO;
+        case BlendFactor::one:              return VK_BLEND_FACTOR_ONE;
+        case BlendFactor::srcColor:         return VK_BLEND_FACTOR_SRC_COLOR;
+        case BlendFactor::oneMinusSrcColor: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        case BlendFactor::srcAlpha:         return VK_BLEND_FACTOR_SRC_ALPHA;
+        case BlendFactor::oneMinusSrcAlpha: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case BlendFactor::dstColor:         return VK_BLEND_FACTOR_DST_COLOR;
+        case BlendFactor::oneMinusDstColor: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+        case BlendFactor::dstAlpha:         return VK_BLEND_FACTOR_DST_ALPHA;
+        case BlendFactor::oneMinusDstAlpha: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        default:                            return VK_BLEND_FACTOR_ONE;
+    }
+}
+
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
 
     auto deviceData = (DeviceData *)this->native;
@@ -845,9 +861,33 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     // TODO
     VkPipelineDepthStencilStateCreateInfo depthStencil;
 
-    VkPipelineColorBlendAttachmentState colorBlendAttachment = {};
-    colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    colorBlendAttachment.blendEnable = false;
+    std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments;
+    if (descriptor.fragment.has_value()) {
+        for (const auto& cs : descriptor.fragment->targets) {
+            VkPipelineColorBlendAttachmentState att = {};
+            att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                 VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+            if (cs.blend) {
+                att.blendEnable         = VK_TRUE;
+                att.srcColorBlendFactor = toVkBlendFactor(cs.blend->color.srcFactor);
+                att.dstColorBlendFactor = toVkBlendFactor(cs.blend->color.dstFactor);
+                att.colorBlendOp        = static_cast<VkBlendOp>(cs.blend->color.operation);
+                att.srcAlphaBlendFactor = toVkBlendFactor(cs.blend->alpha.srcFactor);
+                att.dstAlphaBlendFactor = toVkBlendFactor(cs.blend->alpha.dstFactor);
+                att.alphaBlendOp        = static_cast<VkBlendOp>(cs.blend->alpha.operation);
+            } else {
+                att.blendEnable = VK_FALSE;
+            }
+            colorBlendAttachments.push_back(att);
+        }
+    }
+    if (colorBlendAttachments.empty()) {
+        VkPipelineColorBlendAttachmentState att = {};
+        att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                             VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        att.blendEnable = VK_FALSE;
+        colorBlendAttachments.push_back(att);
+    }
 
     VkPipelineColorBlendStateCreateInfo colorBlending = {};
     colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -855,8 +895,8 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     colorBlending.flags = 0;
     colorBlending.logicOpEnable = false;
     colorBlending.logicOp = VK_LOGIC_OP_COPY;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &colorBlendAttachment;
+    colorBlending.attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size());
+    colorBlending.pAttachments = colorBlendAttachments.data();
     colorBlending.blendConstants[0] = 0.0f;
     colorBlending.blendConstants[1] = 0.0f;
     colorBlending.blendConstants[2] = 0.0f;
