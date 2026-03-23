@@ -61,6 +61,16 @@ if(BUILD_INTEGRATION_TESTS)
     set_target_properties(campello_gpu_integration_tests PROPERTIES
         CXX_STANDARD 20
     )
+    # On Windows, campello_gpu is a DLL. Copy it next to the test binary so
+    # CTest can find it when running test discovery and execution.
+    if(WIN32)
+        add_custom_command(TARGET campello_gpu_integration_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:campello_gpu>
+                $<TARGET_FILE_DIR:campello_gpu_integration_tests>
+        )
+    endif()
+
     include(GoogleTest)
     # PRE_TEST defers test-list discovery to ctest time, which is required for
     # cross-compiled targets (e.g. Android) where the host cannot run the binary.

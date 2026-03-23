@@ -4,6 +4,7 @@
 #include <campello_gpu/render_pipeline.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/constants/index_format.hpp>
+#include <campello_gpu/bind_group.hpp>
 #include <algorithm>
 
 using namespace systems::leal::campello_gpu;
@@ -16,7 +17,11 @@ RenderPassEncoder::~RenderPassEncoder() {
 }
 
 void RenderPassEncoder::beginOcclusionQuery(uint32_t queryIndex) {
-    // Requires a QuerySet to be configured; no-op without it.
+    if (!native) return;
+    auto* h = static_cast<RenderPassEncoderHandle*>(native);
+    if (!h->queryHeap) return;
+    h->activeQueryIndex = queryIndex;
+    h->cmdList->BeginQuery(h->queryHeap, h->queryType, queryIndex);
 }
 
 void RenderPassEncoder::draw(uint32_t vertexCount, uint32_t instanceCount,
@@ -40,19 +45,39 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
 
 void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                      uint64_t indirectOffset) {
-    // ExecuteIndirect requires a command signature; not implemented.
+    if (!native || !indirectBuffer || !indirectBuffer->native) return;
+    auto* h  = static_cast<RenderPassEncoderHandle*>(native);
+    auto* bh = static_cast<BufferHandle*>(indirectBuffer->native);
+    h->deviceData->ensureDrawCommandSignature();
+    if (!h->deviceData->drawCmdSig) return;
+    h->cmdList->IASetPrimitiveTopology(h->topology);
+    h->cmdList->ExecuteIndirect(h->deviceData->drawCmdSig, 1,
+                                 bh->resource, indirectOffset, nullptr, 0);
 }
 
 void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                             uint64_t indirectOffset) {
-    // ExecuteIndirect requires a command signature; not implemented.
+    if (!native || !indirectBuffer || !indirectBuffer->native) return;
+    auto* h  = static_cast<RenderPassEncoderHandle*>(native);
+    auto* bh = static_cast<BufferHandle*>(indirectBuffer->native);
+    h->deviceData->ensureDrawIndexedCommandSignature();
+    if (!h->deviceData->drawIndexedCmdSig) return;
+    if (h->hasIBV) h->cmdList->IASetIndexBuffer(&h->ibv);
+    h->cmdList->IASetPrimitiveTopology(h->topology);
+    h->cmdList->ExecuteIndirect(h->deviceData->drawIndexedCmdSig, 1,
+                                 bh->resource, indirectOffset, nullptr, 0);
 }
 
 void RenderPassEncoder::end() {
     // The command list stays open until CommandEncoder::finish().
 }
 
-void RenderPassEncoder::endOcclusionQuery() {}
+void RenderPassEncoder::endOcclusionQuery() {
+    if (!native) return;
+    auto* h = static_cast<RenderPassEncoderHandle*>(native);
+    if (!h->queryHeap) return;
+    h->cmdList->EndQuery(h->queryHeap, h->queryType, h->activeQueryIndex);
+}
 
 void RenderPassEncoder::setIndexBuffer(std::shared_ptr<Buffer> buffer,
                                        IndexFormat indexFormat,
@@ -129,4 +154,18 @@ void RenderPassEncoder::setViewport(float x, float y, float width, float height,
     vp.MinDepth = minDepth;
     vp.MaxDepth = maxDepth;
     h->cmdList->RSSetViewports(1, &vp);
+}
+
+void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> bindGroup,
+                                     const std::vector<uint32_t>& dynamicOffsets,
+                                     uint64_t dynamicOffsetsStart,
+                                     uint64_t dynamicOffsetsLength) {
+    if (!native || !bindGroup || !bindGroup->native) return;
+    auto* h   = static_cast<RenderPassEncoderHandle*>(native);
+    auto* bgh = static_cast<BindGroupHandle*>(bindGroup->native);
+
+    if (bgh->gpuHandle.ptr != 0)
+        h->cmdList->SetGraphicsRootDescriptorTable(index, bgh->gpuHandle);
+    if (bgh->samplerHandle.ptr != 0)
+        h->cmdList->SetGraphicsRootDescriptorTable(index + 1, bgh->samplerHandle);
 }

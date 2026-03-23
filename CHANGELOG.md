@@ -2,6 +2,22 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.8] - 2026-03-23
+
+### Added
+- **DirectX 12** `drawIndirect` / `drawIndexedIndirect` on `RenderPassEncoder` — implemented via `ID3D12CommandSignature`; signatures are created lazily on first use and cached on `DeviceData`
+- **DirectX 12** `dispatchWorkgroupsIndirect` on `ComputePassEncoder` — implemented via `ID3D12CommandSignature` with the same lazy-cache pattern
+- **DirectX 12** `beginOcclusionQuery` / `endOcclusionQuery` on `RenderPassEncoder` — propagates `QuerySet` heap and type from `BeginRenderPassDescriptor::occlusionQuerySet` into the encoder handle; calls `BeginQuery` / `EndQuery` on the command list
+- **DirectX 12** `RenderPassEncoder::setBindGroup` — binds SRV/CBV and sampler descriptor tables via `SetGraphicsRootDescriptorTable`
+- **DirectX 12** `getSwapchainTextureView` — lazily resizes the swapchain when the window dimensions change (stores `HWND` in `DeviceData`; calls `ResizeBuffers` + recreates RTVs before returning the current back-buffer view)
+- **Tests** Windows DLL copy step in `tests/CMakeLists.txt` — copies `campello_gpu.dll` next to the test binary on `WIN32` so CTest can locate it during discovery and execution
+
+### Fixed
+- **DirectX 12** `CommandEncoder::beginComputePass` — `deviceData` was not forwarded to `ComputePassEncoderHandle`, making indirect dispatch and future device-dependent operations unavailable inside compute passes
+- **DirectX 12** `Device` destructor — cached command signatures (`drawCmdSig`, `drawIndexedCmdSig`, `dispatchCmdSig`) were not released
+
+---
+
 ## [0.3.7] - 2026-03-21
 
 ### Added

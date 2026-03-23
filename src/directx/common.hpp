@@ -20,6 +20,7 @@ struct DeviceData {
     ID3D12CommandQueue*     queue             = nullptr;
 
     // Swapchain (only when a window handle is provided at creation)
+    HWND                    hwnd              = nullptr;
     IDXGISwapChain3*        swapChain         = nullptr;
     static constexpr UINT   kFrameCount       = 2;
     ID3D12Resource*         renderTargets[kFrameCount] = {};
@@ -91,6 +92,44 @@ struct DeviceData {
         h.ptr += dsvOffset * dsvDescSize;
         ++dsvOffset;
         return h;
+    }
+
+    // Cached command signatures for indirect draw/dispatch (created on first use).
+    ID3D12CommandSignature* drawCmdSig        = nullptr;
+    ID3D12CommandSignature* drawIndexedCmdSig = nullptr;
+    ID3D12CommandSignature* dispatchCmdSig    = nullptr;
+
+    void ensureDrawCommandSignature() {
+        if (drawCmdSig) return;
+        D3D12_INDIRECT_ARGUMENT_DESC arg = {};
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+        D3D12_COMMAND_SIGNATURE_DESC desc = {};
+        desc.ByteStride       = sizeof(D3D12_DRAW_ARGUMENTS);
+        desc.NumArgumentDescs = 1;
+        desc.pArgumentDescs   = &arg;
+        device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&drawCmdSig));
+    }
+
+    void ensureDrawIndexedCommandSignature() {
+        if (drawIndexedCmdSig) return;
+        D3D12_INDIRECT_ARGUMENT_DESC arg = {};
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+        D3D12_COMMAND_SIGNATURE_DESC desc = {};
+        desc.ByteStride       = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+        desc.NumArgumentDescs = 1;
+        desc.pArgumentDescs   = &arg;
+        device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&drawIndexedCmdSig));
+    }
+
+    void ensureDispatchCommandSignature() {
+        if (dispatchCmdSig) return;
+        D3D12_INDIRECT_ARGUMENT_DESC arg = {};
+        arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+        D3D12_COMMAND_SIGNATURE_DESC desc = {};
+        desc.ByteStride       = sizeof(D3D12_DISPATCH_ARGUMENTS);
+        desc.NumArgumentDescs = 1;
+        desc.pArgumentDescs   = &arg;
+        device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&dispatchCmdSig));
     }
 
     // Block the CPU until the GPU has finished all submitted work.
@@ -192,16 +231,21 @@ struct CommandEncoderHandle {
 };
 
 struct RenderPassEncoderHandle {
-    ID3D12GraphicsCommandList* cmdList   = nullptr;
+    ID3D12GraphicsCommandList* cmdList    = nullptr;
     DeviceData*                deviceData = nullptr;
     // Index buffer state for drawIndexed
-    D3D12_INDEX_BUFFER_VIEW    ibv       = {};
-    bool                       hasIBV    = false;
-    D3D12_PRIMITIVE_TOPOLOGY   topology  = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    D3D12_INDEX_BUFFER_VIEW    ibv        = {};
+    bool                       hasIBV     = false;
+    D3D12_PRIMITIVE_TOPOLOGY   topology   = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    // Occlusion query state (populated from BeginRenderPassDescriptor::occlusionQuerySet)
+    ID3D12QueryHeap*           queryHeap        = nullptr;
+    D3D12_QUERY_TYPE           queryType        = D3D12_QUERY_TYPE_OCCLUSION;
+    uint32_t                   activeQueryIndex = 0;
 };
 
 struct ComputePassEncoderHandle {
-    ID3D12GraphicsCommandList* cmdList = nullptr;
+    ID3D12GraphicsCommandList* cmdList     = nullptr;
+    DeviceData*                deviceData  = nullptr;
 };
 
 struct CommandBufferHandle {

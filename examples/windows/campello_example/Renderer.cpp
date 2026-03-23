@@ -205,6 +205,4 @@ void Renderer::resize(int width, int height)
 {
     _width  = width;
     _height = height;
-    // Swapchain resize is not yet implemented in campello_gpu.
-    // For a production app, Device::resizeSwapchain() would be called here.
 }

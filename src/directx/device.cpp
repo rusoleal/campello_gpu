@@ -217,6 +217,7 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
     // Swapchain (optional — only when a window handle is provided)
     if (pd != nullptr) {
         HWND hwnd = static_cast<HWND>(pd);
+        data->hwnd = hwnd;
         RECT rect = {};
         GetClientRect(hwnd, &rect);
         UINT w = std::max<UINT>(rect.right  - rect.left, 1u);
@@ -334,6 +335,10 @@ Device::~Device() {
         if (d->renderTargets[i]) d->renderTargets[i]->Release();
     if (d->rtvHeap)      d->rtvHeap->Release();
     if (d->swapChain)    d->swapChain->Release();
+
+    if (d->drawCmdSig)        d->drawCmdSig->Release();
+    if (d->drawIndexedCmdSig) d->drawIndexedCmdSig->Release();
+    if (d->dispatchCmdSig)    d->dispatchCmdSig->Release();
 
     if (d->srvHeap)      d->srvHeap->Release();
     if (d->samplerHeap)  d->samplerHeap->Release();
@@ -985,6 +990,36 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     auto* d = static_cast<DeviceData*>(native);
     if (!d->swapChain || !d->rtvHeap) return nullptr;
+
+    // Lazily resize the swapchain if the window dimensions have changed.
+    if (d->hwnd) {
+        RECT rect = {};
+        GetClientRect(d->hwnd, &rect);
+        UINT w = std::max<UINT>(rect.right  - rect.left, 1u);
+        UINT h = std::max<UINT>(rect.bottom - rect.top,  1u);
+
+        DXGI_SWAP_CHAIN_DESC1 desc = {};
+        d->swapChain->GetDesc1(&desc);
+
+        if (w != desc.Width || h != desc.Height) {
+            d->waitForGpu();
+            for (UINT i = 0; i < DeviceData::kFrameCount; ++i) {
+                if (d->renderTargets[i]) {
+                    d->renderTargets[i]->Release();
+                    d->renderTargets[i] = nullptr;
+                }
+            }
+            if (SUCCEEDED(d->swapChain->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0))) {
+                D3D12_CPU_DESCRIPTOR_HANDLE rtvH = d->rtvHeap->GetCPUDescriptorHandleForHeapStart();
+                for (UINT i = 0; i < DeviceData::kFrameCount; ++i) {
+                    d->swapChain->GetBuffer(i, IID_PPV_ARGS(&d->renderTargets[i]));
+                    d->device->CreateRenderTargetView(d->renderTargets[i], nullptr, rtvH);
+                    rtvH.ptr += d->rtvDescSize;
+                }
+                d->frameIndex = d->swapChain->GetCurrentBackBufferIndex();
+            }
+        }
+    }
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH = d->rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtvH.ptr += d->frameIndex * d->rtvDescSize;

@@ -25,8 +25,9 @@ std::shared_ptr<ComputePassEncoder> CommandEncoder::beginComputePass() {
     if (!native) return nullptr;
     auto* h  = static_cast<CommandEncoderHandle*>(native);
 
-    auto* ph       = new ComputePassEncoderHandle();
-    ph->cmdList    = h->cmdList;
+    auto* ph          = new ComputePassEncoderHandle();
+    ph->cmdList       = h->cmdList;
+    ph->deviceData    = h->deviceData;
     return std::shared_ptr<ComputePassEncoder>(new ComputePassEncoder(ph));
 }
 
@@ -75,9 +76,14 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
         FALSE,
         hasDSV ? &dsvHandle : nullptr);
 
-    auto* ph       = new RenderPassEncoderHandle();
-    ph->cmdList    = list;
-    ph->deviceData = h->deviceData;
+    auto* ph        = new RenderPassEncoderHandle();
+    ph->cmdList     = list;
+    ph->deviceData  = h->deviceData;
+    if (descriptor.occlusionQuerySet && descriptor.occlusionQuerySet->native) {
+        auto* qsh      = static_cast<QuerySetHandle*>(descriptor.occlusionQuerySet->native);
+        ph->queryHeap  = qsh->queryHeap;
+        ph->queryType  = qsh->queryType;
+    }
     return std::shared_ptr<RenderPassEncoder>(new RenderPassEncoder(ph));
 }
 

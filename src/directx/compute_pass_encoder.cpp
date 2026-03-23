@@ -26,7 +26,13 @@ void ComputePassEncoder::dispatchWorkgroups(uint64_t workgroupCountX,
 
 void ComputePassEncoder::dispatchWorkgroupsIndirect(
     std::shared_ptr<Buffer> indirectBuffer, uint64_t indirectOffset) {
-    // ExecuteIndirect requires a command signature; not implemented.
+    if (!native || !indirectBuffer || !indirectBuffer->native) return;
+    auto* h  = static_cast<ComputePassEncoderHandle*>(native);
+    auto* bh = static_cast<BufferHandle*>(indirectBuffer->native);
+    h->deviceData->ensureDispatchCommandSignature();
+    if (!h->deviceData->dispatchCmdSig) return;
+    h->cmdList->ExecuteIndirect(h->deviceData->dispatchCmdSig, 1,
+                                 bh->resource, indirectOffset, nullptr, 0);
 }
 
 void ComputePassEncoder::end() {
