@@ -103,7 +103,8 @@ void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     if (!native || !pipeline || !pipeline->native) return;
     auto* h   = static_cast<RenderPassEncoderHandle*>(native);
     auto* rph = static_cast<RenderPipelineHandle*>(pipeline->native);
-    h->topology = rph->topology;
+    h->topology       = rph->topology;
+    h->vertexStrides  = rph->vertexStrides;
     h->cmdList->SetPipelineState(rph->pso);
     h->cmdList->SetGraphicsRootSignature(rph->rootSignature);
 }
@@ -135,10 +136,12 @@ void RenderPassEncoder::setVertexBuffer(uint32_t slot, std::shared_ptr<Buffer> b
         ? static_cast<UINT>(bh->size - offset)
         : static_cast<UINT>(size);
 
+    UINT stride = (slot < h->vertexStrides.size()) ? h->vertexStrides[slot] : 0;
+
     D3D12_VERTEX_BUFFER_VIEW vbv;
     vbv.BufferLocation = bh->resource->GetGPUVirtualAddress() + offset;
     vbv.SizeInBytes    = byteSize;
-    vbv.StrideInBytes  = 0;  // Stride is encoded in the pipeline input layout.
+    vbv.StrideInBytes  = stride;
     h->cmdList->IASetVertexBuffers(slot, 1, &vbv);
 }
 

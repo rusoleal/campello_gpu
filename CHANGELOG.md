@@ -2,6 +2,13 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.3.9] - 2026-03-23
+
+### Fixed
+- **DirectX 12** `RenderPassEncoder::setVertexBuffer` — `StrideInBytes` was hardcoded to `0`; vertex strides are now stored in `RenderPipelineHandle` at pipeline creation time, copied into `RenderPassEncoderHandle` on `setPipeline`, and applied correctly when building the `D3D12_VERTEX_BUFFER_VIEW`
+
+---
+
 ## [0.3.8] - 2026-03-23
 
 ### Added

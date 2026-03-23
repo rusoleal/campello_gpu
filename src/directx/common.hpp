@@ -189,6 +189,7 @@ struct RenderPipelineHandle {
     ID3D12PipelineState*     pso           = nullptr;
     ID3D12RootSignature*     rootSignature = nullptr;
     D3D12_PRIMITIVE_TOPOLOGY topology      = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    std::vector<UINT>        vertexStrides; // arrayStride per buffer slot
 };
 
 struct ComputePipelineHandle {
@@ -237,6 +238,8 @@ struct RenderPassEncoderHandle {
     D3D12_INDEX_BUFFER_VIEW    ibv        = {};
     bool                       hasIBV     = false;
     D3D12_PRIMITIVE_TOPOLOGY   topology   = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    // Vertex strides per slot — copied from the pipeline on setPipeline()
+    std::vector<UINT>          vertexStrides;
     // Occlusion query state (populated from BeginRenderPassDescriptor::occlusionQuerySet)
     ID3D12QueryHeap*           queryHeap        = nullptr;
     D3D12_QUERY_TYPE           queryType        = D3D12_QUERY_TYPE_OCCLUSION;

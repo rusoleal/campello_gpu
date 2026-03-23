@@ -753,6 +753,9 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
     h->pso            = pso;
     h->rootSignature  = rootSig;
     h->topology       = toPrimitiveTopology(descriptor.topology);
+    h->vertexStrides.reserve(descriptor.vertex.buffers.size());
+    for (const auto& layout : descriptor.vertex.buffers)
+        h->vertexStrides.push_back(static_cast<UINT>(layout.arrayStride));
     return std::shared_ptr<RenderPipeline>(new RenderPipeline(h));
 }
 
