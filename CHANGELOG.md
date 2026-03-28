@@ -2,6 +2,16 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.4.1] - 2026-03-28
+
+### Fixed
+- **Metal** `command_encoder.hpp` — missing `#include <campello_gpu/texture.hpp>` caused `Texture` to be unresolvable when `Metal.hpp` was included first in `command_encoder.cpp`, as `MTL::Texture` shadowed the public type
+- **Metal** `createShaderModule` — was compiling bytecode immediately via `newLibrary()`, rejecting arbitrary or empty bytes; now stores raw bytes and defers compilation to pipeline creation time, matching the intended lazy-validation contract
+- **Metal** `createRenderPipeline` — now returns `nullptr` when `descriptor.vertex.module` is null instead of crashing Metal with a missing vertex function
+- **Metal** `ComputePassEncoder::dispatchWorkgroups` / `dispatchWorkgroupsIndirect` — calling these without a compute pipeline set caused a Metal crash; both methods now early-return when no pipeline has been bound
+
+---
+
 ## [0.4.0] - 2026-03-28
 
 ### Added

@@ -33,8 +33,8 @@ void ComputePassEncoder::dispatchWorkgroups(uint64_t workgroupCountX,
                                             uint64_t workgroupCountY,
                                             uint64_t workgroupCountZ) {
     auto *data = static_cast<MetalComputeEncoderData *>(native);
-    NS::UInteger threadGroupSize = data->currentPipeline
-        ? data->currentPipeline->threadExecutionWidth() : 32;
+    if (!data->currentPipeline) return;
+    NS::UInteger threadGroupSize = data->currentPipeline->threadExecutionWidth();
     data->encoder->dispatchThreadgroups(
         MTL::Size::Make(workgroupCountX, workgroupCountY, workgroupCountZ),
         MTL::Size::Make(threadGroupSize, 1, 1));
@@ -43,8 +43,8 @@ void ComputePassEncoder::dispatchWorkgroups(uint64_t workgroupCountX,
 void ComputePassEncoder::dispatchWorkgroupsIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                                     uint64_t indirectOffset) {
     auto *data = static_cast<MetalComputeEncoderData *>(native);
-    NS::UInteger threadGroupSize = data->currentPipeline
-        ? data->currentPipeline->threadExecutionWidth() : 32;
+    if (!data->currentPipeline) return;
+    NS::UInteger threadGroupSize = data->currentPipeline->threadExecutionWidth();
     data->encoder->dispatchThreadgroups(
         static_cast<MTL::Buffer *>(indirectBuffer->native),
         indirectOffset,

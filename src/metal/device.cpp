@@ -1,5 +1,6 @@
 #include "Metal.hpp"
 #include "render_pipeline_handle.hpp"
+#include "shader_module_handle.hpp"
 #include "campello_gpu_config.h"
 #include "TargetConditionals.h"
 #include <campello_gpu/device.hpp>
@@ -277,40 +278,49 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
 }
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, uint64_t size) {
-    auto *dev = static_cast<MetalDeviceData *>(native)->device;
-    dispatch_data_t data = dispatch_data_create(
-        buffer, (size_t)size, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-    NS::Error *error = nullptr;
-    auto *library = dev->newLibrary(data, &error);
-    dispatch_release(data);
-    if (!library) {
-        if (error) std::cerr << "createShaderModule: "
-                             << error->localizedDescription()->utf8String() << std::endl;
-        return nullptr;
-    }
-    return std::shared_ptr<ShaderModule>(new ShaderModule(library));
+    auto *data = new MetalShaderModuleData{ std::vector<uint8_t>(buffer, buffer + size) };
+    return std::shared_ptr<ShaderModule>(new ShaderModule(data));
 }
 
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     auto *pipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
 
+    auto compileModule = [&](ShaderModule *module) -> MTL::Library * {
+        auto *data = static_cast<MetalShaderModuleData *>(module->native);
+        dispatch_data_t dispData = dispatch_data_create(
+            data->bytes.data(), data->bytes.size(), nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+        NS::Error *err    = nullptr;
+        auto      *lib    = dev->newLibrary(dispData, &err);
+        dispatch_release(dispData);
+        if (!lib && err)
+            std::cerr << "createRenderPipeline: " << err->localizedDescription()->utf8String() << std::endl;
+        return lib;
+    };
+
+    // A vertex shader is required; return nullptr if missing.
+    if (!descriptor.vertex.module) { pipelineDesc->release(); return nullptr; }
+
     // Vertex function
     if (descriptor.vertex.module) {
-        auto *library  = static_cast<MTL::Library *>(descriptor.vertex.module->native);
+        auto *library = compileModule(descriptor.vertex.module.get());
+        if (!library) { pipelineDesc->release(); return nullptr; }
         auto *funcName = NS::String::string(descriptor.vertex.entryPoint.c_str(), NS::UTF8StringEncoding);
         auto *fn       = library->newFunction(funcName);
         pipelineDesc->setVertexFunction(fn);
         if (fn) fn->release();
+        library->release();
     }
 
     // Fragment function + color attachments
     if (descriptor.fragment && descriptor.fragment->module) {
-        auto *library  = static_cast<MTL::Library *>(descriptor.fragment->module->native);
+        auto *library = compileModule(descriptor.fragment->module.get());
+        if (!library) { pipelineDesc->release(); return nullptr; }
         auto *funcName = NS::String::string(descriptor.fragment->entryPoint.c_str(), NS::UTF8StringEncoding);
         auto *fn       = library->newFunction(funcName);
         pipelineDesc->setFragmentFunction(fn);
         if (fn) fn->release();
+        library->release();
 
         for (size_t i = 0; i < descriptor.fragment->targets.size(); i++) {
             const auto& cs = descriptor.fragment->targets[i];
@@ -384,9 +394,20 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     if (!descriptor.compute.module) return nullptr;
 
-    auto *library  = static_cast<MTL::Library *>(descriptor.compute.module->native);
+    auto *smData   = static_cast<MetalShaderModuleData *>(descriptor.compute.module->native);
+    dispatch_data_t dispData = dispatch_data_create(
+        smData->bytes.data(), smData->bytes.size(), nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    NS::Error *compileError = nullptr;
+    auto *library = dev->newLibrary(dispData, &compileError);
+    dispatch_release(dispData);
+    if (!library) {
+        if (compileError) std::cerr << "createComputePipeline: "
+                                    << compileError->localizedDescription()->utf8String() << std::endl;
+        return nullptr;
+    }
     auto *funcName = NS::String::string(descriptor.compute.entryPoint.c_str(), NS::UTF8StringEncoding);
     auto *function = library->newFunction(funcName);
+    library->release();
     if (!function) return nullptr;
 
     NS::Error *error      = nullptr;

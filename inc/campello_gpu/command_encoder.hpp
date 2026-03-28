@@ -6,6 +6,7 @@
 #include <campello_gpu/compute_pass_encoder.hpp>
 #include <campello_gpu/command_buffer.hpp>
 #include <campello_gpu/buffer.hpp>
+#include <campello_gpu/texture.hpp>
 #include <campello_gpu/query_set.hpp>
 
 namespace systems::leal::campello_gpu
