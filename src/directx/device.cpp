@@ -465,8 +465,13 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
 
+    // Determine heap type based on usage flags
+    bool isReadback = (static_cast<int>(usage) & static_cast<int>(BufferUsage::copyDst)) != 0 &&
+                      (static_cast<int>(usage) & static_cast<int>(BufferUsage::mapRead)) != 0;
+    bool isUpload = !isReadback;
+
     D3D12_HEAP_PROPERTIES hp = {};
-    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    hp.Type = isReadback ? D3D12_HEAP_TYPE_READBACK : D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC rd = {};
     rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -479,18 +484,24 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     rd.Flags            = D3D12_RESOURCE_FLAG_NONE;
 
+    D3D12_RESOURCE_STATES initialState = isReadback 
+        ? D3D12_RESOURCE_STATE_COPY_DEST 
+        : D3D12_RESOURCE_STATE_GENERIC_READ;
+
     ID3D12Resource* resource = nullptr;
     if (FAILED(dev->CreateCommittedResource(
             &hp, D3D12_HEAP_FLAG_NONE, &rd,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
+            initialState,
             nullptr, IID_PPV_ARGS(&resource)))) return nullptr;
 
-    auto* handle    = new BufferHandle();
+    auto* handle     = new BufferHandle();
     handle->resource = resource;
     handle->device   = dev;
+    handle->queue    = d->queue;
     handle->size     = size;
+    handle->isReadback = isReadback;
 
-    // Persistently map the upload heap
+    // Persistently map the heap
     D3D12_RANGE readRange = { 0, 0 };
     resource->Map(0, &readRange, &handle->mapped);
 
@@ -568,6 +579,7 @@ std::shared_ptr<Texture> Device::createTexture(
     auto* handle           = new TextureHandle();
     handle->resource       = resource;
     handle->device         = dev;
+    handle->deviceData     = d;
     handle->format         = pixelFormat;
     handle->dimension      = type;
     handle->width          = width;
@@ -589,6 +601,41 @@ std::shared_ptr<Texture> Device::createTexture(
         }
     }
 
+    // Pre-create an SRV for shader-sampled textures so createBindGroup can copy it
+    if ((u & static_cast<int>(TextureUsage::textureBinding)) && !isDepthFormat(pixelFormat)) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format                  = fmt;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        uint32_t layers = std::max(depth, 1u);
+        switch (type) {
+            case TextureType::tt1d:
+                srvDesc.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE1D;
+                srvDesc.Texture1D.MostDetailedMip = 0;
+                srvDesc.Texture1D.MipLevels       = handle->mipLevels;
+                break;
+            case TextureType::tt3d:
+                srvDesc.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE3D;
+                srvDesc.Texture3D.MostDetailedMip = 0;
+                srvDesc.Texture3D.MipLevels       = handle->mipLevels;
+                break;
+            default:
+                if (layers > 1) {
+                    srvDesc.ViewDimension                  = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                    srvDesc.Texture2DArray.MostDetailedMip = 0;
+                    srvDesc.Texture2DArray.MipLevels       = handle->mipLevels;
+                    srvDesc.Texture2DArray.FirstArraySlice = 0;
+                    srvDesc.Texture2DArray.ArraySize       = layers;
+                } else {
+                    srvDesc.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE2D;
+                    srvDesc.Texture2D.MostDetailedMip = 0;
+                    srvDesc.Texture2D.MipLevels       = handle->mipLevels;
+                }
+                break;
+        }
+        handle->srvCpuHandle = d->allocSrvCpu();
+        dev->CreateShaderResourceView(resource, &srvDesc, handle->srvCpuHandle);
+    }
+
     return std::shared_ptr<Texture>(new Texture(handle));
 }
 
@@ -605,8 +652,82 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
 
-    // RenderPipelineDescriptor has no layout field — use an empty root signature.
-    ID3D12RootSignature* rootSig = createUniversalRootSignature(dev, {});
+    // Build a root signature with four descriptor tables:
+    //   root param 0 — SRV table     (8 x t0-t7, space0) — PBR material (t0-t4) + clearcoat (t5-t7)
+    //   root param 1 — Sampler table (1 x s0,    space0) — material/clearcoat sampler
+    //   root param 2 — SRV table     (3 x t8-t10,space0) — IBL prefilter/BRDF-LUT/SH9
+    //   root param 3 — Sampler table (1 x s1,    space0) — IBL sampler
+    // setBindGroup(0, bg) → tables 0+1; setBindGroup(2, bg) → tables 2+3.
+    ID3D12RootSignature* rootSig = nullptr;
+    {
+        D3D12_DESCRIPTOR_RANGE1 srvRange = {};
+        srvRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        srvRange.NumDescriptors                    = 10; // t0-t9: 5 PBR + 3 clearcoat + 2 sheen
+        srvRange.BaseShaderRegister                = 0;
+        srvRange.RegisterSpace                     = 0;
+        srvRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+        srvRange.OffsetInDescriptorsFromTableStart = 0;
+
+        D3D12_DESCRIPTOR_RANGE1 samplerRange = {};
+        samplerRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+        samplerRange.NumDescriptors                    = 1;
+        samplerRange.BaseShaderRegister                = 0;
+        samplerRange.RegisterSpace                     = 0;
+        samplerRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+        samplerRange.OffsetInDescriptorsFromTableStart = 0;
+
+        D3D12_DESCRIPTOR_RANGE1 iblSrvRange = {};
+        iblSrvRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        iblSrvRange.NumDescriptors                    = 3;
+        iblSrvRange.BaseShaderRegister                = 10; // t10-t12
+        iblSrvRange.RegisterSpace                     = 0;
+        iblSrvRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+        iblSrvRange.OffsetInDescriptorsFromTableStart = 0;
+
+        D3D12_DESCRIPTOR_RANGE1 iblSamplerRange = {};
+        iblSamplerRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+        iblSamplerRange.NumDescriptors                    = 1;
+        iblSamplerRange.BaseShaderRegister                = 1; // s1
+        iblSamplerRange.RegisterSpace                     = 0;
+        iblSamplerRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+        iblSamplerRange.OffsetInDescriptorsFromTableStart = 0;
+
+        D3D12_ROOT_PARAMETER1 params[4] = {};
+        params[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[0].DescriptorTable.NumDescriptorRanges = 1;
+        params[0].DescriptorTable.pDescriptorRanges   = &srvRange;
+        params[0].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        params[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[1].DescriptorTable.NumDescriptorRanges = 1;
+        params[1].DescriptorTable.pDescriptorRanges   = &samplerRange;
+        params[1].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        params[2].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges   = &iblSrvRange;
+        params[2].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        params[3].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[3].DescriptorTable.NumDescriptorRanges = 1;
+        params[3].DescriptorTable.pDescriptorRanges   = &iblSamplerRange;
+        params[3].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc = {};
+        rsDesc.Version                    = D3D_ROOT_SIGNATURE_VERSION_1_1;
+        rsDesc.Desc_1_1.NumParameters     = 4;
+        rsDesc.Desc_1_1.pParameters       = params;
+        rsDesc.Desc_1_1.Flags             = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+        ID3DBlob* blob  = nullptr;
+        ID3DBlob* error = nullptr;
+        if (SUCCEEDED(D3D12SerializeVersionedRootSignature(&rsDesc, &blob, &error))) {
+            dev->CreateRootSignature(0, blob->GetBufferPointer(),
+                                     blob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
+            blob->Release();
+        }
+        if (error) error->Release();
+    }
     if (!rootSig) return nullptr;
 
     // Input layout from vertex descriptor
@@ -825,11 +946,44 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(
 
 std::shared_ptr<BindGroup> Device::createBindGroup(
     const BindGroupDescriptor& descriptor) {
-    // Bind groups in D3D12 are resolved at command recording time by
-    // setting descriptor tables. Store the GPU handle for the first
-    // descriptor in the SRV heap that was allocated when creating the
-    // resources in this group.
-    auto* h = new BindGroupHandle();
+    // For each texture entry, allocate a consecutive SRV slot in the shader-visible
+    // heap by copying the pre-built SRV.  The base GPU handle of the first slot is
+    // stored so SetGraphicsRootDescriptorTable can point at the contiguous range.
+    auto* h   = new BindGroupHandle();
+    auto* d   = static_cast<DeviceData*>(native);
+    auto* dev = d->device;
+
+    bool firstTex = true;
+    UINT baseIdx  = 0;
+
+    for (const auto& entry : descriptor.entries) {
+        if (auto* texPtr = std::get_if<std::shared_ptr<Texture>>(&entry.resource)) {
+            auto& tex = *texPtr;
+            if (tex && tex->native) {
+                auto* th = static_cast<TextureHandle*>(tex->native);
+                if (firstTex) {
+                    baseIdx  = d->srvOffset;
+                    firstTex = false;
+                }
+                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->allocSrvCpu();
+                if (th->srvCpuHandle.ptr != 0) {
+                    dev->CopyDescriptorsSimple(1, dst, th->srvCpuHandle,
+                                               D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                }
+            }
+        } else if (auto* sampPtr = std::get_if<std::shared_ptr<Sampler>>(&entry.resource)) {
+            auto& samp = *sampPtr;
+            if (samp && samp->native) {
+                auto* sh = static_cast<SamplerHandle*>(samp->native);
+                if (sh->gpuHandle.ptr != 0)
+                    h->samplerHandle = sh->gpuHandle;
+            }
+        }
+    }
+
+    if (!firstTex)
+        h->gpuHandle = d->srvGpuAt(baseIdx);
+
     return std::shared_ptr<BindGroup>(new BindGroup(h));
 }
 

@@ -74,6 +74,73 @@ bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
     return true;
 }
 
+bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint64_t length) {
+    if (!native || !data || length == 0) return false;
+    auto *tex = static_cast<MTL::Texture *>(native);
+    auto *device = tex->device();
+    if (!device) return false;
+
+    // Get the command queue from the device
+    auto *commandQueue = device->newCommandQueue();
+    if (!commandQueue) return false;
+
+    // Create a readback buffer
+    auto *readbackBuf = device->newBuffer(length, MTL::ResourceStorageModeShared);
+    if (!readbackBuf) {
+        commandQueue->release();
+        return false;
+    }
+
+    // Create a command buffer
+    auto *cmdBuffer = commandQueue->commandBuffer();
+    if (!cmdBuffer) {
+        readbackBuf->release();
+        commandQueue->release();
+        return false;
+    }
+
+    // Create a blit encoder
+    auto *blitEncoder = cmdBuffer->blitCommandEncoder();
+    if (!blitEncoder) {
+        cmdBuffer->release();
+        readbackBuf->release();
+        commandQueue->release();
+        return false;
+    }
+
+    // Calculate region size for the mip level
+    uint32_t width  = std::max(1u, (uint32_t)tex->width() >> mipLevel);
+    uint32_t height = std::max(1u, (uint32_t)tex->height() >> mipLevel);
+    uint32_t depth  = std::max(1u, (uint32_t)tex->depth() >> mipLevel);
+
+    MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+    MTL::Size   size   = MTL::Size::Make(width, height, depth);
+
+    // Bytes per row calculation
+    NS::UInteger bytesPerRow = length / (height > 0 ? height : 1);
+
+    // Copy from texture to buffer
+    blitEncoder->copyFromTexture(
+        tex, arrayLayer, mipLevel, origin, size,
+        readbackBuf, 0, bytesPerRow, bytesPerRow * height);
+
+    // Synchronize for CPU read access
+    blitEncoder->synchronizeResource(readbackBuf);
+    blitEncoder->endEncoding();
+
+    // Commit and wait
+    cmdBuffer->commit();
+    cmdBuffer->waitUntilCompleted();
+
+    // Copy data from buffer
+    memcpy(data, readbackBuf->contents(), length);
+
+    readbackBuf->release();
+    cmdBuffer->release();
+    commandQueue->release();
+    return true;
+}
+
 std::shared_ptr<TextureView> Texture::createView(
     PixelFormat format,
     uint32_t arrayLayerCount,

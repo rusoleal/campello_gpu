@@ -62,6 +62,9 @@ std::string version = Device::getEngineVersion();
 auto buffer = device->createBuffer(size, BufferUsage::vertex | BufferUsage::copySrc);
 auto buffer = device->createBuffer(size, BufferUsage::uniform, data);
 
+// Readback buffer (GPU → CPU)
+auto readbackBuffer = device->createBuffer(size, BufferUsage::copyDst | BufferUsage::mapRead);
+
 // Textures
 auto texture = device->createTexture(TextureType::_2D, PixelFormat::RGBA8Unorm,
                                      width, height, 1, mipLevels, 1,
@@ -109,5 +112,34 @@ computePass->dispatchWorkgroups(x, y, z);
 computePass->end();
 
 auto commandBuffer = encoder->finish();
-// submit via platform-specific queue
+device->submit(commandBuffer);
+```
+
+### GPU → CPU Readback
+
+Copy texture data to a buffer and read it on the CPU:
+
+```cpp
+// Create a readback buffer
+auto readbackBuffer = device->createBuffer(
+    textureSize, 
+    BufferUsage::copyDst | BufferUsage::mapRead);
+
+// Copy texture to buffer
+auto encoder = device->createCommandEncoder();
+encoder->copyTextureToBuffer(texture, mipLevel, arrayLayer,
+                              readbackBuffer, offset, bytesPerRow);
+device->submit(encoder->finish());
+
+// Read data on CPU
+std::vector<uint8_t> data(textureSize);
+readbackBuffer->download(0, textureSize, data.data());
+```
+
+Or use the convenience method for synchronous texture readback:
+
+```cpp
+// One-liner: creates temp buffer, submits command, waits, copies data
+std::vector<uint8_t> pixels(width * height * 4);
+texture->download(mipLevel, arrayLayer, pixels.data(), pixels.size());
 ```

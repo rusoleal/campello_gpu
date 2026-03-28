@@ -26,4 +26,20 @@ bool Buffer::upload(uint64_t offset, uint64_t size, void *data) {
     return true;
 }
 
+bool Buffer::download(uint64_t offset, uint64_t length, void *data) {
+    if (!native || !data) return false;
+    auto *buf = static_cast<MTL::Buffer *>(native);
+    
+    // Get buffer contents
+    uint8_t *src = static_cast<uint8_t *>(buf->contents());
+    if (!src) return false;
+    
+    // Check bounds
+    if (offset + length > buf->length()) return false;
+    
+    // Copy data
+    memcpy(data, src + offset, length);
+    return true;
+}
+
 

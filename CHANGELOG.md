@@ -2,6 +2,21 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.4.0] - 2026-03-28
+
+### Added
+- **All backends** GPU→CPU readback support — new `Buffer::download()` method for reading back buffer data to CPU memory
+- **All backends** `CommandEncoder::copyTextureToBuffer()` — copies texture subresource data to a buffer for readback operations
+- **All backends** `Texture::download()` convenience method — synchronous texture readback that handles buffer creation, command submission, and data copy
+- **DirectX 12** Readback heap buffer support in `createBuffer()` — buffers created with `BufferUsage::copyDst | BufferUsage::mapRead` use `D3D12_HEAP_TYPE_READBACK`
+- **Tests** Buffer upload/download roundtrip tests with random data verification
+- **Tests** Texture upload/download roundtrip tests for RGBA8, R8 formats and various sizes
+
+### Changed
+- **DirectX 12** `BufferHandle` now tracks `isReadback` flag and `queue` pointer for readback operations
+
+---
+
 ## [0.3.9] - 2026-03-23
 
 ### Fixed

@@ -103,8 +103,47 @@ void CommandEncoder::copyBufferToTexture() {
     // TODO: API needs explicit source buffer / destination texture parameters.
 }
 
-void CommandEncoder::copyTextureToBuffer() {
-    // TODO: API needs explicit source texture / destination buffer parameters.
+void CommandEncoder::copyTextureToBuffer(
+    std::shared_ptr<Texture> source,
+    uint32_t mipLevel,
+    uint32_t arrayLayer,
+    std::shared_ptr<Buffer> destination,
+    uint64_t destinationOffset,
+    uint64_t bytesPerRow)
+{
+    if (!native || !source || !destination) return;
+    auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
+    auto *tex       = static_cast<MTL::Texture *>(source->native);
+    auto *buf       = static_cast<MTL::Buffer *>(destination->native);
+
+    auto *blitEncoder = cmdBuffer->blitCommandEncoder();
+    if (!blitEncoder) return;
+
+    // Calculate the source region (full mip level size)
+    uint32_t width  = std::max(1u, (uint32_t)tex->width() >> mipLevel);
+    uint32_t height = std::max(1u, (uint32_t)tex->height() >> mipLevel);
+    uint32_t depth  = std::max(1u, (uint32_t)tex->depth() >> mipLevel);
+
+    MTL::Origin origin = MTL::Origin::Make(0, 0, 0);
+    MTL::Size   size   = MTL::Size::Make(width, height, depth);
+
+    // Copy from texture to buffer
+    blitEncoder->copyFromTexture(
+        tex,                              // sourceTexture
+        arrayLayer,                       // sourceSlice
+        mipLevel,                         // sourceLevel
+        origin,                           // sourceOrigin
+        size,                             // sourceSize
+        buf,                              // destinationBuffer
+        destinationOffset,                // destinationOffset
+        bytesPerRow,                      // destinationBytesPerRow
+        bytesPerRow * height              // destinationBytesPerImage (for 3D/array)
+    );
+
+    // Synchronize for CPU read access if using managed storage
+    blitEncoder->synchronizeResource(buf);
+
+    blitEncoder->endEncoding();
 }
 
 void CommandEncoder::copyTextureToTexture() {

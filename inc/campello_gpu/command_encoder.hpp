@@ -91,7 +91,32 @@ namespace systems::leal::campello_gpu
                                 uint64_t size);
 
         void copyBufferToTexture();  ///< @todo Not yet implemented.
-        void copyTextureToBuffer();  ///< @todo Not yet implemented.
+
+        /**
+         * @brief Copies texture data into a buffer.
+         *
+         * Copies the contents of a texture subresource into a buffer. This is
+         * typically used for readback (GPU → CPU) operations. After the copy,
+         * the destination buffer can be mapped and its contents read on the CPU.
+         *
+         * The buffer must have been created with `BufferUsage::copyDst` usage.
+         * The texture must have been created with `TextureUsage::copySrc` usage.
+         *
+         * @param source        Source texture to copy from.
+         * @param mipLevel      Mip level of the texture to copy.
+         * @param arrayLayer    Array layer (for array textures) or depth slice (for 3D) to copy.
+         * @param destination   Destination buffer.
+         * @param destinationOffset Byte offset within the destination buffer.
+         * @param bytesPerRow   Number of bytes per row in the destination buffer (row pitch).
+         */
+        void copyTextureToBuffer(
+            std::shared_ptr<Texture> source,
+            uint32_t mipLevel,
+            uint32_t arrayLayer,
+            std::shared_ptr<Buffer> destination,
+            uint64_t destinationOffset,
+            uint64_t bytesPerRow);
+
         void copyTextureToTexture(); ///< @todo Not yet implemented.
 
         /**

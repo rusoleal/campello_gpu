@@ -116,6 +116,83 @@ TEST(Buffer, CreateWithInitialData) {
 }
 
 // ---------------------------------------------------------------------------
+// Upload / Download round-trip
+// ---------------------------------------------------------------------------
+
+TEST(Buffer, UploadDownloadRoundtripRandomData) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+
+    // Create random data
+    constexpr uint64_t byteSize = 1024;
+    std::vector<uint8_t> uploadData(byteSize);
+    
+    // Fill with pseudo-random values
+    std::srand(42);  // Fixed seed for reproducibility
+    for (auto& byte : uploadData) {
+        byte = static_cast<uint8_t>(std::rand() % 256);
+    }
+
+    // Create buffer with copyDst usage for readback
+    auto buffer = device->createBuffer(
+        byteSize, 
+        static_cast<BufferUsage>(
+            static_cast<int>(BufferUsage::copyDst) | 
+            static_cast<int>(BufferUsage::mapRead)));
+    ASSERT_NE(buffer, nullptr);
+
+    // Upload data
+    EXPECT_TRUE(buffer->upload(0, byteSize, uploadData.data()));
+
+    // Download data
+    std::vector<uint8_t> downloadData(byteSize);
+    EXPECT_TRUE(buffer->download(0, byteSize, downloadData.data()));
+
+    // Verify data matches
+    EXPECT_EQ(uploadData, downloadData);
+}
+
+TEST(Buffer, UploadDownloadPartialRange) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+
+    constexpr uint64_t byteSize = 512;
+    constexpr uint64_t offset = 128;
+    constexpr uint64_t length = 256;
+
+    // Create and fill buffer with pattern
+    std::vector<uint8_t> uploadData(byteSize);
+    std::srand(123);
+    for (auto& byte : uploadData) {
+        byte = static_cast<uint8_t>(std::rand() % 256);
+    }
+
+    auto buffer = device->createBuffer(
+        byteSize, 
+        static_cast<BufferUsage>(
+            static_cast<int>(BufferUsage::copyDst) | 
+            static_cast<int>(BufferUsage::mapRead)));
+    ASSERT_NE(buffer, nullptr);
+
+    // Upload entire buffer
+    EXPECT_TRUE(buffer->upload(0, byteSize, uploadData.data()));
+
+    // Download only partial range
+    std::vector<uint8_t> downloadData(length);
+    EXPECT_TRUE(buffer->download(offset, length, downloadData.data()));
+
+    // Verify partial data matches
+    for (uint64_t i = 0; i < length; ++i) {
+        EXPECT_EQ(downloadData[i], uploadData[offset + i]) 
+            << "Mismatch at index " << i;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Edge cases
 // ---------------------------------------------------------------------------
 

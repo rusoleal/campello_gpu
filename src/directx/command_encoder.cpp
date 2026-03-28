@@ -5,8 +5,15 @@
 #include <campello_gpu/render_pass_encoder.hpp>
 #include <campello_gpu/compute_pass_encoder.hpp>
 #include <campello_gpu/buffer.hpp>
+#include <campello_gpu/texture.hpp>
 #include <campello_gpu/query_set.hpp>
 #include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
+
+// Inline helper for calculating subresource index (equivalent to D3D12CalcSubresource)
+inline UINT CalcSubresource(UINT mipSlice, UINT arraySlice, UINT planeSlice,
+                            UINT mipLevels, UINT arraySize) {
+    return mipSlice + arraySlice * mipLevels + planeSlice * mipLevels * arraySize;
+}
 
 using namespace systems::leal::campello_gpu;
 
@@ -112,7 +119,66 @@ void CommandEncoder::copyBufferToBuffer(
 }
 
 void CommandEncoder::copyBufferToTexture()  {}
-void CommandEncoder::copyTextureToBuffer()  {}
+
+void CommandEncoder::copyTextureToBuffer(
+    std::shared_ptr<Texture> source,
+    uint32_t mipLevel,
+    uint32_t arrayLayer,
+    std::shared_ptr<Buffer> destination,
+    uint64_t destinationOffset,
+    uint64_t bytesPerRow)
+{
+    if (!native || !source || !destination || !source->native || !destination->native) return;
+    auto* h   = static_cast<CommandEncoderHandle*>(native);
+    auto* src = static_cast<TextureHandle*>(source->native);
+    auto* dst = static_cast<BufferHandle*>(destination->native);
+
+    // Get the texture description to calculate the footprint
+    D3D12_RESOURCE_DESC texDesc = src->resource->GetDesc();
+
+    // Calculate the subresource index
+    UINT subresource = CalcSubresource(mipLevel, arrayLayer, 0, 
+        texDesc.MipLevels, texDesc.DepthOrArraySize);
+
+    // Get copyable footprint
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT numRows;
+    UINT64 rowSizeInBytes;
+    UINT64 totalBytes;
+    h->deviceData->device->GetCopyableFootprints(&texDesc, subresource, 1, 0,
+        &footprint, &numRows, &rowSizeInBytes, &totalBytes);
+
+    // Transition texture to COPY_SOURCE state
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource   = src->resource;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.Subresource = subresource;
+    h->cmdList->ResourceBarrier(1, &barrier);
+
+    // Setup copy locations
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource        = src->resource;
+    srcLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.SubresourceIndex = subresource;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource       = dst->resource;
+    dstLoc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dstLoc.PlacedFootprint = footprint;
+    // Override the footprint offset to account for destinationOffset
+    dstLoc.PlacedFootprint.Offset = destinationOffset;
+
+    // Copy the texture region
+    h->cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+    // Transition texture back to COMMON state
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    h->cmdList->ResourceBarrier(1, &barrier);
+}
+
 void CommandEncoder::copyTextureToTexture() {}
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {

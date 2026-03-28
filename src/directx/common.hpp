@@ -151,14 +151,17 @@ struct DeviceData {
 struct BufferHandle {
     ID3D12Resource* resource  = nullptr;
     ID3D12Device*   device    = nullptr;
+    ID3D12CommandQueue* queue = nullptr;  // for readback synchronization
     uint64_t        size      = 0;
-    void*           mapped    = nullptr;  // persistently mapped upload-heap pointer
+    void*           mapped    = nullptr;  // persistently mapped upload-heap or readback-heap pointer
+    bool            isReadback = false;   // true if created as READBACK heap
 };
 
 struct TextureHandle {
     ID3D12Resource*     resource      = nullptr;
     ID3D12Device*       device        = nullptr;
     ID3D12CommandQueue* queue         = nullptr;
+    DeviceData*         deviceData    = nullptr;
     PixelFormat     format        = PixelFormat::invalid;
     TextureType     dimension     = TextureType::tt2d;
     uint32_t        width         = 0;
@@ -168,8 +171,9 @@ struct TextureHandle {
     uint32_t        sampleCount   = 1;
     TextureUsage    usage         = static_cast<TextureUsage>(0);
     // Descriptor handles (filled by createView or createTexture for render targets)
-    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = {};
-    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle    = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle    = {};
+    D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle = {};  // pre-baked SRV for shader binding
 };
 
 enum class ViewType { SRV, UAV, RTV, DSV };

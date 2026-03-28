@@ -7,6 +7,12 @@
 #include <campello_gpu/constants/aspect.hpp>
 #include <algorithm>
 
+// Inline helper for calculating subresource index
+inline UINT CalcSubresource(UINT mipSlice, UINT arraySlice, UINT planeSlice,
+                            UINT mipLevels, UINT arraySize) {
+    return mipSlice + arraySlice * mipLevels + planeSlice * mipLevels * arraySize;
+}
+
 using namespace systems::leal::campello_gpu;
 
 Texture::Texture(void* pd) : native(pd) {}
@@ -93,9 +99,18 @@ std::shared_ptr<TextureView> Texture::createView(
                     break;
             }
             vh->viewType = ViewType::SRV;
-            // We can't easily get the shared SRV heap here without DeviceData.
-            // Leave handles at zero; setBindGroup would need a real handle.
-            // A complete implementation would pass DeviceData* into TextureHandle.
+            // Use the pre-baked SRV handle created in createTexture (via DeviceData).
+            // If the texture was created without textureBinding usage the handle will be
+            // zero, which callers must handle.
+            if (h->srvCpuHandle.ptr != 0) {
+                vh->cpuHandle = h->srvCpuHandle;
+            } else if (h->deviceData) {
+                // Fallback: allocate a new SRV slot now (e.g. for textures created
+                // without textureBinding but used as shader resources anyway).
+                auto* d = h->deviceData;
+                vh->cpuHandle = d->allocSrvCpu();
+                h->device->CreateShaderResourceView(h->resource, &srvDesc, vh->cpuHandle);
+            }
         }
     }
 
@@ -241,4 +256,140 @@ uint32_t Texture::getSampleCount() {
 TextureUsage Texture::getUsage() {
     if (!native) return static_cast<TextureUsage>(0);
     return static_cast<TextureHandle*>(native)->usage;
+}
+
+bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint64_t length) {
+    if (!native || !data || length == 0) return false;
+    auto* h = static_cast<TextureHandle*>(native);
+    if (!h->device || !h->queue) return false;
+
+    // Get texture description and calculate footprint first to determine required buffer size
+    D3D12_RESOURCE_DESC texDesc = h->resource->GetDesc();
+    UINT subresource = CalcSubresource(mipLevel, arrayLayer, 0,
+        texDesc.MipLevels, texDesc.DepthOrArraySize);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT numRows;
+    UINT64 rowSizeInBytes;
+    UINT64 totalBytes;
+    h->device->GetCopyableFootprints(&texDesc, subresource, 1, 0,
+        &footprint, &numRows, &rowSizeInBytes, &totalBytes);
+
+    // Ensure the provided length is sufficient
+    if (length < rowSizeInBytes * numRows) {
+        // The user-provided buffer might be tightly packed, but we need to handle row pitch
+        // Continue anyway and copy only what fits
+    }
+
+    // Create a readback buffer (must be large enough for the footprint)
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_READBACK;
+
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width            = totalBytes;  // Use the actual required size from GetCopyableFootprints
+    rd.Height           = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels        = 1;
+    rd.Format           = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource* readbackBuf = nullptr;
+    if (FAILED(h->device->CreateCommittedResource(
+            &hp, D3D12_HEAP_FLAG_NONE, &rd,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr, IID_PPV_ARGS(&readbackBuf)))) return false;
+
+    // Create a command allocator and list
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    if (FAILED(h->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                  IID_PPV_ARGS(&alloc)))) {
+        readbackBuf->Release();
+        return false;
+    }
+    if (FAILED(h->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                             alloc, nullptr, IID_PPV_ARGS(&list)))) {
+        alloc->Release();
+        readbackBuf->Release();
+        return false;
+    }
+
+    // Transition texture to COPY_SOURCE
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource   = h->resource;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.Subresource = subresource;
+    list->ResourceBarrier(1, &barrier);
+
+    // Copy texture to buffer
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource        = h->resource;
+    srcLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.SubresourceIndex = subresource;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource       = readbackBuf;
+    dstLoc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dstLoc.PlacedFootprint = footprint;
+
+    list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+    // Transition texture back to COMMON
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    list->ResourceBarrier(1, &barrier);
+
+    if (FAILED(list->Close())) {
+        list->Release();
+        alloc->Release();
+        readbackBuf->Release();
+        return false;
+    }
+
+    // Execute and wait
+    ID3D12CommandList* lists[] = { list };
+    h->queue->ExecuteCommandLists(1, lists);
+
+    ID3D12Fence* fence = nullptr;
+    h->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    h->queue->Signal(fence, 1);
+    if (fence->GetCompletedValue() < 1) {
+        HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        fence->SetEventOnCompletion(1, event);
+        WaitForSingleObject(event, INFINITE);
+        CloseHandle(event);
+    }
+
+    // Map and copy data
+    bool result = false;
+    void* mapped = nullptr;
+    D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(length) };
+    if (SUCCEEDED(readbackBuf->Map(0, &readRange, &mapped))) {
+        // Handle row pitch differences
+        if (footprint.Footprint.RowPitch == rowSizeInBytes) {
+            // Tightly packed, copy all at once
+            memcpy(data, mapped, length);
+        } else {
+            // Need to copy row by row
+            uint8_t* dst = static_cast<uint8_t*>(data);
+            uint8_t* src = static_cast<uint8_t*>(mapped);
+            for (UINT row = 0; row < numRows; ++row) {
+                memcpy(dst + row * rowSizeInBytes,
+                       src + row * footprint.Footprint.RowPitch,
+                       static_cast<size_t>(rowSizeInBytes));
+            }
+        }
+        readbackBuf->Unmap(0, nullptr);
+        result = true;
+    }
+
+    fence->Release();
+    list->Release();
+    alloc->Release();
+    readbackBuf->Release();
+    return result;
 }

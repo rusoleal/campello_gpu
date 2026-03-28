@@ -171,3 +171,109 @@ TEST(Texture, UploadReturnsTrueOnSuccess) {
     ASSERT_NE(tex, nullptr);
     EXPECT_TRUE(tex->upload(0, byteSize, pixels));
 }
+
+// ---------------------------------------------------------------------------
+// Upload / Download round-trip
+// ---------------------------------------------------------------------------
+
+TEST(Texture, UploadDownloadRoundtripRandomData) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 64, H = 64;
+    constexpr uint64_t byteSize = W * H * 4; // RGBA8
+
+    // Create random pixel data
+    std::vector<uint8_t> uploadData(byteSize);
+    std::srand(42);  // Fixed seed for reproducibility
+    for (auto& byte : uploadData) {
+        byte = static_cast<uint8_t>(std::rand() % 256);
+    }
+
+    // Create texture with copySrc usage for readback
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copySrc)));
+    ASSERT_NE(tex, nullptr);
+
+    // Upload data
+    EXPECT_TRUE(tex->upload(0, byteSize, uploadData.data()));
+
+    // Download data
+    std::vector<uint8_t> downloadData(byteSize);
+    EXPECT_TRUE(tex->download(0, 0, downloadData.data(), byteSize));
+
+    // Verify data matches
+    EXPECT_EQ(uploadData, downloadData);
+}
+
+TEST(Texture, UploadDownloadSmallTexture) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    // Test with a small 2x2 texture
+    constexpr uint32_t W = 2, H = 2;
+    constexpr uint64_t byteSize = W * H * 4; // RGBA8
+
+    // Create test pattern
+    std::vector<uint8_t> uploadData = {
+        255, 0,   0,   255,   // Red
+        0,   255, 0,   255,   // Green
+        0,   0,   255, 255,   // Blue
+        255, 255, 0,   255    // Yellow
+    };
+
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copySrc)));
+    ASSERT_NE(tex, nullptr);
+
+    // Upload data
+    EXPECT_TRUE(tex->upload(0, byteSize, uploadData.data()));
+
+    // Download data
+    std::vector<uint8_t> downloadData(byteSize);
+    EXPECT_TRUE(tex->download(0, 0, downloadData.data(), byteSize));
+
+    // Verify data matches
+    EXPECT_EQ(uploadData, downloadData);
+}
+
+TEST(Texture, UploadDownloadGrayscaleTexture) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 16, H = 16;
+    constexpr uint64_t byteSize = W * H; // R8
+
+    // Create random grayscale data
+    std::vector<uint8_t> uploadData(byteSize);
+    std::srand(99);
+    for (auto& byte : uploadData) {
+        byte = static_cast<uint8_t>(std::rand() % 256);
+    }
+
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::r8unorm,
+        W, H, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copySrc)));
+    ASSERT_NE(tex, nullptr);
+
+    // Upload data
+    EXPECT_TRUE(tex->upload(0, byteSize, uploadData.data()));
+
+    // Download data
+    std::vector<uint8_t> downloadData(byteSize);
+    EXPECT_TRUE(tex->download(0, 0, downloadData.data(), byteSize));
+
+    // Verify data matches
+    EXPECT_EQ(uploadData, downloadData);
+}

@@ -56,6 +56,23 @@ namespace systems::leal::campello_gpu
          */
         bool upload(uint64_t offset, uint64_t length, void *data);
 
+        /**
+         * @brief Downloads GPU buffer data to CPU memory.
+         *
+         * Copies `length` bytes from the GPU buffer starting at `offset` into the
+         * provided CPU memory pointer. The buffer must have been created with
+         * `BufferUsage::copyDst` and be in a state accessible for readback.
+         *
+         * For textures, use `CommandEncoder::copyTextureToBuffer()` first to copy
+         * texture data into a buffer, then call `download()` on that buffer.
+         *
+         * @param offset  Byte offset within the buffer at which to begin reading.
+         * @param length  Number of bytes to read.
+         * @param data    Pointer to the destination CPU memory (must be at least `length` bytes).
+         * @return `true` on success, `false` if the read could not be completed.
+         */
+        bool download(uint64_t offset, uint64_t length, void *data);
+
         ~Buffer();
     };
 

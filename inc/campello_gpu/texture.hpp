@@ -36,6 +36,7 @@ namespace systems::leal::campello_gpu
         friend class Device;
         friend class RenderPassEncoder;
         friend class ComputePassEncoder;
+        friend class CommandEncoder;
         void *native;
 
         Texture(void *pd);
@@ -80,6 +81,25 @@ namespace systems::leal::campello_gpu
          * @return `true` on success, `false` otherwise.
          */
         bool upload(uint64_t offset, uint64_t length, void *data);
+
+        /**
+         * @brief Downloads texture pixel data to CPU memory.
+         *
+         * This is a convenience method that copies texture data to a temporary buffer,
+         * submits the command, waits for completion, and copies the data to CPU memory.
+         * For more control over the copy process (e.g., async readback), use
+         * `CommandEncoder::copyTextureToBuffer()` directly.
+         *
+         * **Note:** This method creates a temporary buffer, records a command, submits it,
+         * and waits for GPU completion. It is synchronous and may stall the pipeline.
+         *
+         * @param mipLevel   Mip level to download.
+         * @param arrayLayer Array layer (for array textures) or depth slice (for 3D) to download.
+         * @param data       Pointer to the destination CPU memory.
+         * @param length     Number of bytes to read (must match the texture subresource size).
+         * @return `true` on success, `false` otherwise.
+         */
+        bool download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint64_t length);
 
         /** @brief Returns the number of depth slices or array layers. */
         uint32_t    getDepthOrarrayLayers();
