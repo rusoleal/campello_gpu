@@ -179,7 +179,15 @@ void CommandEncoder::copyTextureToBuffer(
     h->cmdList->ResourceBarrier(1, &barrier);
 }
 
-void CommandEncoder::copyTextureToTexture() {}
+void CommandEncoder::copyTextureToTexture(
+    std::shared_ptr<Texture> /*source*/,
+    const Offset3D& /*sourceOffset*/,
+    std::shared_ptr<Texture> /*destination*/,
+    const Offset3D& /*destinationOffset*/,
+    const Extent3D& /*extent*/)
+{
+    // TODO: Implement using ID3D12GraphicsCommandList::CopyTextureRegion
+}
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     if (!native) return nullptr;

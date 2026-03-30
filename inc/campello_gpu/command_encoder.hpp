@@ -8,6 +8,8 @@
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/query_set.hpp>
+#include <campello_gpu/types/offset_3d.hpp>
+#include <campello_gpu/types/extent_3d.hpp>
 
 namespace systems::leal::campello_gpu
 {
@@ -118,7 +120,26 @@ namespace systems::leal::campello_gpu
             uint64_t destinationOffset,
             uint64_t bytesPerRow);
 
-        void copyTextureToTexture(); ///< @todo Not yet implemented.
+        /**
+         * @brief Copies a region of one texture into another.
+         *
+         * Both textures must be the same pixel format. The source must have been
+         * created with `TextureUsage::copySrc` (or be a render-target texture that
+         * supports blit reads on the platform), and the destination must have
+         * `TextureUsage::copyDst`.
+         *
+         * @param source             Source texture.
+         * @param sourceOffset       Offset within the source texture (in pixels).
+         * @param destination        Destination texture.
+         * @param destinationOffset  Offset within the destination texture (in pixels).
+         * @param extent             Size of the region to copy (in pixels).
+         */
+        void copyTextureToTexture(
+            std::shared_ptr<Texture> source,
+            const Offset3D& sourceOffset,
+            std::shared_ptr<Texture> destination,
+            const Offset3D& destinationOffset,
+            const Extent3D& extent);
 
         /**
          * @brief Finalizes command recording and returns the completed command buffer.

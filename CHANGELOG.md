@@ -2,6 +2,20 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.5.0] - 2026-03-30
+
+### Added
+- **New types** `Offset3D` and `Extent3D` in `campello_gpu/types/` — 3D signed offset and unsigned extent structures for texture/buffer operations
+- **Tests** `CommandEncoder::copyTextureToTexture` — 3 integration tests covering full copy, offset-based copy, and partial region copy scenarios
+
+### Changed
+- **API** `CommandEncoder::copyTextureToTexture` — signature changed from `(source, destination, width, height)` to `(source, sourceOffset, destination, destinationOffset, extent)` enabling sub-rectangle copies with source and destination offsets
+- **Metal** `copyTextureToTexture` — fully implemented using new `Offset3D` and `Extent3D` types mapped to `MTL::Origin` and `MTL::Size`
+- **DirectX 12** `copyTextureToTexture` — signature updated (implementation pending)
+- **Vulkan** `copyTextureToTexture` — signature updated (implementation pending)
+
+---
+
 ## [0.4.1] - 2026-03-28
 
 ### Fixed

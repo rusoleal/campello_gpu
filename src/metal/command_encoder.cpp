@@ -146,8 +146,30 @@ void CommandEncoder::copyTextureToBuffer(
     blitEncoder->endEncoding();
 }
 
-void CommandEncoder::copyTextureToTexture() {
-    // TODO: API needs explicit source / destination texture parameters.
+void CommandEncoder::copyTextureToTexture(
+    std::shared_ptr<Texture> source,
+    const Offset3D& sourceOffset,
+    std::shared_ptr<Texture> destination,
+    const Offset3D& destinationOffset,
+    const Extent3D& extent)
+{
+    if (!native || !source || !destination) return;
+
+    auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
+    auto *srcTex     = static_cast<MTL::Texture *>(source->native);
+    auto *dstTex     = static_cast<MTL::Texture *>(destination->native);
+
+    auto *blit = cmdBuffer->blitCommandEncoder();
+    if (!blit) return;
+
+    blit->copyFromTexture(
+        srcTex, 0, 0,
+        MTL::Origin::Make(sourceOffset.x, sourceOffset.y, sourceOffset.z),
+        MTL::Size::Make(extent.width, extent.height, extent.depth),
+        dstTex, 0, 0,
+        MTL::Origin::Make(destinationOffset.x, destinationOffset.y, destinationOffset.z));
+
+    blit->endEncoding();
 }
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {

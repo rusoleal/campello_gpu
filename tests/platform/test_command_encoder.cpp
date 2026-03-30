@@ -8,10 +8,16 @@
 #include <campello_gpu/command_encoder.hpp>
 #include <campello_gpu/command_buffer.hpp>
 #include <campello_gpu/buffer.hpp>
+#include <campello_gpu/texture.hpp>
 #include <campello_gpu/query_set.hpp>
 #include <campello_gpu/constants/buffer_usage.hpp>
+#include <campello_gpu/constants/texture_usage.hpp>
+#include <campello_gpu/constants/pixel_format.hpp>
+#include <campello_gpu/constants/texture_type.hpp>
 #include <campello_gpu/constants/query_set_type.hpp>
 #include <campello_gpu/descriptors/query_set_descriptor.hpp>
+#include <campello_gpu/types/offset_3d.hpp>
+#include <campello_gpu/types/extent_3d.hpp>
 
 using namespace systems::leal::campello_gpu;
 
@@ -212,6 +218,102 @@ TEST(CommandEncoder, ResolveQuerySetDoesNotCrash) {
     ASSERT_NE(encoder, nullptr);
     encoder->writeTimestamp(querySet, 0);
     encoder->resolveQuerySet(querySet, 0, 1, dst, 0);
+
+    auto cmdBuf = encoder->finish();
+    EXPECT_NE(cmdBuf, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// copyTextureToTexture
+// ---------------------------------------------------------------------------
+
+TEST(CommandEncoder, CopyTextureToTextureDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 64, H = 64;
+    auto src = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copySrc)));
+    auto dst = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copyDst)));
+    ASSERT_NE(src, nullptr);
+    ASSERT_NE(dst, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    encoder->copyTextureToTexture(src, {}, dst, {}, Extent3D(W, H, 1));
+
+    auto cmdBuf = encoder->finish();
+    EXPECT_NE(cmdBuf, nullptr);
+}
+
+TEST(CommandEncoder, CopyTextureToTextureWithOffsets) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 64, H = 64;
+    auto src = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copySrc)));
+    auto dst = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copyDst)));
+    ASSERT_NE(src, nullptr);
+    ASSERT_NE(dst, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    // Copy 32x32 region from src[16, 16] to dst[32, 32]
+    encoder->copyTextureToTexture(
+        src, Offset3D(16, 16, 0),
+        dst, Offset3D(32, 32, 0),
+        Extent3D(32, 32, 1));
+
+    auto cmdBuf = encoder->finish();
+    EXPECT_NE(cmdBuf, nullptr);
+}
+
+TEST(CommandEncoder, CopyTextureToTexturePartialRegion) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    // Create larger destination, smaller source
+    auto src = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        32, 32, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copySrc)));
+    auto dst = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        128, 128, 1, 1, 1, 
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::copyDst)));
+    ASSERT_NE(src, nullptr);
+    ASSERT_NE(dst, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    // Copy entire source to middle of destination
+    encoder->copyTextureToTexture(
+        src, Offset3D(0, 0, 0),
+        dst, Offset3D(48, 48, 0),
+        Extent3D(32, 32, 1));
 
     auto cmdBuf = encoder->finish();
     EXPECT_NE(cmdBuf, nullptr);
