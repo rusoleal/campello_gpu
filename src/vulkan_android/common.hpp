@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <vulkan/vulkan.h>
+#include <android/native_window.h>
 
 namespace systems::leal::campello_gpu {
 
@@ -21,6 +22,8 @@ namespace systems::leal::campello_gpu {
         VkDescriptorPool          descriptorPool;
         VkSemaphore               imageAvailableSemaphore;
         VkSemaphore               renderFinishedSemaphore;
+        ANativeWindow            *window               = nullptr;
+        uint32_t                  queueFamilyIndex     = 0;
     };
 
 }

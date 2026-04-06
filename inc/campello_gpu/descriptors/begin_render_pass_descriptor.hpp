@@ -91,7 +91,7 @@ namespace systems::leal::campello_gpu {
         LoadOp stencilLoadOp;
 
         /** @brief When `true`, the pass does not write stencil values (read-only stencil). */
-        bool stencilRadOnly;
+        bool stencilReadOnly;
 
         /** @brief Action performed on the stencil component at the end of the pass. */
         StoreOp stencilStoreOp;

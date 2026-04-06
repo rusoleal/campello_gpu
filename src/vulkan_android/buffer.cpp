@@ -46,3 +46,26 @@ bool Buffer::upload(uint64_t offset, uint64_t length, void *data) {
     vkUnmapMemory(handle->device, handle->memory);
     return true;
 }
+
+bool Buffer::download(uint64_t offset, uint64_t length, void *data) {
+    auto handle = (BufferHandle *)this->native;
+
+    void *p;
+    if (vkMapMemory(handle->device, handle->memory, offset, length, 0, &p) != VK_SUCCESS) {
+        return false;
+    }
+
+    // Invalidate so any GPU writes are visible to the CPU.
+    // This is a no-op for HOST_COHERENT memory but is correct practice.
+    VkMappedMemoryRange range;
+    range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    range.pNext  = nullptr;
+    range.memory = handle->memory;
+    range.offset = offset;
+    range.size   = length;
+    vkInvalidateMappedMemoryRanges(handle->device, 1, &range);
+
+    memcpy(data, p, length);
+    vkUnmapMemory(handle->device, handle->memory);
+    return true;
+}

@@ -99,8 +99,39 @@ void CommandEncoder::copyBufferToBuffer(
     blitEncoder->endEncoding();
 }
 
-void CommandEncoder::copyBufferToTexture() {
-    // TODO: API needs explicit source buffer / destination texture parameters.
+void CommandEncoder::copyBufferToTexture(
+    std::shared_ptr<Buffer>  source,
+    uint64_t                 sourceOffset,
+    uint64_t                 bytesPerRow,
+    std::shared_ptr<Texture> destination,
+    uint32_t                 mipLevel,
+    uint32_t                 arrayLayer)
+{
+    if (!native || !source || !destination) return;
+    auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
+    auto *buf        = static_cast<MTL::Buffer *>(source->native);
+    auto *tex        = static_cast<MTL::Texture *>(destination->native);
+    auto *blitEncoder = cmdBuffer->blitCommandEncoder();
+    if (!blitEncoder) return;
+
+    uint32_t mipWidth  = std::max(1u, (uint32_t)tex->width()  >> mipLevel);
+    uint32_t mipHeight = std::max(1u, (uint32_t)tex->height() >> mipLevel);
+    uint32_t mipDepth  = std::max(1u, (uint32_t)tex->depth()  >> mipLevel);
+
+    NS::UInteger rowBytes = (bytesPerRow > 0) ? static_cast<NS::UInteger>(bytesPerRow)
+                                               : mipWidth * (tex->pixelFormat() == MTL::PixelFormatRGBA8Unorm ? 4 : 4);
+
+    blitEncoder->copyFromBuffer(
+        buf,
+        static_cast<NS::UInteger>(sourceOffset),
+        rowBytes,
+        rowBytes * mipHeight,
+        MTL::Size::Make(mipWidth, mipHeight, mipDepth),
+        tex,
+        arrayLayer,
+        mipLevel,
+        MTL::Origin::Make(0, 0, 0));
+    blitEncoder->endEncoding();
 }
 
 void CommandEncoder::copyTextureToBuffer(

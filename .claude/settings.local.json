@@ -16,7 +16,9 @@
       "Read(//c/Program Files/Microsoft Visual Studio/**)",
       "Read(//c/Program Files \\(x86\\)/Microsoft Visual Studio/**)",
       "Bash(./tests/campello_gpu_integration_tests --gtest_filter=\"ShaderModule.*\" 2>&1)",
-      "Bash(ctest --output-on-failure)"
+      "Bash(ctest --output-on-failure)",
+      "Bash(wc -l /Users/rubenleal/Projects/campello_gpu/src/directx/*.cpp)",
+      "Bash(./gradlew assembleDebug)"
     ]
   }
 }

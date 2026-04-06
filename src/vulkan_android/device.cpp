@@ -164,8 +164,27 @@ Device::~Device()
     {
         auto deviceData = (DeviceData *)native;
 
-        vkDestroyCommandPool(deviceData->device, deviceData->commandPool, nullptr);
+        // Wait for all GPU work to finish before tearing down.
+        vkDeviceWaitIdle(deviceData->device);
 
+        if (deviceData->renderFinishedSemaphore != VK_NULL_HANDLE)
+            vkDestroySemaphore(deviceData->device, deviceData->renderFinishedSemaphore, nullptr);
+        if (deviceData->imageAvailableSemaphore != VK_NULL_HANDLE)
+            vkDestroySemaphore(deviceData->device, deviceData->imageAvailableSemaphore, nullptr);
+
+        for (auto iv : deviceData->swapchainImageViews)
+            vkDestroyImageView(deviceData->device, iv, nullptr);
+
+        if (deviceData->swapchain != VK_NULL_HANDLE)
+            vkDestroySwapchainKHR(deviceData->device, deviceData->swapchain, nullptr);
+
+        if (deviceData->surface != VK_NULL_HANDLE)
+            vkDestroySurfaceKHR(getInstance(), deviceData->surface, nullptr);
+
+        if (deviceData->descriptorPool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(deviceData->device, deviceData->descriptorPool, nullptr);
+
+        vkDestroyCommandPool(deviceData->device, deviceData->commandPool, nullptr);
         vkDestroyDevice(deviceData->device, nullptr);
         delete deviceData;
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Device::~Device()");
@@ -231,7 +250,7 @@ std::vector<std::shared_ptr<Adapter>> Device::getAdapters()
         }
 
         auto deviceDef = std::shared_ptr<Adapter>(new Adapter());
-        deviceDef->native = (void *)(uint64_t)a; // index on physicalDevice list
+        deviceDef->native = (void *)gpu; // VkPhysicalDevice handle
         toReturn.push_back(deviceDef);
     }
 
@@ -248,20 +267,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
 
     auto window = (ANativeWindow *)pd;
 
-    auto deviceIndex = (uint64_t)deviceDef->native;
-
-    // check if deviceIndex is in range;
-    uint32_t gpuCount = 0;
-    vkEnumeratePhysicalDevices(getInstance(), &gpuCount, nullptr);
-    if (deviceIndex > gpuCount)
-    {
-        return nullptr;
-    }
-
-    std::vector<VkPhysicalDevice> gpus(gpuCount);
-    vkEnumeratePhysicalDevices(getInstance(), &gpuCount, gpus.data());
-
-    auto gpu = gpus[deviceIndex];
+    auto gpu = (VkPhysicalDevice)deviceDef->native;
+    if (!gpu) return nullptr;
 
     uint32_t extensionCount;
     vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extensionCount, nullptr);
@@ -275,7 +282,6 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", " - %s v%d", availableExtensions[a].extensionName, availableExtensions[a].specVersion);
     }
 
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "pepe1");
     const VkAndroidSurfaceCreateInfoKHR create_info{
         .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR,
         .pNext = nullptr,
@@ -287,16 +293,15 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
     std::vector<VkSurfaceFormatKHR> surfaceFormats;
+    VkSurfaceFormatKHR chosenFormat = {};
 
     if (window != nullptr)
     {
-        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "pepe2");
         if (vkCreateAndroidSurfaceKHR(getInstance(), &create_info, nullptr, &surface) != VK_SUCCESS)
         {
             return nullptr;
         }
 
-        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "pepe3");
         if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &surfaceCapabilities) != VK_SUCCESS)
         {
             __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkGetPhysicalDeviceSurfaceCapabilitiesKHR error");
@@ -389,8 +394,17 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         swapchainData.flags = 0;
         swapchainData.surface = surface;
         swapchainData.minImageCount = std::min(std::max((int)surfaceCapabilities.minImageCount, 3), (int)surfaceCapabilities.maxImageCount);
-        swapchainData.imageFormat = surfaceFormats[0].format;
-        swapchainData.imageColorSpace = surfaceFormats[0].colorSpace;
+        // Prefer sRGB formats for correct gamma presentation; fall back to first available.
+        VkSurfaceFormatKHR chosenFormat = surfaceFormats[0];
+        for (const auto &sf : surfaceFormats) {
+            if ((sf.format == VK_FORMAT_B8G8R8A8_SRGB || sf.format == VK_FORMAT_R8G8B8A8_SRGB)
+                && sf.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                chosenFormat = sf;
+                break;
+            }
+        }
+        swapchainData.imageFormat = chosenFormat.format;
+        swapchainData.imageColorSpace = chosenFormat.colorSpace;
         swapchainData.imageExtent = surfaceCapabilities.currentExtent;
         swapchainData.imageArrayLayers = 1;
         swapchainData.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -473,11 +487,13 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->imageExtent              = imageExtent;
     deviceData->swapchainImages          = swapchainImages;
     deviceData->swapchainImageViews      = swapchainImageViews;
-    deviceData->surfaceFormat            = surfaceFormats.empty() ? VkSurfaceFormatKHR{} : surfaceFormats[0];
+    deviceData->surfaceFormat            = surfaceFormats.empty() ? VkSurfaceFormatKHR{} : chosenFormat;
     deviceData->commandPool              = commandPool;
     deviceData->descriptorPool           = descriptorPool;
     deviceData->imageAvailableSemaphore  = imageAvailableSemaphore;
     deviceData->renderFinishedSemaphore  = renderFinishedSemaphore;
+    deviceData->window                   = window;
+    deviceData->queueFamilyIndex         = static_cast<uint32_t>(queueFamilyIndex);
 
     return std::shared_ptr<Device>(new Device(deviceData));
 }
@@ -553,7 +569,17 @@ std::shared_ptr<Texture> Device::createTexture(
                       : (type == TextureType::tt1d) ? VK_IMAGE_VIEW_TYPE_1D
                                                     : VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format   = pixelFormatToNative(pixelFormat);
-    viewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    VkImageAspectFlags defaultAspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    {
+        VkFormat f = viewInfo.format;
+        if (f == VK_FORMAT_D16_UNORM || f == VK_FORMAT_D32_SFLOAT)
+            defaultAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+        else if (f == VK_FORMAT_S8_UINT)
+            defaultAspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+        else if (f == VK_FORMAT_D24_UNORM_S8_UINT || f == VK_FORMAT_D32_SFLOAT_S8_UINT)
+            defaultAspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+    viewInfo.subresourceRange.aspectMask     = defaultAspect;
     viewInfo.subresourceRange.baseMipLevel   = 0;
     viewInfo.subresourceRange.levelCount     = mipLevels;
     viewInfo.subresourceRange.baseArrayLayer = 0;
@@ -563,18 +589,22 @@ std::shared_ptr<Texture> Device::createTexture(
     vkCreateImageView(deviceData->device, &viewInfo, nullptr, &defaultView);
 
     auto toReturn = new TextureHandle();
-    toReturn->device      = deviceData->device;
-    toReturn->buffer      = buffer;
-    toReturn->image       = image;
-    toReturn->defaultView = defaultView;
-    toReturn->width       = width;
-    toReturn->height      = height;
-    toReturn->depth       = depth;
-    toReturn->mipLevels   = mipLevels;
-    toReturn->samples     = samples;
-    toReturn->pixelFormat = pixelFormat;
-    toReturn->usage       = usageMode;
-    toReturn->textureType = type;
+    toReturn->device         = deviceData->device;
+    toReturn->physicalDevice = deviceData->physicalDevice;
+    toReturn->commandPool    = deviceData->commandPool;
+    toReturn->graphicsQueue  = deviceData->graphicsQueue;
+    toReturn->buffer         = buffer;
+    toReturn->image          = image;
+    toReturn->defaultView    = defaultView;
+    toReturn->currentLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    toReturn->width          = width;
+    toReturn->height         = height;
+    toReturn->depth          = depth;
+    toReturn->mipLevels      = mipLevels;
+    toReturn->samples        = samples;
+    toReturn->pixelFormat    = pixelFormat;
+    toReturn->usage          = usageMode;
+    toReturn->textureType    = type;
 
     return std::shared_ptr<Texture>(new Texture(toReturn));
 }
@@ -871,8 +901,38 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     multisampling.sampleShadingEnable = false;
 
-    // TODO
-    VkPipelineDepthStencilStateCreateInfo depthStencil;
+    VkPipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    if (descriptor.depthStencil.has_value()) {
+        const auto &ds = *descriptor.depthStencil;
+        depthStencil.depthTestEnable       = VK_TRUE;
+        depthStencil.depthWriteEnable      = ds.depthWriteEnabled ? VK_TRUE : VK_FALSE;
+        depthStencil.depthCompareOp        = static_cast<VkCompareOp>(ds.depthCompare);
+        depthStencil.depthBoundsTestEnable = VK_FALSE;
+        depthStencil.stencilTestEnable     = (ds.stencilFront.has_value() || ds.stencilBack.has_value()) ? VK_TRUE : VK_FALSE;
+        if (ds.stencilFront.has_value()) {
+            const auto &sf = *ds.stencilFront;
+            depthStencil.front.compareOp  = static_cast<VkCompareOp>(sf.compare);
+            depthStencil.front.failOp     = static_cast<VkStencilOp>(sf.failOp);
+            depthStencil.front.passOp     = static_cast<VkStencilOp>(sf.passOp);
+            depthStencil.front.depthFailOp = static_cast<VkStencilOp>(sf.depthFailOp);
+            depthStencil.front.compareMask = ds.stencilReadMask;
+            depthStencil.front.writeMask   = ds.stencilWriteMask;
+            depthStencil.front.reference   = 0;
+        }
+        if (ds.stencilBack.has_value()) {
+            const auto &sb = *ds.stencilBack;
+            depthStencil.back.compareOp   = static_cast<VkCompareOp>(sb.compare);
+            depthStencil.back.failOp      = static_cast<VkStencilOp>(sb.failOp);
+            depthStencil.back.passOp      = static_cast<VkStencilOp>(sb.passOp);
+            depthStencil.back.depthFailOp  = static_cast<VkStencilOp>(sb.depthFailOp);
+            depthStencil.back.compareMask  = ds.stencilReadMask;
+            depthStencil.back.writeMask    = ds.stencilWriteMask;
+            depthStencil.back.reference    = 0;
+        }
+        depthStencil.minDepthBounds = 0.0f;
+        depthStencil.maxDepthBounds = 1.0f;
+    }
 
     std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachments;
     if (descriptor.fragment.has_value()) {
@@ -915,49 +975,36 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     colorBlending.blendConstants[2] = 0.0f;
     colorBlending.blendConstants[3] = 0.0f;
 
-    // uniforms
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.pNext = nullptr;
-    pipelineLayoutInfo.flags = 0;
-    pipelineLayoutInfo.setLayoutCount = 0;
-    pipelineLayoutInfo.pushConstantRangeCount = 0;
-
-    VkPipelineLayout  pipelineLayout = VK_NULL_HANDLE;
-    if (vkCreatePipelineLayout(deviceData->device,&pipelineLayoutInfo, nullptr,&pipelineLayout) != VK_SUCCESS) {
-        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreatePipelineLayout() error");
-        return nullptr;
+    // Use the caller-supplied pipeline layout if provided, otherwise create an empty one.
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    bool ownsPipelineLayout = false;
+    if (descriptor.layout) {
+        pipelineLayout = ((PipelineLayoutHandle *)descriptor.layout->native)->layout;
+    } else {
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 0;
+        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+            __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreatePipelineLayout() error");
+            return nullptr;
+        }
+        ownsPipelineLayout = true;
     }
 
-    VkAttachmentDescription colorAttachment{};
-    colorAttachment.format = deviceData->surfaceFormat.format;
-    colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-
-    VkAttachmentReference colorAttachmentRef{};
-    colorAttachmentRef.attachment = 0;
-    colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorAttachmentRef;
-
-    VkRenderPassCreateInfo renderPassInfo{};
-    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderPassInfo.attachmentCount = 1;
-    renderPassInfo.pAttachments = &colorAttachment;
-    renderPassInfo.subpassCount = 1;
-    renderPassInfo.pSubpasses = &subpass;
-
-    VkRenderPass renderPass;
-    if (vkCreateRenderPass(deviceData->device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create render pass!");
+    VkFormat depthAttachmentFormat   = VK_FORMAT_UNDEFINED;
+    VkFormat stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+    if (descriptor.depthStencil.has_value()) {
+        VkFormat dsFormat = pixelFormatToNative(descriptor.depthStencil->format);
+        if (dsFormat == VK_FORMAT_D16_UNORM || dsFormat == VK_FORMAT_D32_SFLOAT) {
+            depthAttachmentFormat = dsFormat;
+        } else if (dsFormat == VK_FORMAT_S8_UINT) {
+            stencilAttachmentFormat = dsFormat;
+        } else {
+            // Combined depth+stencil (D24_UNORM_S8, D32_SFLOAT_S8, etc.)
+            depthAttachmentFormat   = dsFormat;
+            stencilAttachmentFormat = dsFormat;
+        }
     }
 
     VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {};
@@ -965,21 +1012,24 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     pipelineRenderingCreateInfo.pNext = nullptr;
     pipelineRenderingCreateInfo.colorAttachmentCount = 1;
     pipelineRenderingCreateInfo.pColorAttachmentFormats = &deviceData->surfaceFormat.format;
+    pipelineRenderingCreateInfo.depthAttachmentFormat   = depthAttachmentFormat;
+    pipelineRenderingCreateInfo.stencilAttachmentFormat = stencilAttachmentFormat;
 
     VkGraphicsPipelineCreateInfo pipelineInfo = {};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipelineInfo.pNext = &pipelineRenderingCreateInfo;
-    pipelineInfo.stageCount = 2,
+    pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size()),
     pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
     pipelineInfo.pInputAssemblyState = &inputAssembly;
     pipelineInfo.pViewportState = &viewportState;
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisampling;
+    pipelineInfo.pDepthStencilState = descriptor.depthStencil.has_value() ? &depthStencil : nullptr;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout;
-    pipelineInfo.renderPass = renderPass;
+    pipelineInfo.renderPass = VK_NULL_HANDLE; // dynamic rendering: renderPass must be VK_NULL_HANDLE
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     pipelineInfo.basePipelineIndex = -1;
 
@@ -997,9 +1047,10 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     }
 
     auto toReturn = new RenderPipelineHandle();
-    toReturn->device = deviceData->device;
-    toReturn->pipeline = pipeline;
-    toReturn->renderPass = renderPass;
+    toReturn->device              = deviceData->device;
+    toReturn->pipeline            = pipeline;
+    toReturn->pipelineLayout      = pipelineLayout;
+    toReturn->ownsPipelineLayout  = ownsPipelineLayout;
 
     return std::shared_ptr<RenderPipeline>(new RenderPipeline(toReturn));
 }
@@ -1037,8 +1088,9 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     }
 
     auto toReturn = new ComputePipelineHandle();
-    toReturn->device = deviceData->device;
-    toReturn->pipeline = pipeline;
+    toReturn->device         = deviceData->device;
+    toReturn->pipeline       = pipeline;
+    toReturn->pipelineLayout = info.layout;
 
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(toReturn));
 }
@@ -1053,8 +1105,12 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     info.commandPool = deviceData->commandPool;
     info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     info.commandBufferCount = 1;
-    VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer);
+    VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    if (vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                            "createCommandEncoder: vkAllocateCommandBuffers failed");
+        return nullptr;
+    }
 
     auto toReturn = new CommandEncoderHandle();
     toReturn->device                    = deviceData->device;
@@ -1333,22 +1389,105 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
     return std::shared_ptr<BindGroup>(new BindGroup(toReturn));
 }
 
+// Rebuilds the swapchain, image views, and extent after a window resize.
+// Called when vkAcquireNextImageKHR or vkQueuePresentKHR returns OUT_OF_DATE / SUBOPTIMAL.
+static void recreateSwapchain(DeviceData *deviceData) {
+    if (!deviceData->window || deviceData->surface == VK_NULL_HANDLE) return;
+
+    vkDeviceWaitIdle(deviceData->device);
+
+    // Destroy old image views.
+    for (auto iv : deviceData->swapchainImageViews)
+        vkDestroyImageView(deviceData->device, iv, nullptr);
+    deviceData->swapchainImageViews.clear();
+
+    // Re-query surface capabilities for the new window size.
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(deviceData->physicalDevice,
+                                                   deviceData->surface, &caps) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                            "recreateSwapchain: vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed");
+        return;
+    }
+
+    VkExtent2D newExtent = caps.currentExtent;
+
+    VkSwapchainCreateInfoKHR sci{};
+    sci.sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+    sci.surface          = deviceData->surface;
+    sci.minImageCount    = std::min(std::max((int)caps.minImageCount, 3), (int)caps.maxImageCount);
+    sci.imageFormat      = deviceData->surfaceFormat.format;
+    sci.imageColorSpace  = deviceData->surfaceFormat.colorSpace;
+    sci.imageExtent      = newExtent;
+    sci.imageArrayLayers = 1;
+    sci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    sci.preTransform     = caps.currentTransform;
+    sci.compositeAlpha   = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+    sci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
+    sci.clipped          = VK_TRUE;
+    sci.oldSwapchain     = deviceData->swapchain; // hand old swapchain to driver for reuse
+
+    VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
+    if (vkCreateSwapchainKHR(deviceData->device, &sci, nullptr, &newSwapchain) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                            "recreateSwapchain: vkCreateSwapchainKHR failed");
+        return;
+    }
+
+    // Destroy old swapchain only after the new one is successfully created.
+    vkDestroySwapchainKHR(deviceData->device, deviceData->swapchain, nullptr);
+    deviceData->swapchain   = newSwapchain;
+    deviceData->imageExtent = newExtent;
+
+    // Re-fetch swapchain images.
+    uint32_t imageCount = 0;
+    vkGetSwapchainImagesKHR(deviceData->device, newSwapchain, &imageCount, nullptr);
+    deviceData->swapchainImages.resize(imageCount);
+    vkGetSwapchainImagesKHR(deviceData->device, newSwapchain, &imageCount,
+                            deviceData->swapchainImages.data());
+
+    // Recreate image views.
+    deviceData->swapchainImageViews.resize(imageCount);
+    for (uint32_t i = 0; i < imageCount; i++) {
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image                           = deviceData->swapchainImages[i];
+        viewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format                          = deviceData->surfaceFormat.format;
+        viewInfo.components                      = { VK_COMPONENT_SWIZZLE_IDENTITY,
+                                                     VK_COMPONENT_SWIZZLE_IDENTITY,
+                                                     VK_COMPONENT_SWIZZLE_IDENTITY,
+                                                     VK_COMPONENT_SWIZZLE_IDENTITY };
+        viewInfo.subresourceRange                = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vkCreateImageView(deviceData->device, &viewInfo, nullptr,
+                          &deviceData->swapchainImageViews[i]);
+    }
+
+    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                        "recreateSwapchain: rebuilt swapchain (%ux%u)", newExtent.width, newExtent.height);
+}
+
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 
     auto deviceData = (DeviceData *)this->native;
     auto cbHandle   = (CommandBufferHandle *)commandBuffer->native;
 
-    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
     VkSubmitInfo submitInfo{};
-    submitInfo.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.waitSemaphoreCount   = 1;
-    submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphore;
-    submitInfo.pWaitDstStageMask    = &waitStage;
-    submitInfo.commandBufferCount   = 1;
-    submitInfo.pCommandBuffers      = &cbHandle->commandBuffer;
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
+    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers    = &cbHandle->commandBuffer;
+
+    if (cbHandle->hasSwapchain) {
+        // Swapchain submission: synchronise with acquire/present semaphores.
+        VkPipelineStageFlags waitStage  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        submitInfo.waitSemaphoreCount   = 1;
+        submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphore;
+        submitInfo.pWaitDstStageMask    = &waitStage;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
+    }
+    // Headless / offscreen / compute: no semaphores needed.
 
     if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Device::submit: vkQueueSubmit failed");
@@ -1365,9 +1504,11 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
 
         VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
-        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+            recreateSwapchain(deviceData);
+        } else if (result != VK_SUCCESS) {
             __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
-                                "Device::submit: vkQueuePresentKHR failed");
+                                "Device::submit: vkQueuePresentKHR failed (%d)", result);
         }
     }
 

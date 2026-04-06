@@ -6,7 +6,8 @@ namespace systems::leal::campello_gpu
 {
     struct ComputePipelineHandle
     {
-        VkDevice device;
-        VkPipeline pipeline;
+        VkDevice         device;
+        VkPipeline       pipeline;
+        VkPipelineLayout pipelineLayout;
     };
 }

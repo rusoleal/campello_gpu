@@ -1,27 +1,27 @@
 # campello_gpu
 
-A cross-platform GPU abstraction library (C++17) with a WebGPU-inspired API. Provides a unified interface over Metal, Vulkan, and DirectX 12 for both rendering and compute workloads.
+A cross-platform GPU abstraction library (C++20) with a WebGPU-inspired API. Provides a unified interface over Metal, Vulkan, and DirectX 12 for both rendering and compute workloads.
 
 ## Platforms
 
 | OS | Engine | Status |
 |----|--------|--------|
+| android | Vulkan 1.x | Production ready |
+| macos/ios | Metal | Production ready |
 | windows | DirectX 12 | In progress |
-| windows | DirectX 11 | Freezed |
-| windows | OpenGL | Freezed |
+| windows | DirectX 11 | Frozen |
+| windows | OpenGL | Frozen |
 | windows | Vulkan 1.x | Not started |
-| macos/ios | Metal | In progress |
-| macos/ios | OpenGL | Freezed |
+| macos/ios | OpenGL | Frozen |
 | macos/ios | Vulkan 1.x | Not started |
-| android | Vulkan 1.x | In progress |
-| android | OpenGL | Freezed |
+| android | OpenGL | Frozen |
 | linux | Vulkan 1.x | Not started |
-| linux | OpenGL | Freezed |
+| linux | OpenGL | Frozen |
 
 ## Requirements
 
 - CMake 3.22.1+
-- C++17 compiler
+- C++20 compiler
 - Platform SDK: Metal (macOS/iOS), Vulkan (Android), DirectX 12 (Windows)
 
 ## Build

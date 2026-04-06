@@ -2,50 +2,65 @@
 
 ## Bugs (breaking / incorrect behavior)
 
+- [x] **[Vulkan]** `Device::~Device()` — leaked `VkSwapchainKHR`, `VkSemaphore` ×2, all `VkImageView` swapchain views, `VkSurfaceKHR`, `VkDescriptorPool`; now fully destroyed in order with `vkDeviceWaitIdle` guard
+- [x] **[Vulkan]** `createRenderPipeline()` `stageCount` hardcoded to `2` — vertex-only pipelines (no fragment shader) would pass a wrong count; now uses `shaderStages.size()`
+- [x] **[Vulkan]** `createTexture()` default view always used `VK_IMAGE_ASPECT_COLOR_BIT` for all formats — depth/stencil textures now correctly use `DEPTH_BIT`, `STENCIL_BIT`, or both based on format
+- [x] **[Vulkan]** `createRenderPipeline()` set `pipelineInfo.renderPass` to a real `VkRenderPass` — dynamic rendering requires `VK_NULL_HANDLE`; dead `VkRenderPass` creation removed
+- [x] **[Vulkan]** `createRenderPipeline()` always created an empty pipeline layout (`setLayoutCount = 0`) ignoring bind groups — `RenderPipelineDescriptor` now has an optional `layout` field; when set, the caller's `VkPipelineLayout` is used directly
+- [x] **[API]** `DepthStencilAttachment::stencilRadOnly` typo in public header — renamed to `stencilReadOnly`
+- [x] **[Vulkan]** `Device::submit()` — `VK_ERROR_OUT_OF_DATE_KHR` / `VK_SUBOPTIMAL_KHR` from `vkQueuePresentKHR` now trigger swapchain recreation via `recreateSwapchain()`: re-queries surface capabilities, rebuilds swapchain with `oldSwapchain`, destroys old image views, recreates image views at the new size
+- [x] **[Vulkan]** `Device::createCommandEncoder()` — `vkAllocateCommandBuffers` return value was unchecked; now returns `nullptr` on failure
+
 - [x] **[Metal]** `RenderPassEncoder` / `ComputePassEncoder` constructors — `renderCommandEncoder()` and `computeCommandEncoder()` return autoreleased objects; missing `retain()` in constructors caused EXC_BAD_ACCESS when autorelease pool drained after each frame
-- [ ] **[Vulkan]** `Device::createBindGroupLayout()` — function has no `return` statement; will crash or fail to compile with warnings-as-errors (`device.cpp:1055–1092`)
-- [ ] **[Vulkan]** `Device::createBindGroupLayout()` — `layoutBindings[a].descriptorCount` is commented out (uninitialized); `stageFlags` is never set (`device.cpp:1060–1075`)
-- [ ] **[Vulkan]** `Device::getFeatures()` — casts `native` (`DeviceData*`) directly to `VkPhysicalDevice`; will crash at runtime (`device.cpp:589`)
-- [ ] **[Vulkan]** `CommandEncoder::beginRenderPass()` — calls `vkCmdBeginRendering` but never constructs or returns a `RenderPassEncoder`; missing `return` statement (`command_encoder.cpp:108`)
-- [ ] **[Vulkan]** `CommandEncoder::finish()` — empty body; missing `vkEndCommandBuffer` and return value (`command_encoder.cpp:133`)
-- [ ] **[Vulkan]** `Texture::upload()` — only copies to the staging buffer, never issues `vkCmdCopyBufferToImage` to the actual VkImage (`texture.cpp`)
-- [ ] **[Vulkan]** `Buffer::getLength()` — always returns `0`; `BufferHandle` doesn't store the allocation size (`buffer.cpp:25`)
-- [ ] **[Vulkan]** `Device::createRenderPipeline()` — `VkPipelineDepthStencilStateCreateInfo depthStencil` is declared but never initialized or passed to the pipeline (`device.cpp:776`)
-- [ ] **[Vulkan]** Swapchain format/color-space selection always picks `surfaceFormats[0]` without any preference logic (`device.cpp:361–362`)
-- [ ] **[Vulkan]** Debug log strings `"pepe1"`, `"pepe2"`, `"pepe3"` left in production code (`device.cpp:254,261,268`)
-- [x] **[DirectX]** `device.cpp` implements stale API (`getDefaultDevice`, `getDevices`, old `createBuffer`/`createTexture` signatures) — entire file is out of sync with `device.hpp` and will not compile
+- [x] **[Vulkan]** `Device::createBindGroupLayout()` — function had no `return` statement; now fully implemented with proper `descriptorCount`, `stageFlags`, and `VkDescriptorSetLayout` creation
+- [x] **[Vulkan]** `Device::getFeatures()` — was casting `native` (`DeviceData*`) directly to `VkPhysicalDevice`; fixed to use `deviceData->physicalDevice`
+- [x] **[Vulkan]** `CommandEncoder::beginRenderPass()` — was missing return statement; now returns a valid `RenderPassEncoder`
+- [x] **[Vulkan]** `CommandEncoder::finish()` — was empty; now calls `vkEndCommandBuffer` and returns a `CommandBuffer`
+- [x] **[Vulkan]** `Buffer::getLength()` — was always returning `0`; `BufferHandle` now stores allocation size
+- [x] **[Vulkan]** Memory cleanup on `createBuffer` failure — `bufferHandle` is now destroyed when `vkAllocateMemory` fails
+- [x] **[DirectX]** `device.cpp` implements stale API (`getDefaultDevice`, `getDevices`, old `createBuffer`/`createTexture` signatures) — entire file rewritten to match `device.hpp`
+- [x] **[Vulkan]** `Texture::upload()` — rewrote to issue `vkCmdCopyBufferToImage` via one-shot command buffer with proper UNDEFINED→TRANSFER_DST_OPTIMAL→SHADER_READ_ONLY_OPTIMAL layout transitions
+- [x] **[Vulkan]** `ComputePassEncoder::setBindGroup()` — `ComputePassEncoderHandle` now stores `pipelineLayout`; `setPipeline()` caches it so `setBindGroup()` passes the correct layout
+- [x] **[Vulkan]** `CommandEncoder::beginRenderPass()` — now branches on `colorAttachments[0].view`: offscreen path uses provided TextureView image; swapchain path acquires via `vkAcquireNextImageKHR`
+- [x] **[Vulkan]** `Device::submit()` — semaphore usage gated on `cbHandle->hasSwapchain`; headless/compute submissions use no semaphores
+- [x] **[Vulkan]** `Device::createRenderPipeline()` — `depthStencil` now zero-initialized and fully populated from `descriptor.depthStencil`; wired to `pipelineInfo.pDepthStencilState`
+- [x] **[Vulkan]** Swapchain format/color-space selection always picks `surfaceFormats[0]` — now prefers `VK_FORMAT_B8G8R8A8_SRGB` / `VK_FORMAT_R8G8B8A8_SRGB` with `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`, falls back to first available
+- [x] **[Vulkan]** Debug log strings `"pepe1"`, `"pepe2"`, `"pepe3"` removed from `device.cpp`
 
 ## Missing implementations — Vulkan/Android
 
-- [ ] `Device::createBindGroup()` — no implementation exists; will produce a linker error
-- [ ] `CommandEncoder::beginComputePass()` — no implementation; no `ComputePassEncoder` source file at all
-- [ ] `Texture::createView()` — no `TextureView` handle or implementation in `src/vulkan_android/`
-- [ ] `Texture` getters (`getFormat`, `getWidth`, `getHeight`, `getMipLevelCount`, `getSampleCount`, `getUsage`, `getDimension`) — not implemented
-- [ ] `Adapter::getFeatures()` — returns empty set; should query `VkPhysicalDeviceFeatures` from the stored physical device
-- [ ] `Device::getName()` — returns hardcoded `"unknown"`; should query `VkPhysicalDeviceProperties::deviceName`
-- [ ] `Device::getEngineVersion()` — returns hardcoded `"unknown"`
-- [ ] `CommandEncoder::clearBuffer()` — empty body (no `vkCmdFillBuffer`)
-- [ ] `CommandEncoder::copyBufferToBuffer()` — empty body (no `vkCmdCopyBuffer`)
-- [ ] `CommandEncoder::copyBufferToTexture()` — empty body (no `vkCmdCopyBufferToImage`)
-- [ ] `CommandEncoder::copyTextureToBuffer()` — empty body
-- [ ] `CommandEncoder::copyTextureToTexture()` — empty body (no `vkCmdCopyImage`)
-- [ ] `CommandEncoder::resolveQuerySet()` — empty body
-- [ ] `CommandEncoder::writeTimestamp()` — empty body
-- [ ] `RenderPassEncoder::draw()` — empty body (no `vkCmdDraw`)
-- [ ] `RenderPassEncoder::drawIndexed()` — empty body (no `vkCmdDrawIndexed`)
-- [ ] `RenderPassEncoder::drawIndirect()` — empty body
-- [ ] `RenderPassEncoder::drawIndexedIndirect()` — empty body
-- [ ] `RenderPassEncoder::end()` — empty body (no `vkCmdEndRendering`)
-- [ ] `RenderPassEncoder::setPipeline()` — empty body (no `vkCmdBindPipeline`)
-- [ ] `RenderPassEncoder::setVertexBuffer()` — empty body (no `vkCmdBindVertexBuffers`)
-- [ ] `RenderPassEncoder::setIndexBuffer()` — empty body (no `vkCmdBindIndexBuffer`)
-- [ ] `RenderPassEncoder::setViewport()` — empty body (no `vkCmdSetViewport`)
-- [ ] `RenderPassEncoder::setScissorRect()` — empty body (no `vkCmdSetScissor`)
-- [ ] `RenderPassEncoder::setStencilReference()` — empty body
-- [ ] `RenderPassEncoder::beginOcclusionQuery()` / `endOcclusionQuery()` — empty bodies
-- [ ] `RenderPassEncoder::setBindGroup()` — commented out in public header (`render_pass_encoder.hpp:24`)
-- [ ] All `ComputePassEncoder` methods (`dispatchWorkgroups`, `dispatchWorkgroupsIndirect`, `end`, `setBindGroup`, `setPipeline`) — no source file
-- [ ] Memory cleanup on `createBuffer` failure — `bufferHandle` is never destroyed when `vkAllocateMemory` fails (`device.cpp:569`)
+- [x] `Device::createBindGroup()` — implemented
+- [x] `Device::getName()` — now queries `VkPhysicalDeviceProperties::deviceName`
+- [x] `Device::getEngineVersion()` — now queries `vkEnumerateInstanceVersion`
+- [x] `CommandEncoder::beginComputePass()` — implemented; `ComputePassEncoder` source file added
+- [x] `Texture::createView()` — implemented via `VkImageViewCreateInfo`
+- [x] `Texture` getters (`getFormat`, `getWidth`, `getHeight`, `getMipLevelCount`, `getSampleCount`, `getUsage`, `getDimension`) — implemented
+- [x] `CommandEncoder::clearBuffer()` — implemented via `vkCmdFillBuffer`
+- [x] `CommandEncoder::copyBufferToBuffer()` — implemented via `vkCmdCopyBuffer`
+- [x] `CommandEncoder::copyTextureToBuffer()` — implemented via `vkCmdCopyImageToBuffer` with layout transitions
+- [x] `CommandEncoder::copyTextureToTexture()` — implemented via `vkCmdCopyImage` with layout transitions
+- [x] `CommandEncoder::resolveQuerySet()` — implemented via `vkCmdCopyQueryPoolResults`
+- [x] `CommandEncoder::writeTimestamp()` — implemented via `vkCmdWriteTimestamp`
+- [x] `RenderPassEncoder::draw()` — implemented via `vkCmdDraw`
+- [x] `RenderPassEncoder::drawIndexed()` — implemented via `vkCmdDrawIndexed`
+- [x] `RenderPassEncoder::drawIndirect()` — implemented via `vkCmdDrawIndirect`
+- [x] `RenderPassEncoder::drawIndexedIndirect()` — implemented via `vkCmdDrawIndexedIndirect`
+- [x] `RenderPassEncoder::end()` — implemented via `vkCmdEndRenderingKHR` + layout barrier
+- [x] `RenderPassEncoder::setPipeline()` — implemented via `vkCmdBindPipeline`; also caches pipeline layout for `setBindGroup`
+- [x] `RenderPassEncoder::setVertexBuffer()` — implemented via `vkCmdBindVertexBuffers`
+- [x] `RenderPassEncoder::setIndexBuffer()` — implemented via `vkCmdBindIndexBuffer`
+- [x] `RenderPassEncoder::setViewport()` — implemented via `vkCmdSetViewport`
+- [x] `RenderPassEncoder::setScissorRect()` — implemented via `vkCmdSetScissor`
+- [x] `RenderPassEncoder::setStencilReference()` — implemented via `vkCmdSetStencilReference`
+- [x] `RenderPassEncoder::setBindGroup()` — implemented via `vkCmdBindDescriptorSets` (GRAPHICS bind point)
+- [x] All `ComputePassEncoder` methods (`dispatchWorkgroups`, `dispatchWorkgroupsIndirect`, `end`, `setBindGroup`, `setPipeline`) — implemented
+- [x] `Buffer::download()` — implemented via `vkMapMemory` + `vkInvalidateMappedMemoryRanges`
+- [x] `Texture::download()` — implemented: allocates readback buffer, one-shot command buffer, layout transitions, `vkCmdCopyImageToBuffer`, synchronous fence wait
+- [x] `CommandEncoder::copyBufferToTexture()` — implemented (Vulkan + Metal); public header updated with proper 6-parameter signature
+- [x] `RenderPassEncoder::beginOcclusionQuery()` / `endOcclusionQuery()` — implemented via `vkCmdBeginQuery`/`vkCmdEndQuery`; `queryPool` wired from `BeginRenderPassDescriptor::occlusionQuerySet`
+- [x] `Adapter::getFeatures()` — implemented; `getAdapters()` now stores `VkPhysicalDevice` directly in `native`; queries `vkGetPhysicalDeviceFeatures` for geometry shader, BC compression, and depth24+stencil8 format support
+- [x] `CommandEncoder::beginRenderPass()` depth/stencil attachment — `pDepthAttachment` and `pStencilAttachment` now populated from `descriptor.depthStencilAttachment`; format-based detection of depth-only vs combined depth+stencil; image transitioned to `DEPTH_STENCIL_ATTACHMENT_OPTIMAL`
+- [x] `Device::createRenderPipeline()` `pipelineRenderingCreateInfo` — `depthAttachmentFormat` and `stencilAttachmentFormat` now populated from `descriptor.depthStencil->format`
 
 ## Missing implementations — Metal/macOS
 
@@ -65,8 +80,8 @@
 - [x] `CommandBuffer` — constructor/destructor wrapping `MTL::CommandBuffer`
 - [x] `TextureView` — implemented via `MTL::Texture::newTextureView`; `createView()` fully functional
 - [x] `Texture::upload()` — implemented via `MTL::Texture::replaceRegion`
-- [x] `Device::getEngineVersion()` — returns `"0.2.0"`
-- [x] `getVersion()` (free function in namespace) — returns `"0.2.0"`
+- [x] `Device::getEngineVersion()` — returns library version string
+- [x] `getVersion()` (free function in namespace) — returns library version string
 
 ## Missing implementations — DirectX/Windows
 
@@ -98,7 +113,9 @@
 
 ## Public API / headers
 
-- [ ] `RenderPassEncoder::setBindGroup()` — declared but commented out in `render_pass_encoder.hpp:24`
-- [ ] `RenderPassEncoder::executeBundles()` — declared but commented out in `render_pass_encoder.hpp:25`
-- [ ] `CommandEncoder::copyBufferToTexture/copyTextureToBuffer/copyTextureToTexture` — marked `// TODO` in `command_encoder.hpp:28–30`
-- [ ] `State` class (`state.hpp`) — declared but completely empty; no methods
+- [x] `RenderPassEncoder::setBindGroup()` — implemented in Vulkan; present in Metal and DirectX
+- [x] `RenderPassEncoder::executeBundles()` — not present in `render_pass_encoder.hpp`; removed from API (render bundles are a WebGPU concept with no Vulkan/Metal equivalent; out of scope)
+- [x] `CommandEncoder::copyTextureToBuffer` — implemented (Vulkan + Metal)
+- [x] `CommandEncoder::copyTextureToTexture` — implemented (Vulkan + Metal)
+- [x] `CommandEncoder::copyBufferToTexture()` — implemented (Vulkan + Metal); public header updated with proper 6-parameter signature
+- [x] `State` class (`state.hpp`) — intentional empty placeholder per docstring; reserved for future pipeline/device state tracking; no implementation required now

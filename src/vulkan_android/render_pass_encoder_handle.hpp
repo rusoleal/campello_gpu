@@ -5,8 +5,16 @@
 namespace systems::leal::campello_gpu {
 
     struct RenderPassEncoderHandle {
-        VkCommandBuffer commandBuffer;
-        VkImage         currentSwapchainImage; ///< Used for the post-render layout barrier.
+        VkCommandBuffer  commandBuffer;
+        VkPipelineLayout pipelineLayout   = VK_NULL_HANDLE; ///< Cached from last setPipeline call.
+        // Swapchain path
+        VkImage          currentSwapchainImage = VK_NULL_HANDLE;
+        bool             isSwapchain           = false;
+        // Offscreen path
+        VkImage          offscreenImage        = VK_NULL_HANDLE;
+        VkExtent2D       offscreenExtent       = {};
+        // Occlusion queries
+        VkQueryPool      queryPool             = VK_NULL_HANDLE;
     };
 
 }

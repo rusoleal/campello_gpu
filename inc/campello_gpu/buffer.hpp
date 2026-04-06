@@ -31,6 +31,7 @@ namespace systems::leal::campello_gpu
         friend class CommandEncoder;
         friend class RenderPassEncoder;
         friend class ComputePassEncoder;
+        friend class Texture;
         void *native;
 
         Buffer(void *pd);

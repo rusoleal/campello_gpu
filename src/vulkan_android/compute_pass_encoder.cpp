@@ -23,6 +23,7 @@ void ComputePassEncoder::setPipeline(std::shared_ptr<ComputePipeline> pipeline) 
     auto data = (ComputePassEncoderHandle *)native;
     auto pipe = (ComputePipelineHandle *)pipeline->native;
     vkCmdBindPipeline(data->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipe->pipeline);
+    data->pipelineLayout = pipe->pipelineLayout; // cache for setBindGroup
 }
 
 void ComputePassEncoder::dispatchWorkgroups(uint64_t workgroupCountX,
@@ -57,7 +58,7 @@ void ComputePassEncoder::setBindGroup(uint32_t index,
     // Pipeline layout not tracked here; pass VK_NULL_HANDLE (requires layout in handle for full impl).
     vkCmdBindDescriptorSets(data->commandBuffer,
                              VK_PIPELINE_BIND_POINT_COMPUTE,
-                             VK_NULL_HANDLE, // TODO: store layout in handle
+                             data->pipelineLayout,
                              index,
                              1, &bg->descriptorSet,
                              offsetCount, offsets);

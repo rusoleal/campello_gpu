@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <vector>
 #include <campello_gpu/descriptors/depth_stencil_descriptor.hpp>
@@ -8,6 +9,7 @@
 #include <campello_gpu/constants/primitive_topology.hpp>
 #include <campello_gpu/constants/cull_mode.hpp>
 #include <campello_gpu/constants/front_face.hpp>
+#include <campello_gpu/pipeline_layout.hpp>
 
 namespace systems::leal::campello_gpu {
 
@@ -79,6 +81,15 @@ namespace systems::leal::campello_gpu {
          * (points, lines, or triangles).
          */
         PrimitiveTopology topology;
+
+        /**
+         * @brief Optional pipeline layout describing the bind group structure.
+         *
+         * Defines the descriptor set layouts visible to all shader stages. When
+         * omitted, an empty layout (no descriptor sets) is created automatically.
+         * Required when the pipeline uses `setBindGroup()`.
+         */
+        std::shared_ptr<PipelineLayout> layout;
     };
 
 }

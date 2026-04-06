@@ -2,6 +2,46 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.6.0] - 2026-04-06
+
+### Added
+
+- **Vulkan** `CommandEncoder::copyBufferToTexture()` — proper 6-parameter implementation (`source`, `sourceOffset`, `bytesPerRow`, `destination`, `mipLevel`, `arrayLayer`) with layout transitions; public header signature updated to match (previously a no-parameter stub)
+- **Vulkan** `CommandEncoder::copyTextureToBuffer()` — implemented via `vkCmdCopyImageToBuffer` with `TRANSFER_SRC_OPTIMAL` layout transitions and layout restore
+- **Vulkan** `CommandEncoder::copyTextureToTexture()` — implemented via `vkCmdCopyImage` with per-image layout transitions
+- **Vulkan** `CommandEncoder::beginRenderPass()` — offscreen rendering path: when `colorAttachments[0].view` is set, uses the provided `TextureView` image instead of acquiring a swapchain image; depth/stencil attachment from `descriptor.depthStencilAttachment` now fully wired (`pDepthAttachment`, `pStencilAttachment`) with format-based aspect detection and `DEPTH_STENCIL_ATTACHMENT_OPTIMAL` transition
+- **Vulkan** `RenderPassEncoder::setBindGroup()` — implemented via `vkCmdBindDescriptorSets` on the graphics bind point using the pipeline layout cached by `setPipeline()`
+- **Vulkan** `RenderPassEncoder::beginOcclusionQuery()` / `endOcclusionQuery()` — implemented via `vkCmdBeginQuery` / `vkCmdEndQuery`; `VkQueryPool` wired from `BeginRenderPassDescriptor::occlusionQuerySet`
+- **Vulkan** `RenderPassEncoder::end()` — branches on swapchain vs offscreen: swapchain images transition to `PRESENT_SRC_KHR`, offscreen images to `GENERAL`
+- **Vulkan** `ComputePassEncoder::setBindGroup()` — pipeline layout now correctly sourced from the handle (cached by `setPipeline()`) instead of `VK_NULL_HANDLE`
+- **Vulkan** `Texture::upload()` — rewrote from staging-buffer-only to a full one-shot command buffer that issues `vkCmdCopyBufferToImage` with `UNDEFINED→TRANSFER_DST_OPTIMAL→SHADER_READ_ONLY_OPTIMAL` transitions; all mip levels covered
+- **Vulkan** `Texture::download()` — implemented: allocates host-visible readback buffer, one-shot command buffer, `TRANSFER_SRC_OPTIMAL` transition, `vkCmdCopyImageToBuffer`, synchronous fence wait, memcpy to CPU
+- **Vulkan** `Buffer::download()` — implemented via `vkMapMemory` + `vkInvalidateMappedMemoryRanges`
+- **Vulkan** `Adapter::getFeatures()` — now queries `vkGetPhysicalDeviceFeatures` and `vkGetPhysicalDeviceFormatProperties`; reports `geometryShader`, `bcTextureCompression`, `depth24Stencil8PixelFormat`; `getAdapters()` stores `VkPhysicalDevice` directly in `native` instead of an index
+- **Vulkan** `Device::createRenderPipeline()` — depth/stencil state (`VkPipelineDepthStencilStateCreateInfo`) now fully populated from `descriptor.depthStencil` including compare op, write enable, stencil front/back ops, read/write masks; wired to `pDepthStencilState`; `pipelineRenderingCreateInfo` now sets `depthAttachmentFormat` and `stencilAttachmentFormat` from `descriptor.depthStencil->format`
+- **Vulkan** `Device::submit()` — swapchain recreation on `VK_ERROR_OUT_OF_DATE_KHR` or `VK_SUBOPTIMAL_KHR` from `vkQueuePresentKHR`: re-queries surface capabilities, rebuilds swapchain with `oldSwapchain`, destroys old image views, recreates image views at the new size
+- **Vulkan** Swapchain format selection — now prefers `VK_FORMAT_B8G8R8A8_SRGB` / `VK_FORMAT_R8G8B8A8_SRGB` with `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`; falls back to `surfaceFormats[0]`
+- **API** `RenderPipelineDescriptor::layout` — new optional `std::shared_ptr<PipelineLayout>` field; when set, the caller's `VkPipelineLayout` is used directly, enabling `setBindGroup()` in render pipelines; when absent, an empty layout is auto-created
+
+### Fixed
+
+- **Vulkan** `Device::~Device()` — leaked `VkSwapchainKHR`, two `VkSemaphore`, all swapchain `VkImageView`s, `VkSurfaceKHR`, and `VkDescriptorPool`; all now destroyed in correct order behind `vkDeviceWaitIdle`
+- **Vulkan** `createRenderPipeline()` `stageCount` — was hardcoded to `2`; vertex-only pipelines (no fragment shader) would submit an incorrect count; now uses `shaderStages.size()`
+- **Vulkan** `createTexture()` default image view — always used `VK_IMAGE_ASPECT_COLOR_BIT` for all formats; depth/stencil textures now get `DEPTH_BIT`, `STENCIL_BIT`, or `DEPTH_BIT | STENCIL_BIT` based on format
+- **Vulkan** `createRenderPipeline()` — set `pipelineInfo.renderPass` to a real `VkRenderPass` despite using `VK_KHR_dynamic_rendering`; spec requires `VK_NULL_HANDLE`; dead render pass creation removed
+- **Vulkan** `Device::submit()` — always passed swapchain semaphores regardless of whether a swapchain was present; headless and compute-only submissions now use no semaphores
+- **Vulkan** `Device::createCommandEncoder()` — `vkAllocateCommandBuffers` return value was unchecked; now returns `nullptr` on failure
+- **Vulkan** Debug log strings `"pepe1"`, `"pepe2"`, `"pepe3"` removed from `device.cpp`
+- **API** `DepthStencilAttachment::stencilRadOnly` — renamed to `stencilReadOnly` (typo in public header)
+
+### Changed
+
+- **Vulkan** `createTexture()` default view — `TextureViewHandle` now stores `VkFormat format` for use in depth attachment setup and format-dependent logic
+- **Vulkan** `RenderPassEncoderHandle` — extended with `isSwapchain`, `currentSwapchainImage`, `offscreenImage`, `offscreenExtent`, `queryPool`, `pipelineLayout` fields
+- **Vulkan** `RenderPipelineHandle` — `VkRenderPass renderPass` removed (no longer created); `ownsPipelineLayout` flag added to track ownership of auto-created layouts
+
+---
+
 ## [0.5.2] - 2026-04-06
 
 ### Fixed

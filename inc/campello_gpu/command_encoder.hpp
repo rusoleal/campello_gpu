@@ -93,7 +93,27 @@ namespace systems::leal::campello_gpu
                                 std::shared_ptr<Buffer> destination, uint64_t destinationOffset,
                                 uint64_t size);
 
-        void copyBufferToTexture();  ///< @todo Not yet implemented.
+        /**
+         * @brief Copies data from a buffer into a texture subresource.
+         *
+         * The buffer must have been created with `BufferUsage::copySrc`.
+         * The texture must have been created with `TextureUsage::copyDst`.
+         *
+         * @param source            Source buffer.
+         * @param sourceOffset      Byte offset within the buffer to the first texel.
+         * @param bytesPerRow       Bytes per row in the source buffer (row pitch).
+         *                          Pass 0 for tightly-packed data.
+         * @param destination       Destination texture.
+         * @param mipLevel          Mip level of the destination to write into.
+         * @param arrayLayer        Array layer (for array textures) or depth slice (for 3D) to write into.
+         */
+        void copyBufferToTexture(
+            std::shared_ptr<Buffer>  source,
+            uint64_t                 sourceOffset,
+            uint64_t                 bytesPerRow,
+            std::shared_ptr<Texture> destination,
+            uint32_t                 mipLevel,
+            uint32_t                 arrayLayer);
 
         /**
          * @brief Copies texture data into a buffer.
