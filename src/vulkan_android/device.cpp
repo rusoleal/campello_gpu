@@ -29,6 +29,16 @@ using namespace systems::leal::campello_gpu;
 
 VkInstance instance = nullptr;
 
+// Function pointers for VK_KHR_dynamic_rendering (needed for Android API 28 / Vulkan 1.1)
+PFN_vkCmdBeginRenderingKHR pfnCmdBeginRenderingKHR = nullptr;
+PFN_vkCmdEndRenderingKHR pfnCmdEndRenderingKHR = nullptr;
+
+void loadDynamicRenderingFunctions(VkDevice device)
+{
+    pfnCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR");
+    pfnCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR");
+}
+
 VkFormat pixelFormatToNative(PixelFormat format);
 PixelFormat nativeToPixelFormat(VkFormat format);
 
@@ -361,6 +371,9 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateDevice() error");
         return nullptr;
     }
+
+    // Load dynamic rendering function pointers (VK_KHR_dynamic_rendering)
+    loadDynamicRenderingFunctions(toReturn);
 
     // create swapchain (only when a real surface is available)
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;

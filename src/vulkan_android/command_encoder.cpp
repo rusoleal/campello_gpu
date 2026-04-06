@@ -13,6 +13,9 @@
 
 using namespace systems::leal::campello_gpu;
 
+// Extern function pointers for VK_KHR_dynamic_rendering (loaded in device.cpp)
+extern PFN_vkCmdBeginRenderingKHR pfnCmdBeginRenderingKHR;
+
 CommandEncoder::CommandEncoder(void *pd) {
     this->native = pd;
 
@@ -121,7 +124,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rinfo.pDepthAttachment       = VK_NULL_HANDLE;
     rinfo.pStencilAttachment     = VK_NULL_HANDLE;
 
-    vkCmdBeginRendering(data->commandBuffer, &rinfo);
+    pfnCmdBeginRenderingKHR(data->commandBuffer, &rinfo);
 
     auto rpeHandle = new RenderPassEncoderHandle();
     rpeHandle->commandBuffer        = data->commandBuffer;

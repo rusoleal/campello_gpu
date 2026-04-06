@@ -8,6 +8,9 @@
 
 using namespace systems::leal::campello_gpu;
 
+// Extern function pointer for VK_KHR_dynamic_rendering (loaded in device.cpp)
+extern PFN_vkCmdEndRenderingKHR pfnCmdEndRenderingKHR;
+
 RenderPassEncoder::RenderPassEncoder(void *pd) {
     native = pd;
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "RenderPassEncoder::RenderPassEncoder()");
@@ -55,7 +58,7 @@ void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuff
 void RenderPassEncoder::end() {
     auto data = (RenderPassEncoderHandle *)native;
 
-    vkCmdEndRendering(data->commandBuffer);
+    pfnCmdEndRenderingKHR(data->commandBuffer);
 
     // Transition the swapchain image from color attachment to present layout.
     VkImageMemoryBarrier barrier{};

@@ -7,6 +7,7 @@ All notable changes to campello_gpu are documented here.
 ### Fixed
 - **Linux** `pixel_format.hpp` — added missing `#include <cstdint>` causing `uint32_t` build errors on GCC
 - **Android** `command_encoder.cpp` — fixed `copyTextureToBuffer` signature mismatch between header declaration and implementation
+- **Android** dynamic rendering — `vkCmdBeginRendering`/`vkCmdEndRendering` are Vulkan 1.3 functions; now loaded dynamically via `vkGetDeviceProcAddr` as `vkCmdBeginRenderingKHR`/`vkCmdEndRenderingKHR` for compatibility with Android API 28 (Vulkan 1.1)
 
 ---
 
