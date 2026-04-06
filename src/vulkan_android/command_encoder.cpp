@@ -161,8 +161,15 @@ void CommandEncoder::copyBufferToTexture() {
     // TODO: signature needs source/destination descriptors; left unimplemented.
 }
 
-void CommandEncoder::copyTextureToBuffer() {
-    // TODO: signature needs source/destination descriptors; left unimplemented.
+void CommandEncoder::copyTextureToBuffer(
+    std::shared_ptr<Texture> /*source*/,
+    uint32_t /*mipLevel*/,
+    uint32_t /*arrayLayer*/,
+    std::shared_ptr<Buffer> /*destination*/,
+    uint64_t /*destinationOffset*/,
+    uint64_t /*bytesPerRow*/)
+{
+    // TODO: Implement using vkCmdCopyImageToBuffer
 }
 
 void CommandEncoder::copyTextureToTexture(

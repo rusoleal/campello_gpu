@@ -2,6 +2,14 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.5.1] - 2026-04-06
+
+### Fixed
+- **Linux** `pixel_format.hpp` — added missing `#include <cstdint>` causing `uint32_t` build errors on GCC
+- **Android** `command_encoder.cpp` — fixed `copyTextureToBuffer` signature mismatch between header declaration and implementation
+
+---
+
 ## [0.5.0] - 2026-03-30
 
 ### Added
