@@ -118,7 +118,58 @@ void CommandEncoder::copyBufferToBuffer(
                                   src->resource, sourceOffset, size);
 }
 
-void CommandEncoder::copyBufferToTexture()  {}
+void CommandEncoder::copyBufferToTexture(
+    std::shared_ptr<Buffer>  source,
+    uint64_t                 sourceOffset,
+    uint64_t                 bytesPerRow,
+    std::shared_ptr<Texture> destination,
+    uint32_t                 mipLevel,
+    uint32_t                 arrayLayer)
+{
+    if (!native || !source || !destination || !source->native || !destination->native) return;
+    auto* h   = static_cast<CommandEncoderHandle*>(native);
+    auto* src = static_cast<BufferHandle*>(source->native);
+    auto* dst = static_cast<TextureHandle*>(destination->native);
+
+    D3D12_RESOURCE_DESC texDesc = dst->resource->GetDesc();
+
+    UINT subresource = CalcSubresource(mipLevel, arrayLayer, 0,
+        texDesc.MipLevels, texDesc.DepthOrArraySize);
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT   numRows;
+    UINT64 rowSizeInBytes;
+    UINT64 totalBytes;
+    h->deviceData->device->GetCopyableFootprints(&texDesc, subresource, 1, sourceOffset,
+        &footprint, &numRows, &rowSizeInBytes, &totalBytes);
+
+    if (bytesPerRow > 0)
+        footprint.Footprint.RowPitch = static_cast<UINT>(bytesPerRow);
+
+    D3D12_RESOURCE_BARRIER barrier = {};
+    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource   = dst->resource;
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.Subresource = subresource;
+    h->cmdList->ResourceBarrier(1, &barrier);
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource       = src->resource;
+    srcLoc.Type            = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLoc.PlacedFootprint = footprint;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource        = dst->resource;
+    dstLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLoc.SubresourceIndex = subresource;
+
+    h->cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    h->cmdList->ResourceBarrier(1, &barrier);
+}
 
 void CommandEncoder::copyTextureToBuffer(
     std::shared_ptr<Texture> source,

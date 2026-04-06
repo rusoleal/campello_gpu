@@ -2,6 +2,14 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.6.1] - 2026-04-06
+
+### Fixed
+
+- **DirectX** `CommandEncoder::copyBufferToTexture()` — implemented full 6-parameter version (`source`, `sourceOffset`, `bytesPerRow`, `destination`, `mipLevel`, `arrayLayer`); uses `GetCopyableFootprints` for subresource layout, overrides `RowPitch` when `bytesPerRow` is provided, and performs `COMMON→COPY_DEST→COMMON` resource barrier transitions around `CopyTextureRegion`; previously a no-op stub
+
+---
+
 ## [0.6.0] - 2026-04-06
 
 ### Added
