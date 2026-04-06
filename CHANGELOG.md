@@ -2,6 +2,17 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.5.2] - 2026-04-06
+
+### Fixed
+- **Android** `texture_view.cpp` — `TextureView::fromNative` used `static_cast<VkImageView>(nativeTex)` which is rejected on 32-bit ABIs (`armeabi-v7a`, `x86`) where `VkImageView` is `uint64_t` and not a pointer type; changed to `reinterpret_cast`
+
+### CI
+- **Android** build matrix expanded from a single `arm64-v8a` job to all four supported ABIs: `arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`
+- Removed `continue-on-error: true` from the Android CI job — the Vulkan backend now links successfully on all ABIs
+
+---
+
 ## [0.5.1] - 2026-04-06
 
 ### Fixed

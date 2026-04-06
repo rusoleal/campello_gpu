@@ -21,7 +21,7 @@ std::shared_ptr<TextureView> TextureView::fromNative(void *nativeTex) {
     // The caller retains ownership; we do NOT destroy it on cleanup.
     auto handle = new TextureViewHandle();
     handle->device    = VK_NULL_HANDLE;
-    handle->imageView = static_cast<VkImageView>(nativeTex);
+    handle->imageView = reinterpret_cast<VkImageView>(nativeTex);
     handle->owned     = false;
     return std::shared_ptr<TextureView>(new TextureView(handle));
 }
