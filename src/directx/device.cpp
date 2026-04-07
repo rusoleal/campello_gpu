@@ -26,8 +26,16 @@
 #include <campello_gpu/constants/query_set_type.hpp>
 #include <campello_gpu/constants/buffer_usage.hpp>
 #include <campello_gpu/constants/feature.hpp>
+#include <campello_gpu/acceleration_structure.hpp>
+#include <campello_gpu/ray_tracing_pipeline.hpp>
+#include <campello_gpu/descriptors/bottom_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/ray_tracing_pipeline_descriptor.hpp>
+#include <campello_gpu/constants/acceleration_structure_build_flag.hpp>
+#include <campello_gpu/constants/index_format.hpp>
 #include <iostream>
 #include <algorithm>
+#include <cstring>
 
 using namespace systems::leal::campello_gpu;
 
@@ -465,13 +473,18 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
 
-    // Determine heap type based on usage flags
-    bool isReadback = (static_cast<int>(usage) & static_cast<int>(BufferUsage::copyDst)) != 0 &&
-                      (static_cast<int>(usage) & static_cast<int>(BufferUsage::mapRead)) != 0;
-    bool isUpload = !isReadback;
+    const int u = static_cast<int>(usage);
+    bool isReadback = (u & static_cast<int>(BufferUsage::copyDst)) &&
+                      (u & static_cast<int>(BufferUsage::mapRead));
+    // UAV/scratch buffers need default heap (no CPU mapping)
+    bool isUAV = !isReadback &&
+                 ((u & static_cast<int>(BufferUsage::storage)) ||
+                  (u & static_cast<int>(BufferUsage::accelerationStructureStorage)));
 
     D3D12_HEAP_PROPERTIES hp = {};
-    hp.Type = isReadback ? D3D12_HEAP_TYPE_READBACK : D3D12_HEAP_TYPE_UPLOAD;
+    if (isReadback)    hp.Type = D3D12_HEAP_TYPE_READBACK;
+    else if (isUAV)    hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    else               hp.Type = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC rd = {};
     rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -482,11 +495,13 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     rd.Format           = DXGI_FORMAT_UNKNOWN;
     rd.SampleDesc.Count = 1;
     rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    rd.Flags            = D3D12_RESOURCE_FLAG_NONE;
+    rd.Flags            = isUAV ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+                                : D3D12_RESOURCE_FLAG_NONE;
 
-    D3D12_RESOURCE_STATES initialState = isReadback 
-        ? D3D12_RESOURCE_STATE_COPY_DEST 
-        : D3D12_RESOURCE_STATE_GENERIC_READ;
+    D3D12_RESOURCE_STATES initialState =
+        isReadback ? D3D12_RESOURCE_STATE_COPY_DEST :
+        isUAV      ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
+                     D3D12_RESOURCE_STATE_GENERIC_READ;
 
     ID3D12Resource* resource = nullptr;
     if (FAILED(dev->CreateCommittedResource(
@@ -497,13 +512,15 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     auto* handle     = new BufferHandle();
     handle->resource = resource;
     handle->device   = dev;
-    handle->queue    = d->queue;
-    handle->size     = size;
+    handle->queue      = d->queue;
+    handle->size       = size;
     handle->isReadback = isReadback;
 
-    // Persistently map the heap
-    D3D12_RANGE readRange = { 0, 0 };
-    resource->Map(0, &readRange, &handle->mapped);
+    // Persistently map CPU-accessible heaps (upload / readback); not for default-heap UAV
+    if (!isUAV) {
+        D3D12_RANGE readRange = { 0, 0 };
+        resource->Map(0, &readRange, &handle->mapped);
+    }
 
     return std::shared_ptr<Buffer>(new Buffer(handle));
 }
@@ -937,6 +954,10 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(
             case EntryObjectType::sampler:
                 range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
                 break;
+            case EntryObjectType::accelerationStructure:
+                // DXR acceleration structures are accessed as SRVs.
+                range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                break;
         }
         h->ranges.push_back(range);
         ++h->numDescriptors;
@@ -953,23 +974,31 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
 
-    bool firstTex = true;
+    bool firstSrv = true;
     UINT baseIdx  = 0;
 
     for (const auto& entry : descriptor.entries) {
-        if (auto* texPtr = std::get_if<std::shared_ptr<Texture>>(&entry.resource)) {
+        if (auto* bbPtr = std::get_if<BindGroupDescriptor::BufferBinding>(&entry.resource)) {
+            auto& bb = *bbPtr;
+            if (bb.buffer && bb.buffer->native) {
+                auto* bh = static_cast<BufferHandle*>(bb.buffer->native);
+                if (firstSrv) { baseIdx = d->srvOffset; firstSrv = false; }
+                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->allocSrvCpu();
+                // Uniform buffers → CBV; others → raw SRV
+                D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+                cbvDesc.BufferLocation = bh->resource->GetGPUVirtualAddress() + bb.offset;
+                cbvDesc.SizeInBytes    = static_cast<UINT>((bb.size + 255) & ~255ULL);
+                dev->CreateConstantBufferView(&cbvDesc, dst);
+            }
+        } else if (auto* texPtr = std::get_if<std::shared_ptr<Texture>>(&entry.resource)) {
             auto& tex = *texPtr;
             if (tex && tex->native) {
                 auto* th = static_cast<TextureHandle*>(tex->native);
-                if (firstTex) {
-                    baseIdx  = d->srvOffset;
-                    firstTex = false;
-                }
+                if (firstSrv) { baseIdx = d->srvOffset; firstSrv = false; }
                 D3D12_CPU_DESCRIPTOR_HANDLE dst = d->allocSrvCpu();
-                if (th->srvCpuHandle.ptr != 0) {
+                if (th->srvCpuHandle.ptr != 0)
                     dev->CopyDescriptorsSimple(1, dst, th->srvCpuHandle,
                                                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-                }
             }
         } else if (auto* sampPtr = std::get_if<std::shared_ptr<Sampler>>(&entry.resource)) {
             auto& samp = *sampPtr;
@@ -978,10 +1007,22 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
                 if (sh->gpuHandle.ptr != 0)
                     h->samplerHandle = sh->gpuHandle;
             }
+        } else if (auto* asPtr = std::get_if<std::shared_ptr<AccelerationStructure>>(&entry.resource)) {
+            auto& as = *asPtr;
+            if (as && as->native) {
+                auto* ash = static_cast<AccelerationStructureHandle*>(as->native);
+                if (firstSrv) { baseIdx = d->srvOffset; firstSrv = false; }
+                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->allocSrvCpu();
+                D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+                srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srvDesc.RaytracingAccelerationStructure.Location = ash->gpuVA;
+                dev->CreateShaderResourceView(nullptr, &srvDesc, dst);
+            }
         }
     }
 
-    if (!firstTex)
+    if (!firstSrv)
         h->gpuHandle = d->srvGpuAt(baseIdx);
 
     return std::shared_ptr<BindGroup>(new BindGroup(h));
@@ -1186,6 +1227,385 @@ std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     vh->format     = DXGI_FORMAT_R8G8B8A8_UNORM;
     vh->viewType   = ViewType::RTV;
     return std::shared_ptr<TextureView>(new TextureView(vh));
+}
+
+// -----------------------------------------------------------------------
+// Ray tracing helpers
+// -----------------------------------------------------------------------
+
+static D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS mapBuildFlags(AccelerationStructureBuildFlag f) {
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS out =
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+    int bf = static_cast<int>(f);
+    if (bf & static_cast<int>(AccelerationStructureBuildFlag::preferFastTrace))
+        out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+    if (bf & static_cast<int>(AccelerationStructureBuildFlag::preferFastBuild))
+        out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+    if (bf & static_cast<int>(AccelerationStructureBuildFlag::allowUpdate))
+        out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+    if (bf & static_cast<int>(AccelerationStructureBuildFlag::allowCompaction))
+        out |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+    return out;
+}
+
+static std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> buildGeometryDescs(
+    const BottomLevelAccelerationStructureDescriptor& descriptor)
+{
+    std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> descs;
+    descs.reserve(descriptor.geometries.size());
+    for (const auto& geo : descriptor.geometries) {
+        D3D12_RAYTRACING_GEOMETRY_DESC gd = {};
+        gd.Flags = geo.opaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE
+                              : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
+        if (geo.type == AccelerationStructureGeometryType::triangles) {
+            gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            auto& tri = gd.Triangles;
+            if (geo.vertexBuffer && geo.vertexBuffer->native) {
+                auto* bh = static_cast<BufferHandle*>(geo.vertexBuffer->native);
+                tri.VertexBuffer.StartAddress  = bh->resource->GetGPUVirtualAddress() + geo.vertexOffset;
+                tri.VertexBuffer.StrideInBytes = geo.vertexStride;
+                tri.VertexCount                = geo.vertexCount;
+                tri.VertexFormat = (geo.componentType == ComponentType::ctFloat)
+                    ? DXGI_FORMAT_R32G32B32_FLOAT : DXGI_FORMAT_R32G32B32_FLOAT;
+            }
+            if (geo.indexBuffer && geo.indexBuffer->native && geo.indexCount > 0) {
+                auto* ib = static_cast<BufferHandle*>(geo.indexBuffer->native);
+                tri.IndexBuffer = ib->resource->GetGPUVirtualAddress();
+                tri.IndexCount  = geo.indexCount;
+                tri.IndexFormat = (geo.indexFormat == IndexFormat::uint16)
+                    ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
+            } else {
+                tri.IndexCount  = 0;
+                tri.IndexFormat = DXGI_FORMAT_UNKNOWN;
+            }
+            if (geo.transformBuffer && geo.transformBuffer->native) {
+                auto* tb = static_cast<BufferHandle*>(geo.transformBuffer->native);
+                tri.Transform3x4 = tb->resource->GetGPUVirtualAddress() + geo.transformOffset;
+            }
+        } else {
+            gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
+            auto& aabb = gd.AABBs;
+            if (geo.aabbBuffer && geo.aabbBuffer->native) {
+                auto* ab = static_cast<BufferHandle*>(geo.aabbBuffer->native);
+                aabb.AABBs.StartAddress  = ab->resource->GetGPUVirtualAddress() + geo.aabbOffset;
+                aabb.AABBs.StrideInBytes = geo.aabbStride;
+                aabb.AABBCount           = geo.aabbCount;
+            }
+        }
+        descs.push_back(gd);
+    }
+    return descs;
+}
+
+static ID3D12Resource* allocShaderTable(ID3D12Device* device, UINT numRecords) {
+    const UINT identSize  = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;   // 32
+    const UINT tableAlign = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT; // 64
+    UINT64 size = ((numRecords * identSize + tableAlign - 1) / tableAlign) * tableAlign;
+    size = std::max(size, (UINT64)tableAlign);
+
+    D3D12_HEAP_PROPERTIES hp = { D3D12_HEAP_TYPE_UPLOAD };
+    D3D12_RESOURCE_DESC   rd = {};
+    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width            = size;
+    rd.Height           = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels        = 1;
+    rd.Format           = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource* res = nullptr;
+    device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                    D3D12_RESOURCE_STATE_GENERIC_READ,
+                                    nullptr, IID_PPV_ARGS(&res));
+    return res;
+}
+
+std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStructure(
+    const BottomLevelAccelerationStructureDescriptor& descriptor)
+{
+    auto* d = static_cast<DeviceData*>(native);
+
+    ID3D12Device5* dev5 = nullptr;
+    if (FAILED(d->device->QueryInterface(IID_PPV_ARGS(&dev5)))) return nullptr;
+
+    auto geomDescs = buildGeometryDescs(descriptor);
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+    inputs.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    inputs.Flags          = mapBuildFlags(descriptor.buildFlags);
+    inputs.NumDescs       = static_cast<UINT>(geomDescs.size());
+    inputs.DescsLayout    = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    inputs.pGeometryDescs = geomDescs.empty() ? nullptr : geomDescs.data();
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+    dev5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+
+    D3D12_HEAP_PROPERTIES hp = { D3D12_HEAP_TYPE_DEFAULT };
+    D3D12_RESOURCE_DESC   rd = {};
+    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width            = info.ResultDataMaxSizeInBytes;
+    rd.Height           = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels        = 1;
+    rd.Format           = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    rd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    ID3D12Resource* resource = nullptr;
+    if (FAILED(d->device->CreateCommittedResource(
+            &hp, D3D12_HEAP_FLAG_NONE, &rd,
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            nullptr, IID_PPV_ARGS(&resource)))) {
+        dev5->Release(); return nullptr;
+    }
+
+    auto* h               = new AccelerationStructureHandle();
+    h->resource           = resource;
+    h->device             = d->device;
+    h->gpuVA              = resource->GetGPUVirtualAddress();
+    h->buildScratchSize   = info.ScratchDataSizeInBytes;
+    h->updateScratchSize  = info.UpdateScratchDataSizeInBytes;
+
+    dev5->Release();
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(h));
+}
+
+std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructure(
+    const TopLevelAccelerationStructureDescriptor& descriptor)
+{
+    auto* d = static_cast<DeviceData*>(native);
+
+    ID3D12Device5* dev5 = nullptr;
+    if (FAILED(d->device->QueryInterface(IID_PPV_ARGS(&dev5)))) return nullptr;
+
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
+    inputs.Type        = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    inputs.Flags       = mapBuildFlags(descriptor.buildFlags);
+    inputs.NumDescs    = static_cast<UINT>(descriptor.instances.size());
+    inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+    dev5->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+
+    D3D12_HEAP_PROPERTIES hp = { D3D12_HEAP_TYPE_DEFAULT };
+    D3D12_RESOURCE_DESC   rd = {};
+    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width            = info.ResultDataMaxSizeInBytes;
+    rd.Height           = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels        = 1;
+    rd.Format           = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    rd.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    ID3D12Resource* resource = nullptr;
+    if (FAILED(d->device->CreateCommittedResource(
+            &hp, D3D12_HEAP_FLAG_NONE, &rd,
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            nullptr, IID_PPV_ARGS(&resource)))) {
+        dev5->Release(); return nullptr;
+    }
+
+    auto* h               = new AccelerationStructureHandle();
+    h->resource           = resource;
+    h->device             = d->device;
+    h->gpuVA              = resource->GetGPUVirtualAddress();
+    h->buildScratchSize   = info.ScratchDataSizeInBytes;
+    h->updateScratchSize  = info.UpdateScratchDataSizeInBytes;
+
+    dev5->Release();
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(h));
+}
+
+std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
+    const RayTracingPipelineDescriptor& descriptor)
+{
+    auto* d = static_cast<DeviceData*>(native);
+
+    ID3D12Device5* dev5 = nullptr;
+    if (FAILED(d->device->QueryInterface(IID_PPV_ARGS(&dev5)))) return nullptr;
+
+    // Root signature
+    ID3D12RootSignature* rootSig = nullptr;
+    if (descriptor.layout) {
+        auto* plh = static_cast<PipelineLayoutHandle*>(descriptor.layout->native);
+        if (plh && plh->rootSignature) { rootSig = plh->rootSignature; rootSig->AddRef(); }
+    }
+    if (!rootSig) rootSig = createUniversalRootSignature(d->device, {});
+    if (!rootSig) { dev5->Release(); return nullptr; }
+
+    // Convert entry point strings to wide strings
+    auto toWide = [](const std::string& s) {
+        return std::wstring(s.begin(), s.end());
+    };
+
+    // Collect shader entries: (module, wide entry point name)
+    struct ShaderEntry { ShaderModuleHandle* mod; std::wstring name; };
+    std::vector<ShaderEntry> allEntries;
+
+    auto addEntry = [&](const RayTracingShaderDescriptor& s) -> std::wstring {
+        if (!s.module || !s.module->native) return L"";
+        auto wn = toWide(s.entryPoint);
+        allEntries.push_back({ static_cast<ShaderModuleHandle*>(s.module->native), wn });
+        return wn;
+    };
+
+    std::wstring rayGenName = addEntry(descriptor.rayGeneration);
+
+    std::vector<std::wstring> missNames;
+    for (const auto& ms : descriptor.missShaders)
+        missNames.push_back(addEntry(ms));
+
+    std::vector<std::wstring> hitGroupNames;
+    std::vector<std::wstring> closestHitNames, anyHitNames, intersectionNames;
+    for (size_t i = 0; i < descriptor.hitGroups.size(); ++i) {
+        hitGroupNames.push_back(L"HitGroup_" + std::to_wstring(i));
+        const auto& hg = descriptor.hitGroups[i];
+        closestHitNames.push_back(hg.closestHit   ? addEntry(*hg.closestHit)   : L"");
+        anyHitNames.push_back    (hg.anyHit        ? addEntry(*hg.anyHit)       : L"");
+        intersectionNames.push_back(hg.intersection? addEntry(*hg.intersection) : L"");
+    }
+
+    // Group by module to build DXIL_LIBRARY subobjects
+    struct LibGroup {
+        ShaderModuleHandle*            handle;
+        std::vector<std::wstring>      names;
+        std::vector<D3D12_EXPORT_DESC> exports;
+    };
+    std::vector<LibGroup> libs;
+
+    for (auto& e : allEntries) {
+        LibGroup* g = nullptr;
+        for (auto& lg : libs) if (lg.handle == e.mod) { g = &lg; break; }
+        if (!g) { libs.push_back({ e.mod, {}, {} }); g = &libs.back(); }
+        bool found = false;
+        for (auto& n : g->names) if (n == e.name) { found = true; break; }
+        if (!found) g->names.push_back(e.name);
+    }
+    for (auto& g : libs) {
+        for (auto& n : g.names) {
+            D3D12_EXPORT_DESC exp = {};
+            exp.Name = n.c_str(); exp.Flags = D3D12_EXPORT_FLAG_NONE;
+            g.exports.push_back(exp);
+        }
+    }
+
+    // Build subobjects (must remain valid through CreateStateObject)
+    std::vector<D3D12_STATE_SUBOBJECT>       subobjs;
+    std::vector<D3D12_DXIL_LIBRARY_DESC>     dxilLibs;
+    std::vector<D3D12_HIT_GROUP_DESC>        hitGroupDescs;
+
+    dxilLibs.reserve(libs.size());
+    for (auto& g : libs) {
+        D3D12_DXIL_LIBRARY_DESC lib = {};
+        lib.DXILLibrary.pShaderBytecode = g.handle->bytecode.data();
+        lib.DXILLibrary.BytecodeLength  = g.handle->bytecode.size();
+        lib.NumExports = static_cast<UINT>(g.exports.size());
+        lib.pExports   = g.exports.data();
+        dxilLibs.push_back(lib);
+        subobjs.push_back({ D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &dxilLibs.back() });
+    }
+
+    hitGroupDescs.reserve(descriptor.hitGroups.size());
+    for (size_t i = 0; i < descriptor.hitGroups.size(); ++i) {
+        D3D12_HIT_GROUP_DESC hgd = {};
+        hgd.HitGroupExport = hitGroupNames[i].c_str();
+        hgd.Type = intersectionNames[i].empty() ? D3D12_HIT_GROUP_TYPE_TRIANGLES
+                                                 : D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE;
+        hgd.ClosestHitShaderImport    = closestHitNames[i].empty()   ? nullptr : closestHitNames[i].c_str();
+        hgd.AnyHitShaderImport        = anyHitNames[i].empty()       ? nullptr : anyHitNames[i].c_str();
+        hgd.IntersectionShaderImport  = intersectionNames[i].empty() ? nullptr : intersectionNames[i].c_str();
+        hitGroupDescs.push_back(hgd);
+        subobjs.push_back({ D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitGroupDescs.back() });
+    }
+
+    D3D12_RAYTRACING_SHADER_CONFIG shaderCfg = {};
+    shaderCfg.MaxPayloadSizeInBytes   = 32;
+    shaderCfg.MaxAttributeSizeInBytes = 8;
+    subobjs.push_back({ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, &shaderCfg });
+
+    D3D12_GLOBAL_ROOT_SIGNATURE globalRS = { rootSig };
+    subobjs.push_back({ D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &globalRS });
+
+    D3D12_RAYTRACING_PIPELINE_CONFIG pipelineCfg = {};
+    pipelineCfg.MaxTraceRecursionDepth = descriptor.maxRecursionDepth;
+    subobjs.push_back({ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineCfg });
+
+    D3D12_STATE_OBJECT_DESC soDesc = {};
+    soDesc.Type          = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
+    soDesc.NumSubobjects = static_cast<UINT>(subobjs.size());
+    soDesc.pSubobjects   = subobjs.data();
+
+    ID3D12StateObject* stateObject = nullptr;
+    if (FAILED(dev5->CreateStateObject(&soDesc, IID_PPV_ARGS(&stateObject)))) {
+        rootSig->Release(); dev5->Release(); return nullptr;
+    }
+
+    ID3D12StateObjectProperties* soProps = nullptr;
+    stateObject->QueryInterface(IID_PPV_ARGS(&soProps));
+
+    // Shader tables
+    const UINT identSize = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+    UINT numMiss     = std::max<UINT>(1u, static_cast<UINT>(descriptor.missShaders.size()));
+    UINT numHitGrps  = std::max<UINT>(1u, static_cast<UINT>(descriptor.hitGroups.size()));
+
+    ID3D12Resource* rayGenTable   = allocShaderTable(d->device, 1);
+    ID3D12Resource* missTable     = allocShaderTable(d->device, numMiss);
+    ID3D12Resource* hitGroupTable = allocShaderTable(d->device, numHitGrps);
+
+    auto fillTable = [&](ID3D12Resource* table, const std::vector<std::wstring>& names, UINT num) {
+        if (!table || !soProps) return;
+        uint8_t* mapped = nullptr;
+        D3D12_RANGE rr = {0,0};
+        table->Map(0, &rr, reinterpret_cast<void**>(&mapped));
+        if (!mapped) return;
+        for (UINT i = 0; i < num && i < static_cast<UINT>(names.size()); ++i) {
+            if (names[i].empty()) continue;
+            const void* id = soProps->GetShaderIdentifier(names[i].c_str());
+            if (id) std::memcpy(mapped + i * identSize, id, identSize);
+        }
+        table->Unmap(0, nullptr);
+    };
+
+    fillTable(rayGenTable,   { rayGenName }, 1);
+    fillTable(missTable,     missNames,      numMiss);
+    fillTable(hitGroupTable, hitGroupNames,  numHitGrps);
+
+    // Build DispatchRays descriptor (Width/Height/Depth filled in by traceRays)
+    const UINT tableAlign = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
+    auto alignUp = [](UINT64 v, UINT a) { return (v + a - 1) & ~(UINT64)(a - 1); };
+
+    D3D12_DISPATCH_RAYS_DESC dd = {};
+    if (rayGenTable) {
+        dd.RayGenerationShaderRecord.StartAddress = rayGenTable->GetGPUVirtualAddress();
+        dd.RayGenerationShaderRecord.SizeInBytes  = identSize;
+    }
+    if (missTable) {
+        dd.MissShaderTable.StartAddress  = missTable->GetGPUVirtualAddress();
+        dd.MissShaderTable.SizeInBytes   = alignUp(numMiss * identSize, tableAlign);
+        dd.MissShaderTable.StrideInBytes = identSize;
+    }
+    if (hitGroupTable) {
+        dd.HitGroupTable.StartAddress  = hitGroupTable->GetGPUVirtualAddress();
+        dd.HitGroupTable.SizeInBytes   = alignUp(numHitGrps * identSize, tableAlign);
+        dd.HitGroupTable.StrideInBytes = identSize;
+    }
+
+    auto* h           = new RayTracingPipelineHandle();
+    h->stateObject    = stateObject;
+    h->soProps        = soProps;
+    h->device         = d->device;
+    h->rootSignature  = rootSig;
+    h->rayGenTable    = rayGenTable;
+    h->missTable      = missTable;
+    h->hitGroupTable  = hitGroupTable;
+    h->dispatchDesc   = dd;
+
+    dev5->Release();
+    return std::shared_ptr<RayTracingPipeline>(new RayTracingPipeline(h));
 }
 
 std::string systems::leal::campello_gpu::getVersion() {

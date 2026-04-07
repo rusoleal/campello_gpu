@@ -1,6 +1,9 @@
 #include "Metal.hpp"
 #include "render_pipeline_handle.hpp"
 #include "shader_module_handle.hpp"
+#include "acceleration_structure_handle.hpp"
+#include "ray_tracing_pipeline_handle.hpp"
+#include "acceleration_structure_helpers.hpp"
 #include "campello_gpu_config.h"
 #include "TargetConditionals.h"
 #include <campello_gpu/device.hpp>
@@ -14,6 +17,8 @@
 #include <campello_gpu/sampler.hpp>
 #include <campello_gpu/query_set.hpp>
 #include <campello_gpu/command_encoder.hpp>
+#include <campello_gpu/acceleration_structure.hpp>
+#include <campello_gpu/ray_tracing_pipeline.hpp>
 #include <campello_gpu/descriptors/render_pipeline_descriptor.hpp>
 #include <campello_gpu/descriptors/compute_pipeline_descriptor.hpp>
 #include <campello_gpu/descriptors/bind_group_layout_descriptor.hpp>
@@ -21,6 +26,9 @@
 #include <campello_gpu/descriptors/pipeline_layout_descriptor.hpp>
 #include <campello_gpu/descriptors/sampler_descriptor.hpp>
 #include <campello_gpu/descriptors/query_set_descriptor.hpp>
+#include <campello_gpu/descriptors/bottom_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/ray_tracing_pipeline_descriptor.hpp>
 #include <campello_gpu/constants/query_set_type.hpp>
 #include <dispatch/dispatch.h>
 #include <iostream>
@@ -494,4 +502,158 @@ std::string getVersion() {
     return std::to_string(campello_gpu_VERSION_MAJOR) + "." +
            std::to_string(campello_gpu_VERSION_MINOR) + "." +
            std::to_string(campello_gpu_VERSION_PATCH);
+}
+
+// ---------------------------------------------------------------------------
+// Ray tracing factory methods
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStructure(
+    const BottomLevelAccelerationStructureDescriptor &descriptor)
+{
+    auto *dev = static_cast<MetalDeviceData *>(native)->device;
+    if (!dev->supportsRaytracing()) return nullptr;
+    if (descriptor.geometries.empty()) return nullptr;
+
+    auto *primDesc = makePrimASDescriptor(descriptor);
+    auto sizes     = dev->accelerationStructureSizes(primDesc);
+    auto *as       = dev->newAccelerationStructure(sizes.accelerationStructureSize);
+    primDesc->release();
+
+    if (!as) return nullptr;
+
+    auto *handle = new MetalAccelerationStructureData{
+        as,
+        static_cast<uint64_t>(sizes.buildScratchBufferSize),
+        static_cast<uint64_t>(sizes.refitScratchBufferSize)
+    };
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
+}
+
+std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructure(
+    const TopLevelAccelerationStructureDescriptor &descriptor)
+{
+    auto *dev = static_cast<MetalDeviceData *>(native)->device;
+    if (!dev->supportsRaytracing()) return nullptr;
+    if (descriptor.instances.empty()) return nullptr;
+
+    auto [instanceDesc, instanceBuf] = makeInstanceASDescriptor(dev, descriptor);
+    if (!instanceDesc) return nullptr;
+
+    auto sizes = dev->accelerationStructureSizes(instanceDesc);
+    auto *as   = dev->newAccelerationStructure(sizes.accelerationStructureSize);
+    instanceDesc->release();
+    instanceBuf->release();
+
+    if (!as) return nullptr;
+
+    auto *handle = new MetalAccelerationStructureData{
+        as,
+        static_cast<uint64_t>(sizes.buildScratchBufferSize),
+        static_cast<uint64_t>(sizes.refitScratchBufferSize)
+    };
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
+}
+
+std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
+    const RayTracingPipelineDescriptor &descriptor)
+{
+    auto *dev = static_cast<MetalDeviceData *>(native)->device;
+    if (!dev->supportsRaytracing()) return nullptr;
+    if (!descriptor.rayGeneration.module) return nullptr;
+
+    // Helper: compile a ShaderModule to a MTL::Library.
+    auto compileLib = [&](ShaderModule *sm) -> MTL::Library * {
+        auto *data = static_cast<MetalShaderModuleData *>(sm->native);
+        dispatch_data_t dd = dispatch_data_create(
+            data->bytes.data(), data->bytes.size(), nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+        NS::Error *err = nullptr;
+        auto *lib = dev->newLibrary(dd, &err);
+        dispatch_release(dd);
+        if (!lib && err)
+            std::cerr << "createRayTracingPipeline: "
+                      << err->localizedDescription()->utf8String() << std::endl;
+        return lib;
+    };
+
+    // Compile ray generation shader.
+    auto *rgLib = compileLib(descriptor.rayGeneration.module.get());
+    if (!rgLib) return nullptr;
+    auto *rgFuncName = NS::String::string(
+        descriptor.rayGeneration.entryPoint.c_str(), NS::UTF8StringEncoding);
+    auto *rgFunc = rgLib->newFunction(rgFuncName);
+    rgLib->release();
+    if (!rgFunc) return nullptr;
+
+    // Collect intersection functions from hit groups.
+    // Store (hitGroupIndex, MTL::Function*) pairs for IFT population later.
+    struct IntersectionEntry { size_t index; MTL::Function *func; };
+    std::vector<IntersectionEntry> isFuncs;
+
+    auto *linkedFuncsArray = NS::MutableArray::alloc()->init();
+    for (size_t i = 0; i < descriptor.hitGroups.size(); i++) {
+        const auto &hg = descriptor.hitGroups[i];
+        if (!hg.intersection || !hg.intersection->module) continue;
+
+        auto *isLib = compileLib(hg.intersection->module.get());
+        if (!isLib) continue;
+        auto *isFuncName = NS::String::string(
+            hg.intersection->entryPoint.c_str(), NS::UTF8StringEncoding);
+        auto *isFunc = isLib->newFunction(isFuncName);
+        isLib->release();
+        if (!isFunc) continue;
+
+        linkedFuncsArray->addObject(isFunc);
+        isFuncs.push_back({ i, isFunc });
+    }
+
+    // Build compute pipeline descriptor.
+    auto *pipelineDesc = MTL::ComputePipelineDescriptor::alloc()->init();
+    pipelineDesc->setComputeFunction(rgFunc);
+    rgFunc->release();
+
+    if (linkedFuncsArray->count() > 0) {
+        auto *linked = MTL::LinkedFunctions::alloc()->init();
+        linked->setFunctions(static_cast<NS::Array *>(linkedFuncsArray));
+        pipelineDesc->setLinkedFunctions(linked);
+        linked->release();
+    }
+    linkedFuncsArray->release();
+
+    NS::Error *err = nullptr;
+    auto *pipelineState = dev->newComputePipelineState(pipelineDesc, &err);
+    pipelineDesc->release();
+    if (!pipelineState) {
+        if (err)
+            std::cerr << "createRayTracingPipeline PSO: "
+                      << err->localizedDescription()->utf8String() << std::endl;
+        for (auto &e : isFuncs) e.func->release();
+        return nullptr;
+    }
+
+    // Create intersection function table if any custom intersection shaders exist.
+    MTL::IntersectionFunctionTable *ift = nullptr;
+    if (!isFuncs.empty()) {
+        auto *iftDesc = MTL::IntersectionFunctionTableDescriptor::alloc()->init();
+        iftDesc->setFunctionCount(descriptor.hitGroups.size());
+        ift = pipelineState->newIntersectionFunctionTable(iftDesc);
+        iftDesc->release();
+
+        if (ift) {
+            for (auto &e : isFuncs) {
+                auto *handle = pipelineState->functionHandle(e.func);
+                if (handle)
+                    ift->setFunction(handle, static_cast<NS::UInteger>(e.index));
+            }
+        }
+    }
+    for (auto &e : isFuncs) e.func->release();
+
+    auto *rtHandle = new MetalRayTracingPipelineData{
+        pipelineState,
+        ift,
+        pipelineState->threadExecutionWidth(),
+        pipelineState->maxTotalThreadsPerThreadgroup()
+    };
+    return std::shared_ptr<RayTracingPipeline>(new RayTracingPipeline(rtHandle));
 }

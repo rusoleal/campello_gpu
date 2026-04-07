@@ -229,10 +229,36 @@ struct QuerySetHandle {
     D3D12_QUERY_TYPE queryType    = D3D12_QUERY_TYPE_TIMESTAMP;
 };
 
+struct AccelerationStructureHandle {
+    ID3D12Resource* resource          = nullptr;
+    ID3D12Device*   device            = nullptr;
+    UINT64          gpuVA             = 0;
+    UINT64          buildScratchSize  = 0;
+    UINT64          updateScratchSize = 0;
+};
+
+struct RayTracingPipelineHandle {
+    ID3D12StateObject*           stateObject   = nullptr;
+    ID3D12StateObjectProperties* soProps       = nullptr;
+    ID3D12Device*                device        = nullptr;
+    ID3D12RootSignature*         rootSignature = nullptr;
+    ID3D12Resource*              rayGenTable   = nullptr;
+    ID3D12Resource*              missTable     = nullptr;
+    ID3D12Resource*              hitGroupTable = nullptr;
+    D3D12_DISPATCH_RAYS_DESC     dispatchDesc  = {};
+};
+
+struct RayTracingPassEncoderHandle {
+    ID3D12GraphicsCommandList4* cmdList4      = nullptr;
+    DeviceData*                 deviceData    = nullptr;
+    D3D12_DISPATCH_RAYS_DESC    dispatchDesc  = {};
+};
+
 struct CommandEncoderHandle {
-    ID3D12CommandAllocator*    allocator  = nullptr;
-    ID3D12GraphicsCommandList* cmdList    = nullptr;
-    DeviceData*                deviceData = nullptr;
+    ID3D12CommandAllocator*    allocator         = nullptr;
+    ID3D12GraphicsCommandList* cmdList           = nullptr;
+    DeviceData*                deviceData        = nullptr;
+    std::vector<ID3D12Resource*> stagingResources; // freed after GPU completes (via CommandBuffer)
 };
 
 struct RenderPassEncoderHandle {
@@ -256,9 +282,10 @@ struct ComputePassEncoderHandle {
 };
 
 struct CommandBufferHandle {
-    ID3D12GraphicsCommandList* cmdList    = nullptr;
-    ID3D12CommandAllocator*    allocator  = nullptr;
-    DeviceData*                deviceData = nullptr;
+    ID3D12GraphicsCommandList* cmdList           = nullptr;
+    ID3D12CommandAllocator*    allocator         = nullptr;
+    DeviceData*                deviceData        = nullptr;
+    std::vector<ID3D12Resource*> stagingResources; // upload-heap buffers kept alive until GPU completes
 };
 
 } // namespace systems::leal::campello_gpu

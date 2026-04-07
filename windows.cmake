@@ -18,6 +18,9 @@ add_library(${PROJECT_NAME} SHARED
     src/directx/shader_module.cpp
     src/directx/texture.cpp
     src/directx/texture_view.cpp
+    src/directx/acceleration_structure.cpp
+    src/directx/ray_tracing_pipeline.cpp
+    src/directx/ray_tracing_pass_encoder.cpp
     src/pi/utils.cpp
 )
 

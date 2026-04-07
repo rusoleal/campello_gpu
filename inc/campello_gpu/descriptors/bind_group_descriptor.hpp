@@ -7,6 +7,7 @@
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/sampler.hpp>
+#include <campello_gpu/acceleration_structure.hpp>
 
 namespace systems::leal::campello_gpu {
 
@@ -45,7 +46,7 @@ namespace systems::leal::campello_gpu {
          * - `shared_ptr<Texture>` — a texture resource.
          * - `shared_ptr<Sampler>` — a sampler state.
          */
-        std::variant<BufferBinding, std::shared_ptr<Texture>, std::shared_ptr<Sampler>> resource;
+        std::variant<BufferBinding, std::shared_ptr<Texture>, std::shared_ptr<Sampler>, std::shared_ptr<AccelerationStructure>> resource;
     };
 
     /**

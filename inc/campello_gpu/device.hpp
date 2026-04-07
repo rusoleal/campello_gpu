@@ -14,6 +14,8 @@
 #include <campello_gpu/sampler.hpp>
 #include <campello_gpu/query_set.hpp>
 #include <campello_gpu/command_encoder.hpp>
+#include <campello_gpu/acceleration_structure.hpp>
+#include <campello_gpu/ray_tracing_pipeline.hpp>
 #include <campello_gpu/descriptors/render_pipeline_descriptor.hpp>
 #include <campello_gpu/descriptors/compute_pipeline_descriptor.hpp>
 #include <campello_gpu/descriptors/bind_group_layout_descriptor.hpp>
@@ -21,6 +23,9 @@
 #include <campello_gpu/descriptors/pipeline_layout_descriptor.hpp>
 #include <campello_gpu/descriptors/sampler_descriptor.hpp>
 #include <campello_gpu/descriptors/query_set_descriptor.hpp>
+#include <campello_gpu/descriptors/bottom_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/ray_tracing_pipeline_descriptor.hpp>
 #include <campello_gpu/constants/texture_type.hpp>
 #include <campello_gpu/constants/storage_mode.hpp>
 #include <campello_gpu/constants/buffer_usage.hpp>
@@ -227,6 +232,57 @@ namespace systems::leal::campello_gpu
          * @return A new `CommandEncoder`, or `nullptr` on failure.
          */
         std::shared_ptr<CommandEncoder> createCommandEncoder();
+
+        // ------------------------------------------------------------------
+        // Ray tracing resource creation (requires Feature::raytracing)
+        // ------------------------------------------------------------------
+
+        /**
+         * @brief Creates a bottom-level acceleration structure (BLAS).
+         *
+         * Allocates the GPU backing memory and computes the required scratch buffer
+         * sizes for the given geometry. The BVH is not built yet — call
+         * `CommandEncoder::buildAccelerationStructure()` with the same descriptor and
+         * a scratch buffer of at least `result->getBuildScratchSize()` bytes.
+         *
+         * Requires `Feature::raytracing` to be present in `getFeatures()`.
+         *
+         * @param descriptor Geometry and build-hint configuration.
+         * @return A new `AccelerationStructure` handle, or `nullptr` on failure.
+         */
+        std::shared_ptr<AccelerationStructure> createBottomLevelAccelerationStructure(
+            const BottomLevelAccelerationStructureDescriptor &descriptor);
+
+        /**
+         * @brief Creates a top-level acceleration structure (TLAS).
+         *
+         * Allocates the GPU backing memory for the given instance list. The BVH is
+         * not built until `CommandEncoder::buildAccelerationStructure()` is submitted.
+         * All BLAS handles referenced by the instances must be fully built before
+         * the TLAS build executes on the GPU.
+         *
+         * Requires `Feature::raytracing` to be present in `getFeatures()`.
+         *
+         * @param descriptor Instance list and build-hint configuration.
+         * @return A new `AccelerationStructure` handle, or `nullptr` on failure.
+         */
+        std::shared_ptr<AccelerationStructure> createTopLevelAccelerationStructure(
+            const TopLevelAccelerationStructureDescriptor &descriptor);
+
+        /**
+         * @brief Creates a compiled ray tracing pipeline state object.
+         *
+         * Compiles and links the ray generation, miss, and hit group shaders with
+         * their pipeline layout and builds the platform-specific Shader Binding Table
+         * (or equivalent). Create pipelines at load time to avoid runtime stalls.
+         *
+         * Requires `Feature::raytracing` to be present in `getFeatures()`.
+         *
+         * @param descriptor Shaders, layout, and recursion-depth configuration.
+         * @return A new `RayTracingPipeline`, or `nullptr` on compilation failure.
+         */
+        std::shared_ptr<RayTracingPipeline> createRayTracingPipeline(
+            const RayTracingPipelineDescriptor &descriptor);
 
         /**
          * @brief Submits a completed command buffer to the GPU for execution.

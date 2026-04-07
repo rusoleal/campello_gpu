@@ -1,11 +1,17 @@
 #include "Metal.hpp"
+#include "acceleration_structure_handle.hpp"
+#include "acceleration_structure_helpers.hpp"
 #include <campello_gpu/command_encoder.hpp>
 #include <campello_gpu/command_buffer.hpp>
 #include <campello_gpu/render_pass_encoder.hpp>
 #include <campello_gpu/compute_pass_encoder.hpp>
+#include <campello_gpu/ray_tracing_pass_encoder.hpp>
+#include <campello_gpu/acceleration_structure.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/query_set.hpp>
 #include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
+#include <campello_gpu/descriptors/bottom_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
 
 using namespace systems::leal::campello_gpu;
 
@@ -230,4 +236,99 @@ void CommandEncoder::resolveQuerySet(
 void CommandEncoder::writeTimestamp(std::shared_ptr<QuerySet> querySet, uint32_t queryIndex) {
     // Metal timestamp sampling requires MTL::CounterSampleBuffer configured on
     // the pass descriptor. Not implementable as a standalone command at this level.
+}
+
+// ---------------------------------------------------------------------------
+// Ray tracing commands
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<RayTracingPassEncoder> CommandEncoder::beginRayTracingPass() {
+    auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
+    auto *encoder   = cmdBuffer->computeCommandEncoder();
+    if (!encoder) return nullptr;
+    return std::shared_ptr<RayTracingPassEncoder>(new RayTracingPassEncoder(encoder));
+}
+
+void CommandEncoder::buildAccelerationStructure(
+    std::shared_ptr<AccelerationStructure> dst,
+    const BottomLevelAccelerationStructureDescriptor &descriptor,
+    std::shared_ptr<Buffer> scratchBuffer)
+{
+    if (!dst || !scratchBuffer) return;
+    auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
+    auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
+    if (!asEncoder) return;
+
+    auto *primDesc = makePrimASDescriptor(descriptor);
+    asEncoder->buildAccelerationStructure(
+        static_cast<MetalAccelerationStructureData *>(dst->native)->accelerationStructure,
+        primDesc,
+        static_cast<MTL::Buffer *>(scratchBuffer->native),
+        0);
+    primDesc->release();
+    asEncoder->endEncoding();
+}
+
+void CommandEncoder::buildAccelerationStructure(
+    std::shared_ptr<AccelerationStructure> dst,
+    const TopLevelAccelerationStructureDescriptor &descriptor,
+    std::shared_ptr<Buffer> scratchBuffer)
+{
+    if (!dst || !scratchBuffer) return;
+    auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
+    auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
+    if (!asEncoder) return;
+
+    // We need the device to build the instance buffer. Obtain it from the AS object.
+    // Metal-cpp: accelerationStructure->device() returns the owning device.
+    auto *mtlAs = static_cast<MetalAccelerationStructureData *>(dst->native)
+                      ->accelerationStructure;
+    auto *dev = mtlAs->device();
+
+    auto [instanceDesc, instanceBuf] = makeInstanceASDescriptor(dev, descriptor);
+    if (!instanceDesc) { asEncoder->endEncoding(); return; }
+
+    asEncoder->buildAccelerationStructure(
+        mtlAs,
+        instanceDesc,
+        static_cast<MTL::Buffer *>(scratchBuffer->native),
+        0);
+    instanceDesc->release();
+    instanceBuf->release();
+    asEncoder->endEncoding();
+}
+
+void CommandEncoder::updateAccelerationStructure(
+    std::shared_ptr<AccelerationStructure> src,
+    std::shared_ptr<AccelerationStructure> dst,
+    std::shared_ptr<Buffer> scratchBuffer)
+{
+    if (!src || !dst || !scratchBuffer) return;
+    auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
+    auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
+    if (!asEncoder) return;
+
+    // Pass nullptr as the descriptor to refit using the original build geometry.
+    asEncoder->refitAccelerationStructure(
+        static_cast<MetalAccelerationStructureData *>(src->native)->accelerationStructure,
+        nullptr,
+        static_cast<MetalAccelerationStructureData *>(dst->native)->accelerationStructure,
+        static_cast<MTL::Buffer *>(scratchBuffer->native),
+        0);
+    asEncoder->endEncoding();
+}
+
+void CommandEncoder::copyAccelerationStructure(
+    std::shared_ptr<AccelerationStructure> src,
+    std::shared_ptr<AccelerationStructure> dst)
+{
+    if (!src || !dst) return;
+    auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
+    auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
+    if (!asEncoder) return;
+
+    asEncoder->copyAccelerationStructure(
+        static_cast<MetalAccelerationStructureData *>(src->native)->accelerationStructure,
+        static_cast<MetalAccelerationStructureData *>(dst->native)->accelerationStructure);
+    asEncoder->endEncoding();
 }

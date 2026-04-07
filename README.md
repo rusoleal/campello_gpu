@@ -8,7 +8,7 @@ A cross-platform GPU abstraction library (C++20) with a WebGPU-inspired API. Pro
 |----|--------|--------|
 | android | Vulkan 1.x | Production ready |
 | macos/ios | Metal | Production ready |
-| windows | DirectX 12 | In progress |
+| windows | DirectX 12 | Production ready |
 | windows | DirectX 11 | Frozen |
 | windows | OpenGL | Frozen |
 | windows | Vulkan 1.x | Not started |
@@ -113,6 +113,80 @@ computePass->end();
 
 auto commandBuffer = encoder->finish();
 device->submit(commandBuffer);
+```
+
+### Ray Tracing
+
+Hardware ray tracing is available when `Feature::raytracing` is reported by the device (Vulkan KHR on Android, Metal on macOS/iOS, DXR on Windows).
+
+```cpp
+#include <campello_gpu/acceleration_structure.hpp>
+#include <campello_gpu/ray_tracing_pipeline.hpp>
+#include <campello_gpu/ray_tracing_pass_encoder.hpp>
+#include <campello_gpu/descriptors/bottom_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/ray_tracing_pipeline_descriptor.hpp>
+#include <campello_gpu/constants/acceleration_structure_build_flag.hpp>
+#include <campello_gpu/constants/acceleration_structure_geometry_type.hpp>
+
+// Feature check
+auto features = device->getFeatures();
+if (!features.count(Feature::raytracing)) return; // not supported
+
+// 1. Vertex buffer for triangle geometry
+auto vertexBuffer = device->createBuffer(sizeof(vertices),
+    BufferUsage::accelerationStructureInput, vertices);
+
+// 2. Bottom-level acceleration structure (BLAS)
+AccelerationStructureGeometryDescriptor geoDesc{};
+geoDesc.type         = AccelerationStructureGeometryType::triangles;
+geoDesc.opaque       = true;
+geoDesc.vertexBuffer = vertexBuffer;
+geoDesc.vertexStride = sizeof(float) * 3;
+geoDesc.vertexCount  = 3;
+
+BottomLevelAccelerationStructureDescriptor blasDesc{};
+blasDesc.geometries = { geoDesc };
+blasDesc.buildFlags = AccelerationStructureBuildFlag::preferFastTrace;
+
+auto blas   = device->createBottomLevelAccelerationStructure(blasDesc);
+auto scratch = device->createBuffer(blas->getBuildScratchSize(), BufferUsage::storage);
+
+auto encoder = device->createCommandEncoder();
+encoder->buildAccelerationStructure(blas, blasDesc, scratch);
+device->submit(encoder->finish());
+
+// 3. Top-level acceleration structure (TLAS)
+AccelerationStructureInstance instance{};
+instance.blas = blas;
+instance.mask = 0xFF;
+
+TopLevelAccelerationStructureDescriptor tlasDesc{};
+tlasDesc.instances  = { instance };
+tlasDesc.buildFlags = AccelerationStructureBuildFlag::preferFastTrace;
+
+auto tlas    = device->createTopLevelAccelerationStructure(tlasDesc);
+auto scratch2 = device->createBuffer(tlas->getBuildScratchSize(), BufferUsage::storage);
+
+encoder = device->createCommandEncoder();
+encoder->buildAccelerationStructure(tlas, tlasDesc, scratch2);
+device->submit(encoder->finish());
+
+// 4. Ray tracing pipeline
+RayTracingPipelineDescriptor rtDesc{};
+rtDesc.rayGeneration = { shaderModule, "rayGenMain" };
+rtDesc.layout        = pipelineLayout;
+rtDesc.maxRecursionDepth = 1;
+
+auto pipeline = device->createRayTracingPipeline(rtDesc);
+
+// 5. Dispatch rays each frame
+auto rtPass = encoder->beginRayTracingPass();
+rtPass->setPipeline(pipeline);
+rtPass->setBindGroup(0, bindGroup, {}, 0, 0);
+rtPass->traceRays(width, height, 1);
+rtPass->end();
+device->submit(encoder->finish());
 ```
 
 ### GPU → CPU Readback

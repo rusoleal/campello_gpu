@@ -1,4 +1,6 @@
+#include <cstring>
 #include <set>
+#include <vector>
 #include <vulkan/vulkan.h>
 #include <campello_gpu/adapter.hpp>
 #include <campello_gpu/constants/feature.hpp>
@@ -19,7 +21,6 @@ std::set<Feature> Adapter::getFeatures() {
     if (vkFeatures.geometryShader)
         features.insert(Feature::geometryShader);
 
-    // Check for BC texture compression (BCn formats)
     if (vkFeatures.textureCompressionBC)
         features.insert(Feature::bcTextureCompression);
 
@@ -28,6 +29,21 @@ std::set<Feature> Adapter::getFeatures() {
     vkGetPhysicalDeviceFormatProperties(gpu, VK_FORMAT_D24_UNORM_S8_UINT, &fmtProps);
     if (fmtProps.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
         features.insert(Feature::depth24Stencil8PixelFormat);
+
+    // Detect hardware ray tracing: requires all three KHR extensions.
+    uint32_t extCount = 0;
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extCount, nullptr);
+    std::vector<VkExtensionProperties> exts(extCount);
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extCount, exts.data());
+
+    bool hasAS = false, hasRTP = false, hasDHO = false;
+    for (const auto &e : exts) {
+        if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)   == 0) hasAS  = true;
+        if (strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)     == 0) hasRTP = true;
+        if (strcmp(e.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) hasDHO = true;
+    }
+    if (hasAS && hasRTP && hasDHO)
+        features.insert(Feature::raytracing);
 
     return features;
 }

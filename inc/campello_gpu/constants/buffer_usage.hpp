@@ -26,7 +26,9 @@ namespace systems::leal::campello_gpu
         queryResolve = 0x0200, ///< Can be used as the destination of a query resolve operation.
         storage      = 0x0080, ///< Can be bound as a read/write storage buffer in a shader.
         uniform      = 0x0040, ///< Can be bound as a uniform (constant) buffer in a shader.
-        vertex       = 0x0020  ///< Can be bound as a vertex buffer.
+        vertex       = 0x0020, ///< Can be bound as a vertex buffer.
+        accelerationStructureInput   = 0x0400, ///< Geometry / instance data read during an acceleration-structure build.
+        accelerationStructureStorage = 0x0800  ///< Backing GPU memory for a built acceleration structure.
     };
 
 }

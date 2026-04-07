@@ -2,6 +2,28 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.7.0] - 2026-04-07
+
+### Added
+
+- **Ray tracing support** — full hardware-accelerated ray tracing on all three backends (Vulkan/Android, Metal/macOS+iOS, DirectX 12/Windows)
+- **New public types**: `AccelerationStructure`, `RayTracingPipeline`, `RayTracingPassEncoder`
+- **New descriptors**: `AccelerationStructureGeometryDescriptor`, `BottomLevelAccelerationStructureDescriptor`, `TopLevelAccelerationStructureDescriptor`, `RayTracingPipelineDescriptor`, `RayTracingShaderDescriptor`
+- **New constants**: `AccelerationStructureBuildFlag` (`preferFastTrace`, `preferFastBuild`, `allowUpdate`, `allowCompaction`), `AccelerationStructureGeometryType` (`triangles`, `aabbs`), `ShaderStage` values for `rayGeneration`, `rayMiss`, `rayClosestHit`, `rayAnyHit`, `rayIntersection`
+- **New `BufferUsage` values**: `accelerationStructureInput`, `accelerationStructureStorage`
+- **`BindGroup` acceleration structure binding** — `EntryObjectType::accelerationStructure` for binding TLAS/BLAS in bind groups
+- **`Device` RT factory methods**: `createBottomLevelAccelerationStructure()`, `createTopLevelAccelerationStructure()`, `createRayTracingPipeline()`
+- **`CommandEncoder` RT commands**: `buildAccelerationStructure()` (BLAS and TLAS overloads), `updateAccelerationStructure()`, `copyAccelerationStructure()`, `beginRayTracingPass()`
+- **`RayTracingPassEncoder`**: `setPipeline()`, `setBindGroup()`, `traceRays(width, height, depth)`, `end()`
+- **Vulkan backend** (`src/vulkan_android/`): BLAS/TLAS via `VK_KHR_acceleration_structure`, RT pipeline via `VK_KHR_ray_tracing_pipeline`, SBT construction, `vkCmdTraceRaysKHR` dispatch
+- **Metal backend** (`src/metal/`): BLAS/TLAS via `MTLPrimitiveAccelerationStructure`/`MTLInstanceAccelerationStructure`, RT pipeline via `MTLComputePipelineState` + `metal::raytracing::intersector`
+- **DirectX 12 backend** (`src/directx/`): BLAS/TLAS via `ID3D12Device5::BuildRaytracingAccelerationStructure`, RT pipeline via `CreateStateObject` (DXR state object), shader table construction, `DispatchRays`
+- **Ray tracing integration tests** (`tests/platform/test_raytracing.cpp`): 12 GPU tests, skipped automatically when `Feature::raytracing` is absent
+- **Apple ray tracing example** (`examples/apple/`): Metal shader (`RaytracingShaders.metal`) + ObjC++ demo (`RaytracingDemo.mm`) — single-triangle BLAS/TLAS, barycentric colour shading
+- **Android ray tracing example** (`examples/android/`): C++ demo (`RaytracingDemo.cpp`) — BLAS/TLAS via campello_gpu, SPIR-V shaders loaded from APK assets, GLSL reference source in comments
+
+---
+
 ## [0.6.1] - 2026-04-06
 
 ### Fixed

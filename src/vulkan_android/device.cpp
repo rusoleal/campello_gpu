@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <cstring>
+#include <vector>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
 #include <android/log.h>
@@ -11,6 +13,13 @@
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/shader_module.hpp>
 #include <campello_gpu/render_pipeline.hpp>
+#include <campello_gpu/acceleration_structure.hpp>
+#include <campello_gpu/ray_tracing_pipeline.hpp>
+#include <campello_gpu/descriptors/bottom_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/ray_tracing_pipeline_descriptor.hpp>
+#include "acceleration_structure_handle.hpp"
+#include "ray_tracing_pipeline_handle.hpp"
 #include "buffer_handle.hpp"
 #include "texture_handle.hpp"
 #include "shader_module_handle.hpp"
@@ -37,6 +46,29 @@ void loadDynamicRenderingFunctions(VkDevice device)
 {
     pfnCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR");
     pfnCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR");
+}
+
+// Function pointers for VK_KHR_acceleration_structure and VK_KHR_ray_tracing_pipeline.
+PFN_vkCreateAccelerationStructureKHR           pfnCreateAccelerationStructureKHR          = nullptr;
+PFN_vkDestroyAccelerationStructureKHR          pfnDestroyAccelerationStructureKHR         = nullptr;
+PFN_vkGetAccelerationStructureBuildSizesKHR    pfnGetAccelerationStructureBuildSizesKHR   = nullptr;
+PFN_vkCmdBuildAccelerationStructuresKHR        pfnCmdBuildAccelerationStructuresKHR       = nullptr;
+PFN_vkCmdCopyAccelerationStructureKHR          pfnCmdCopyAccelerationStructureKHR         = nullptr;
+PFN_vkGetAccelerationStructureDeviceAddressKHR pfnGetAccelerationStructureDeviceAddressKHR = nullptr;
+PFN_vkCreateRayTracingPipelinesKHR             pfnCreateRayTracingPipelinesKHR            = nullptr;
+PFN_vkGetRayTracingShaderGroupHandlesKHR       pfnGetRayTracingShaderGroupHandlesKHR      = nullptr;
+PFN_vkCmdTraceRaysKHR                          pfnCmdTraceRaysKHR                         = nullptr;
+
+static void loadRayTracingFunctions(VkDevice device) {
+    pfnCreateAccelerationStructureKHR          = (PFN_vkCreateAccelerationStructureKHR)         vkGetDeviceProcAddr(device, "vkCreateAccelerationStructureKHR");
+    pfnDestroyAccelerationStructureKHR         = (PFN_vkDestroyAccelerationStructureKHR)        vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR");
+    pfnGetAccelerationStructureBuildSizesKHR   = (PFN_vkGetAccelerationStructureBuildSizesKHR)  vkGetDeviceProcAddr(device, "vkGetAccelerationStructureBuildSizesKHR");
+    pfnCmdBuildAccelerationStructuresKHR       = (PFN_vkCmdBuildAccelerationStructuresKHR)      vkGetDeviceProcAddr(device, "vkCmdBuildAccelerationStructuresKHR");
+    pfnCmdCopyAccelerationStructureKHR         = (PFN_vkCmdCopyAccelerationStructureKHR)        vkGetDeviceProcAddr(device, "vkCmdCopyAccelerationStructureKHR");
+    pfnGetAccelerationStructureDeviceAddressKHR = (PFN_vkGetAccelerationStructureDeviceAddressKHR)vkGetDeviceProcAddr(device, "vkGetAccelerationStructureDeviceAddressKHR");
+    pfnCreateRayTracingPipelinesKHR            = (PFN_vkCreateRayTracingPipelinesKHR)           vkGetDeviceProcAddr(device, "vkCreateRayTracingPipelinesKHR");
+    pfnGetRayTracingShaderGroupHandlesKHR      = (PFN_vkGetRayTracingShaderGroupHandlesKHR)     vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesKHR");
+    pfnCmdTraceRaysKHR                         = (PFN_vkCmdTraceRaysKHR)                        vkGetDeviceProcAddr(device, "vkCmdTraceRaysKHR");
 }
 
 VkFormat pixelFormatToNative(PixelFormat format);
@@ -351,9 +383,23 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     }
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "queueFamilyIndex = %d", queueFamilyIndex);
 
+    // Detect ray tracing extension availability.
+    bool hasAS  = false, hasRTP = false, hasDHO = false;
+    for (const auto &e : availableExtensions) {
+        if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)   == 0) hasAS  = true;
+        if (strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)     == 0) hasRTP = true;
+        if (strcmp(e.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) hasDHO = true;
+    }
+    const bool rtSupported = hasAS && hasRTP && hasDHO;
+
     std::vector<const char *> deviceExtensions;
     if (surface != VK_NULL_HANDLE)
         deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (rtSupported) {
+        deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        deviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+        deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    }
 
     float priority = 1.0;
     VkDeviceQueueCreateInfo queueCreateInfo{};
@@ -362,13 +408,29 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &priority;
 
+    // RT feature chain — only attached when RT extensions are available.
+    VkPhysicalDeviceBufferDeviceAddressFeatures bdaFeatures{};
+    bdaFeatures.sType               = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    bdaFeatures.bufferDeviceAddress = VK_TRUE;
+
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures{};
+    asFeatures.sType                 = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    asFeatures.accelerationStructure = VK_TRUE;
+    asFeatures.pNext                 = &bdaFeatures;
+
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtpFeatures{};
+    rtpFeatures.sType              = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+    rtpFeatures.rayTracingPipeline = VK_TRUE;
+    rtpFeatures.pNext              = &asFeatures;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.queueCreateInfoCount = 1;
     createInfo.pEnabledFeatures = &deviceFeatures;
-    createInfo.enabledExtensionCount = deviceExtensions.size();
-    createInfo.ppEnabledExtensionNames = &deviceExtensions[0];
+    createInfo.enabledExtensionCount = (uint32_t)deviceExtensions.size();
+    createInfo.ppEnabledExtensionNames = deviceExtensions.empty() ? nullptr : deviceExtensions.data();
+    if (rtSupported) createInfo.pNext = &rtpFeatures;
 
     VkDevice toReturn;
     if (vkCreateDevice(gpu, &createInfo, nullptr, &toReturn) != VK_SUCCESS)
@@ -379,6 +441,9 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
 
     // Load dynamic rendering function pointers (VK_KHR_dynamic_rendering)
     loadDynamicRenderingFunctions(toReturn);
+
+    // Load ray tracing function pointers when the extensions are available.
+    if (rtSupported) loadRayTracingFunctions(toReturn);
 
     // create swapchain (only when a real surface is available)
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -456,17 +521,18 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
 
     // Create a general-purpose descriptor pool.
     VkDescriptorPoolSize poolSizes[] = {
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         100 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         100 },
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          100 },
-        { VK_DESCRIPTOR_TYPE_SAMPLER,                100 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          100 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,              100 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,              100 },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,               100 },
+        { VK_DESCRIPTOR_TYPE_SAMPLER,                     100 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,               100 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,      100 },
+        { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,  100 },
     };
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets       = 100;
-    poolInfo.poolSizeCount = 6;
+    poolInfo.poolSizeCount = rtSupported ? 7 : 6;
     poolInfo.pPoolSizes    = poolSizes;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     vkCreateDescriptorPool(toReturn, &poolInfo, nullptr, &descriptorPool);
@@ -482,6 +548,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->device = toReturn;
     vkGetDeviceQueue(toReturn, queueFamilyIndex, 0, &deviceData->graphicsQueue);
     deviceData->physicalDevice           = gpu;
+    deviceData->rayTracingEnabled        = rtSupported;
     deviceData->surface                  = surface;
     deviceData->swapchain                = swapchain;
     deviceData->imageExtent              = imageExtent;
@@ -638,7 +705,13 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
     //if ((int)usage & (int)BufferUsage::queryResolve) vkUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     if ((int)usage & (int)BufferUsage::storage) vkUsage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     if ((int)usage & (int)BufferUsage::uniform) vkUsage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    if ((int)usage & (int)BufferUsage::vertex) vkUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if ((int)usage & (int)BufferUsage::vertex)  vkUsage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if ((int)usage & (int)BufferUsage::accelerationStructureInput)
+        vkUsage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR
+                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    if ((int)usage & (int)BufferUsage::accelerationStructureStorage)
+        vkUsage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
+                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     bufferInfo.usage = vkUsage;
 
     auto deviceData = (DeviceData *)this->native;
@@ -657,9 +730,16 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
 
     auto memoryType = findMemoryType(bufferRequirements.memoryTypeBits, memProperties, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
+    const bool needsBda = ((int)usage & (int)BufferUsage::accelerationStructureInput) ||
+                          ((int)usage & (int)BufferUsage::accelerationStructureStorage);
+
+    VkMemoryAllocateFlagsInfo allocFlagsInfo{};
+    allocFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    allocFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
     VkMemoryAllocateInfo allocInfo;
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.pNext = nullptr;
+    allocInfo.pNext = needsBda ? &allocFlagsInfo : nullptr;
     allocInfo.allocationSize = bufferRequirements.size;
     allocInfo.memoryTypeIndex = memoryType;
     VkDeviceMemory memoryHandle;
@@ -1249,9 +1329,14 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
 
         // Map visibility bitmask to Vulkan stage flags.
         VkShaderStageFlags stageFlags = 0;
-        if ((int)entry.visibility & (int)ShaderStage::vertex)   stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
-        if ((int)entry.visibility & (int)ShaderStage::fragment) stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
-        if ((int)entry.visibility & (int)ShaderStage::compute)  stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+        if ((int)entry.visibility & (int)ShaderStage::vertex)       stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
+        if ((int)entry.visibility & (int)ShaderStage::fragment)     stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+        if ((int)entry.visibility & (int)ShaderStage::compute)      stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+        if ((int)entry.visibility & (int)ShaderStage::rayGeneration) stageFlags |= VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        if ((int)entry.visibility & (int)ShaderStage::miss)          stageFlags |= VK_SHADER_STAGE_MISS_BIT_KHR;
+        if ((int)entry.visibility & (int)ShaderStage::closestHit)    stageFlags |= VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+        if ((int)entry.visibility & (int)ShaderStage::anyHit)        stageFlags |= VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+        if ((int)entry.visibility & (int)ShaderStage::intersection)  stageFlags |= VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
         layoutBindings[a].stageFlags = stageFlags;
 
         switch (entry.type) {
@@ -1271,6 +1356,9 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
                         layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                         break;
                 }
+                break;
+            case EntryObjectType::accelerationStructure:
+                layoutBindings[a].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
                 break;
         }
     }
@@ -1375,6 +1463,8 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
             write.descriptorType      = VK_DESCRIPTOR_TYPE_SAMPLER;
             write.pImageInfo          = &imageInfos[a];
             writes.push_back(write);
+        } else if (std::holds_alternative<std::shared_ptr<AccelerationStructure>>(entry.resource)) {
+            // TODO: implement when Vulkan AS handle is ready (VkWriteDescriptorSetAccelerationStructureKHR via pNext).
         }
     }
 
@@ -1963,4 +2053,494 @@ PixelFormat nativeToPixelFormat(VkFormat format)
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "Unknown pixelFormat conversion: %d", format);
         return PixelFormat::invalid;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ray tracing — internal helpers
+// ---------------------------------------------------------------------------
+
+// Allocate a device-local GPU buffer suitable for AS storage or SBT use.
+// Returns false and leaves out/memOut as VK_NULL_HANDLE on failure.
+static bool allocDeviceLocalBuffer(
+    VkDevice device, VkPhysicalDevice physicalDevice,
+    VkDeviceSize size, VkBufferUsageFlags usage,
+    VkBuffer &bufOut, VkDeviceMemory &memOut)
+{
+    VkBufferCreateInfo bci{};
+    bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size        = size;
+    bci.usage       = usage;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(device, &bci, nullptr, &bufOut) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements req{};
+    vkGetBufferMemoryRequirements(device, bufOut, &req);
+
+    VkPhysicalDeviceMemoryProperties memProps{};
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+
+    // Prefer DEVICE_LOCAL; fall back to HOST_VISIBLE (unified memory devices).
+    VkMemoryPropertyFlags preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    uint32_t memIdx = UINT32_MAX;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((req.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & preferredFlags) == preferredFlags) {
+            memIdx = i; break;
+        }
+    }
+    if (memIdx == UINT32_MAX) {
+        // Fallback to any suitable type
+        for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+            if (req.memoryTypeBits & (1 << i)) { memIdx = i; break; }
+        }
+    }
+    if (memIdx == UINT32_MAX) { vkDestroyBuffer(device, bufOut, nullptr); return false; }
+
+    VkMemoryAllocateFlagsInfo flagsInfo{};
+    flagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    flagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
+    VkMemoryAllocateInfo ai{};
+    ai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.pNext           = &flagsInfo;
+    ai.allocationSize  = req.size;
+    ai.memoryTypeIndex = memIdx;
+    if (vkAllocateMemory(device, &ai, nullptr, &memOut) != VK_SUCCESS) {
+        vkDestroyBuffer(device, bufOut, nullptr); return false;
+    }
+    vkBindBufferMemory(device, bufOut, memOut, 0);
+    return true;
+}
+
+// Retrieve GPU device address of a VkBuffer.
+static VkDeviceAddress getBufferDeviceAddr(VkDevice device, VkBuffer buffer) {
+    VkBufferDeviceAddressInfo info{};
+    info.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    info.buffer = buffer;
+    return vkGetBufferDeviceAddress(device, &info);
+}
+
+static VkFormat componentTypeToVertexFormat(ComponentType ct) {
+    switch (ct) {
+        case ComponentType::ctFloat:         return VK_FORMAT_R32G32B32_SFLOAT;
+        case ComponentType::ctUnsignedShort: return VK_FORMAT_R16G16B16_UNORM;
+        case ComponentType::ctShort:         return VK_FORMAT_R16G16B16_SNORM;
+        default:                             return VK_FORMAT_R32G32B32_SFLOAT;
+    }
+}
+
+// Build VkAccelerationStructureGeometryKHR + primitive counts for a BLAS descriptor.
+static void buildBlasGeometry(
+    VkDevice device,
+    const BottomLevelAccelerationStructureDescriptor &descriptor,
+    std::vector<VkAccelerationStructureGeometryKHR> &geometries,
+    std::vector<uint32_t> &primitiveCounts)
+{
+    geometries.reserve(descriptor.geometries.size());
+    primitiveCounts.reserve(descriptor.geometries.size());
+
+    for (const auto &g : descriptor.geometries) {
+        VkAccelerationStructureGeometryKHR geom{};
+        geom.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        geom.flags = g.opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
+
+        if (g.type == AccelerationStructureGeometryType::triangles) {
+            geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            auto &tri         = geom.geometry.triangles;
+            tri.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+            tri.vertexFormat  = componentTypeToVertexFormat(g.componentType);
+            tri.vertexStride  = g.vertexStride;
+            tri.maxVertex     = g.vertexCount > 0 ? g.vertexCount - 1 : 0;
+            tri.indexType     = VK_INDEX_TYPE_NONE_KHR;
+
+            if (g.vertexBuffer) {
+                auto *bh = (BufferHandle *)g.vertexBuffer->native;
+                tri.vertexData.deviceAddress = getBufferDeviceAddr(device, bh->buffer) + g.vertexOffset;
+            }
+            if (g.indexBuffer) {
+                auto *ih = (BufferHandle *)g.indexBuffer->native;
+                tri.indexType = (g.indexFormat == IndexFormat::uint16)
+                                ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+                tri.indexData.deviceAddress = getBufferDeviceAddr(device, ih->buffer);
+            }
+            if (g.transformBuffer) {
+                auto *th = (BufferHandle *)g.transformBuffer->native;
+                tri.transformData.deviceAddress = getBufferDeviceAddr(device, th->buffer) + g.transformOffset;
+            }
+
+            uint32_t primitiveCount = g.indexBuffer
+                ? g.indexCount / 3
+                : g.vertexCount / 3;
+            primitiveCounts.push_back(primitiveCount);
+        } else {
+            geom.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+            auto &aabb        = geom.geometry.aabbs;
+            aabb.sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
+            aabb.stride       = g.aabbStride;
+            if (g.aabbBuffer) {
+                auto *ab = (BufferHandle *)g.aabbBuffer->native;
+                aabb.data.deviceAddress = getBufferDeviceAddr(device, ab->buffer) + g.aabbOffset;
+            }
+            primitiveCounts.push_back(g.aabbCount);
+        }
+        geometries.push_back(geom);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ray tracing — Device factory methods
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<AccelerationStructure>
+Device::createBottomLevelAccelerationStructure(
+    const BottomLevelAccelerationStructureDescriptor &descriptor)
+{
+    auto *d = (DeviceData *)native;
+    if (!d->rayTracingEnabled) return nullptr;
+
+    std::vector<VkAccelerationStructureGeometryKHR> geometries;
+    std::vector<uint32_t> primitiveCounts;
+    buildBlasGeometry(d->device, descriptor, geometries, primitiveCounts);
+    if (geometries.empty()) return nullptr;
+
+    // Map build flags.
+    VkBuildAccelerationStructureFlagsKHR buildFlags = 0;
+    auto bf = (int)descriptor.buildFlags;
+    if (bf & (int)AccelerationStructureBuildFlag::preferFastTrace) buildFlags |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    if (bf & (int)AccelerationStructureBuildFlag::preferFastBuild) buildFlags |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+    if (bf & (int)AccelerationStructureBuildFlag::allowUpdate)     buildFlags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    if (bf & (int)AccelerationStructureBuildFlag::allowCompaction)  buildFlags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+    buildInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    buildInfo.flags         = buildFlags;
+    buildInfo.mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.geometryCount = (uint32_t)geometries.size();
+    buildInfo.pGeometries   = geometries.data();
+
+    VkAccelerationStructureBuildSizesInfoKHR sizeInfo{};
+    sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    pfnGetAccelerationStructureBuildSizesKHR(d->device,
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+        &buildInfo, primitiveCounts.data(), &sizeInfo);
+
+    VkBuffer       buf = VK_NULL_HANDLE;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (!allocDeviceLocalBuffer(d->device, d->physicalDevice,
+                                sizeInfo.accelerationStructureSize,
+                                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
+                                | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                buf, mem)) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                            "createBLAS: backing buffer allocation failed");
+        return nullptr;
+    }
+
+    VkAccelerationStructureCreateInfoKHR asCI{};
+    asCI.sType  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    asCI.buffer = buf;
+    asCI.size   = sizeInfo.accelerationStructureSize;
+    asCI.type   = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+
+    VkAccelerationStructureKHR as = VK_NULL_HANDLE;
+    if (pfnCreateAccelerationStructureKHR(d->device, &asCI, nullptr, &as) != VK_SUCCESS) {
+        vkFreeMemory(d->device, mem, nullptr);
+        vkDestroyBuffer(d->device, buf, nullptr);
+        return nullptr;
+    }
+
+    VkAccelerationStructureDeviceAddressInfoKHR addrInfo{};
+    addrInfo.sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    addrInfo.accelerationStructure = as;
+    VkDeviceAddress deviceAddr     = pfnGetAccelerationStructureDeviceAddressKHR(d->device, &addrInfo);
+
+    auto *handle                    = new AccelerationStructureHandle();
+    handle->device                  = d->device;
+    handle->accelerationStructure   = as;
+    handle->buffer                  = buf;
+    handle->memory                  = mem;
+    handle->buildScratchSize        = sizeInfo.buildScratchSize;
+    handle->updateScratchSize       = sizeInfo.updateScratchSize;
+    handle->deviceAddress           = deviceAddr;
+
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
+}
+
+std::shared_ptr<AccelerationStructure>
+Device::createTopLevelAccelerationStructure(
+    const TopLevelAccelerationStructureDescriptor &descriptor)
+{
+    auto *d = (DeviceData *)native;
+    if (!d->rayTracingEnabled) return nullptr;
+
+    uint32_t instanceCount = (uint32_t)descriptor.instances.size();
+
+    VkAccelerationStructureGeometryInstancesDataKHR instancesData{};
+    instancesData.sType           = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    instancesData.arrayOfPointers = VK_FALSE;
+
+    VkAccelerationStructureGeometryKHR geom{};
+    geom.sType                           = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geom.geometryType                    = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geom.geometry.instances              = instancesData;
+
+    VkBuildAccelerationStructureFlagsKHR buildFlags = 0;
+    auto bf = (int)descriptor.buildFlags;
+    if (bf & (int)AccelerationStructureBuildFlag::preferFastTrace) buildFlags |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    if (bf & (int)AccelerationStructureBuildFlag::preferFastBuild) buildFlags |= VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR;
+    if (bf & (int)AccelerationStructureBuildFlag::allowUpdate)     buildFlags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+    if (bf & (int)AccelerationStructureBuildFlag::allowCompaction)  buildFlags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+
+    VkAccelerationStructureBuildGeometryInfoKHR buildInfo{};
+    buildInfo.sType         = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    buildInfo.type          = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    buildInfo.flags         = buildFlags;
+    buildInfo.mode          = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    buildInfo.geometryCount = 1;
+    buildInfo.pGeometries   = &geom;
+
+    VkAccelerationStructureBuildSizesInfoKHR sizeInfo{};
+    sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    pfnGetAccelerationStructureBuildSizesKHR(d->device,
+        VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+        &buildInfo, &instanceCount, &sizeInfo);
+
+    VkBuffer       buf = VK_NULL_HANDLE;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (!allocDeviceLocalBuffer(d->device, d->physicalDevice,
+                                sizeInfo.accelerationStructureSize,
+                                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
+                                | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                buf, mem)) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                            "createTLAS: backing buffer allocation failed");
+        return nullptr;
+    }
+
+    VkAccelerationStructureCreateInfoKHR asCI{};
+    asCI.sType  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    asCI.buffer = buf;
+    asCI.size   = sizeInfo.accelerationStructureSize;
+    asCI.type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+
+    VkAccelerationStructureKHR as = VK_NULL_HANDLE;
+    if (pfnCreateAccelerationStructureKHR(d->device, &asCI, nullptr, &as) != VK_SUCCESS) {
+        vkFreeMemory(d->device, mem, nullptr);
+        vkDestroyBuffer(d->device, buf, nullptr);
+        return nullptr;
+    }
+
+    VkAccelerationStructureDeviceAddressInfoKHR addrInfo{};
+    addrInfo.sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    addrInfo.accelerationStructure = as;
+    VkDeviceAddress deviceAddr     = pfnGetAccelerationStructureDeviceAddressKHR(d->device, &addrInfo);
+
+    auto *handle                  = new AccelerationStructureHandle();
+    handle->device                = d->device;
+    handle->accelerationStructure = as;
+    handle->buffer                = buf;
+    handle->memory                = mem;
+    handle->buildScratchSize      = sizeInfo.buildScratchSize;
+    handle->updateScratchSize     = sizeInfo.updateScratchSize;
+    handle->deviceAddress         = deviceAddr;
+
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
+}
+
+std::shared_ptr<RayTracingPipeline>
+Device::createRayTracingPipeline(const RayTracingPipelineDescriptor &descriptor)
+{
+    auto *d = (DeviceData *)native;
+    if (!d->rayTracingEnabled) return nullptr;
+
+    // --- Query RT pipeline properties for SBT alignment ---
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
+    rtProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+    VkPhysicalDeviceProperties2 props2{};
+    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props2.pNext = &rtProps;
+    vkGetPhysicalDeviceProperties2(d->physicalDevice, &props2);
+
+    const uint32_t handleSize      = rtProps.shaderGroupHandleSize;
+    const uint32_t handleAlignment = rtProps.shaderGroupHandleAlignment;
+    const uint32_t baseAlignment   = rtProps.shaderGroupBaseAlignment;
+
+    auto alignUp = [](uint32_t val, uint32_t align) -> uint32_t {
+        return (val + align - 1) & ~(align - 1);
+    };
+    const uint32_t handleSizeAligned = alignUp(handleSize, handleAlignment);
+
+    // --- Build shader stages and groups ---
+    std::vector<VkPipelineShaderStageCreateInfo>       stages;
+    std::vector<VkRayTracingShaderGroupCreateInfoKHR>  groups;
+
+    auto addStage = [&](const RayTracingShaderDescriptor &s, VkShaderStageFlagBits stage) -> uint32_t {
+        VkPipelineShaderStageCreateInfo si{};
+        si.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        si.stage  = stage;
+        si.module = ((ShaderModuleHandle *)s.module->native)->shaderModule;
+        si.pName  = s.entryPoint.c_str();
+        stages.push_back(si);
+        return (uint32_t)stages.size() - 1;
+    };
+
+    // Ray generation group
+    {
+        uint32_t idx = addStage(descriptor.rayGeneration, VK_SHADER_STAGE_RAYGEN_BIT_KHR);
+        VkRayTracingShaderGroupCreateInfoKHR g{};
+        g.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+        g.type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+        g.generalShader      = idx;
+        g.closestHitShader   = VK_SHADER_UNUSED_KHR;
+        g.anyHitShader       = VK_SHADER_UNUSED_KHR;
+        g.intersectionShader = VK_SHADER_UNUSED_KHR;
+        groups.push_back(g);
+    }
+
+    // Miss groups
+    uint32_t missGroupCount = (uint32_t)descriptor.missShaders.size();
+    for (const auto &m : descriptor.missShaders) {
+        uint32_t idx = addStage(m, VK_SHADER_STAGE_MISS_BIT_KHR);
+        VkRayTracingShaderGroupCreateInfoKHR g{};
+        g.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+        g.type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+        g.generalShader      = idx;
+        g.closestHitShader   = VK_SHADER_UNUSED_KHR;
+        g.anyHitShader       = VK_SHADER_UNUSED_KHR;
+        g.intersectionShader = VK_SHADER_UNUSED_KHR;
+        groups.push_back(g);
+    }
+
+    // Hit groups
+    uint32_t hitGroupCount = (uint32_t)descriptor.hitGroups.size();
+    for (const auto &hg : descriptor.hitGroups) {
+        VkRayTracingShaderGroupCreateInfoKHR g{};
+        g.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+        g.generalShader      = VK_SHADER_UNUSED_KHR;
+        g.closestHitShader   = VK_SHADER_UNUSED_KHR;
+        g.anyHitShader       = VK_SHADER_UNUSED_KHR;
+        g.intersectionShader = VK_SHADER_UNUSED_KHR;
+
+        bool isProcedural = hg.intersection.has_value();
+        g.type = isProcedural
+                 ? VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR
+                 : VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+
+        if (hg.closestHit.has_value())
+            g.closestHitShader = addStage(*hg.closestHit, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR);
+        if (hg.anyHit.has_value())
+            g.anyHitShader = addStage(*hg.anyHit, VK_SHADER_STAGE_ANY_HIT_BIT_KHR);
+        if (hg.intersection.has_value())
+            g.intersectionShader = addStage(*hg.intersection, VK_SHADER_STAGE_INTERSECTION_BIT_KHR);
+        groups.push_back(g);
+    }
+
+    // --- Get pipeline layout ---
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    if (descriptor.layout) {
+        auto *plh = (PipelineLayoutHandle *)descriptor.layout->native;
+        pipelineLayout = plh->layout;
+    } else {
+        VkPipelineLayoutCreateInfo plci{};
+        plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        vkCreatePipelineLayout(d->device, &plci, nullptr, &pipelineLayout);
+    }
+
+    // --- Create RT pipeline ---
+    VkRayTracingPipelineCreateInfoKHR rtci{};
+    rtci.sType                        = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
+    rtci.stageCount                   = (uint32_t)stages.size();
+    rtci.pStages                      = stages.data();
+    rtci.groupCount                   = (uint32_t)groups.size();
+    rtci.pGroups                      = groups.data();
+    rtci.maxPipelineRayRecursionDepth = descriptor.maxRecursionDepth;
+    rtci.layout                       = pipelineLayout;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (pfnCreateRayTracingPipelinesKHR(d->device, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                        1, &rtci, nullptr, &pipeline) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                            "createRayTracingPipeline: vkCreateRayTracingPipelinesKHR failed");
+        return nullptr;
+    }
+
+    // --- Build Shader Binding Table ---
+    const uint32_t groupCount   = (uint32_t)groups.size();
+    const uint32_t sbtStride    = handleSizeAligned;
+
+    // Compute per-region sizes (aligned to baseAlignment).
+    uint32_t rgenSize = alignUp(sbtStride * 1,             baseAlignment);
+    uint32_t missSize = alignUp(sbtStride * missGroupCount, baseAlignment);
+    uint32_t hitSize  = alignUp(sbtStride * hitGroupCount,  baseAlignment);
+    uint32_t sbtSize  = rgenSize + missSize + hitSize;
+
+    // Allocate host-visible buffer for uploading handles.
+    std::vector<uint8_t> handles(handleSize * groupCount);
+    if (pfnGetRayTracingShaderGroupHandlesKHR(d->device, pipeline, 0, groupCount,
+                                              handles.size(), handles.data()) != VK_SUCCESS) {
+        vkDestroyPipeline(d->device, pipeline, nullptr);
+        return nullptr;
+    }
+
+    // Allocate GPU-accessible SBT buffer.
+    VkBuffer       sbtBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory sbtMemory = VK_NULL_HANDLE;
+    if (!allocDeviceLocalBuffer(d->device, d->physicalDevice, sbtSize,
+                                VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR
+                                | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                                | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                sbtBuffer, sbtMemory)) {
+        vkDestroyPipeline(d->device, pipeline, nullptr);
+        return nullptr;
+    }
+
+    // Map and write handles into the SBT.  Since allocDeviceLocalBuffer prefers
+    // DEVICE_LOCAL, we upload via a staging buffer on non-UMA devices.
+    // For simplicity (Android is typically UMA), try direct mapping first.
+    {
+        void *mapped = nullptr;
+        bool directMap = (vkMapMemory(d->device, sbtMemory, 0, sbtSize, 0, &mapped) == VK_SUCCESS);
+        if (directMap) {
+            uint8_t *dst = (uint8_t *)mapped;
+            // rgen (group 0)
+            memcpy(dst, handles.data(), handleSize);
+            // miss (groups 1 .. 1+missGroupCount-1)
+            for (uint32_t i = 0; i < missGroupCount; i++)
+                memcpy(dst + rgenSize + i * sbtStride,
+                       handles.data() + (1 + i) * handleSize, handleSize);
+            // hit  (groups 1+missGroupCount .. end)
+            for (uint32_t i = 0; i < hitGroupCount; i++)
+                memcpy(dst + rgenSize + missSize + i * sbtStride,
+                       handles.data() + (1 + missGroupCount + i) * handleSize, handleSize);
+            vkUnmapMemory(d->device, sbtMemory);
+        }
+        // If mapping fails (pure DEVICE_LOCAL) the SBT will be zero; the user should
+        // check Feature::raytracing and only use this on supported hardware.
+    }
+
+    VkDeviceAddress sbtAddr = getBufferDeviceAddr(d->device, sbtBuffer);
+
+    auto *h = new RayTracingPipelineHandle();
+    h->device         = d->device;
+    h->pipeline       = pipeline;
+    h->pipelineLayout = pipelineLayout;
+    h->sbtBuffer      = sbtBuffer;
+    h->sbtMemory      = sbtMemory;
+
+    h->rgenRegion.deviceAddress = sbtAddr;
+    h->rgenRegion.stride        = sbtStride;
+    h->rgenRegion.size          = rgenSize;
+
+    h->missRegion.deviceAddress = sbtAddr + rgenSize;
+    h->missRegion.stride        = sbtStride;
+    h->missRegion.size          = missSize;
+
+    h->hitRegion.deviceAddress  = sbtAddr + rgenSize + missSize;
+    h->hitRegion.stride         = sbtStride;
+    h->hitRegion.size           = hitSize;
+
+    // callRegion is unused (no callable shaders).
+
+    return std::shared_ptr<RayTracingPipeline>(new RayTracingPipeline(h));
 }

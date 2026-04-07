@@ -24,6 +24,7 @@ namespace systems::leal::campello_gpu {
         VkSemaphore               renderFinishedSemaphore;
         ANativeWindow            *window               = nullptr;
         uint32_t                  queueFamilyIndex     = 0;
+        bool                      rayTracingEnabled    = false;
     };
 
 }

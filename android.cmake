@@ -24,6 +24,9 @@ add_library(${PROJECT_NAME} SHARED
     src/vulkan_android/command_encoder.cpp
     src/vulkan_android/render_pass_encoder.cpp
     src/vulkan_android/compute_pass_encoder.cpp
+    src/vulkan_android/acceleration_structure.cpp
+    src/vulkan_android/ray_tracing_pipeline.cpp
+    src/vulkan_android/ray_tracing_pass_encoder.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}

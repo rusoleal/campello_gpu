@@ -111,6 +111,75 @@
 - [x] Add `src/pi/utils.cpp` to `macos.cmake`
 - [x] Add `src/pi/utils.cpp` to `windows.cmake` once DirectX `createBuffer` is wired up
 
+## Raytracing
+
+### Constants & Enums
+- [x] Add `BufferUsage::accelerationStructureInput` — geometry/instance data fed into AS builds
+- [x] Add `BufferUsage::accelerationStructureStorage` — backing storage for built AS objects
+- [x] Add `ShaderStage::rayGeneration`, `::miss`, `::closestHit`, `::anyHit`, `::intersection` values
+- [x] Add `AccelerationStructureGeometryType` enum (`triangles`, `boundingBoxes`)
+- [x] Add `AccelerationStructureBuildFlag` enum (`preferFastTrace`, `preferFastBuild`, `allowUpdate`, `allowCompaction`)
+
+### Public API Types
+- [x] Add `AccelerationStructure` class (`inc/campello_gpu/acceleration_structure.hpp`) — opaque handle for both BLAS and TLAS; expose `getBuildScratchSize()` and `getUpdateScratchSize()`
+- [x] Add `RayTracingPipeline` class (`inc/campello_gpu/ray_tracing_pipeline.hpp`) — holds ray gen / miss / hit group shader state
+- [x] Add `RayTracingPassEncoder` class (`inc/campello_gpu/ray_tracing_pass_encoder.hpp`) — `setPipeline()`, `setBindGroup()`, `traceRays()`, `end()`
+
+### Descriptors
+- [x] Add `AccelerationStructureGeometryDescriptor` — buffer refs, vertex/index format, transform buffer, geometry flags
+- [x] Add `BottomLevelAccelerationStructureDescriptor` — list of geometry descriptors + build flags
+- [x] Add `TopLevelAccelerationStructureDescriptor` — instance buffer (each instance references a BLAS + transform + mask), build flags
+- [x] Add `RayTracingPipelineDescriptor` — ray generation shader, miss shaders, hit groups (closest/any/intersection), `PipelineLayout`, max recursion depth
+
+### Device Factory Methods
+- [x] Add `Device::createBottomLevelAccelerationStructure(const BottomLevelAccelerationStructureDescriptor&)`
+- [x] Add `Device::createTopLevelAccelerationStructure(const TopLevelAccelerationStructureDescriptor&)`
+- [x] Add `Device::createRayTracingPipeline(const RayTracingPipelineDescriptor&)`
+
+### CommandEncoder Extensions
+- [x] Add `CommandEncoder::beginRayTracingPass()` — returns `RayTracingPassEncoder`
+- [x] Add `CommandEncoder::buildAccelerationStructure(dst, BottomLevelAccelerationStructureDescriptor, scratchBuffer)`
+- [x] Add `CommandEncoder::buildAccelerationStructure(dst, TopLevelAccelerationStructureDescriptor, scratchBuffer)`
+- [x] Add `CommandEncoder::updateAccelerationStructure(src, dst, scratchBuffer)` — incremental rebuild for dynamic geometry
+- [x] Add `CommandEncoder::copyAccelerationStructure(src, dst)` — for AS compaction / clone
+
+### BindGroup Extension
+- [x] Add `BindingType::accelerationStructure` — maps to `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`, MTL acceleration structure argument, DXR SRV
+- [x] Update `createBindGroup` to accept `AccelerationStructure` entries alongside buffers/textures/samplers
+
+### Vulkan / Android Backend
+- [x] Detect `VK_KHR_acceleration_structure` + `VK_KHR_ray_tracing_pipeline` + `VK_KHR_deferred_host_operations` in `src/vulkan_android/adapter.cpp`; set `Feature::raytracing`
+- [x] Enable extensions and device features (`bufferDeviceAddress`, `accelerationStructure`, `rayTracingPipeline`) in `src/vulkan_android/device.cpp`
+- [x] Load `VK_KHR_acceleration_structure` and `VK_KHR_ray_tracing_pipeline` function pointers (follow the existing `pfnCmdBeginRenderingKHR` pattern)
+- [x] Add `acceleration_structure_handle.hpp` — wraps `VkAccelerationStructureKHR` + backing `VkBuffer`
+- [x] Implement BLAS build: `vkCmdBuildAccelerationStructuresKHR` with triangle geometry
+- [x] Implement TLAS build: `vkCmdBuildAccelerationStructuresKHR` with instance geometry
+- [x] Add `ray_tracing_pipeline_handle.hpp` — wraps `VkPipeline` (ray tracing type) + Shader Binding Table buffers
+- [x] Implement `createRayTracingPipeline`: compile ray gen/miss/hit group shaders, build SBT into a `VkBuffer`
+- [x] Implement `RayTracingPassEncoder`: `vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR)` + `vkCmdTraceRaysKHR`
+
+### Metal Backend
+- [x] Verify `supportsRaytracing()` detection in `src/metal/adapter.cpp` reaches `Device::getFeatures()` correctly
+- [x] Add `acceleration_structure_handle.hpp` — wraps `MTL::AccelerationStructure*`
+- [x] Implement BLAS build: `MTLPrimitiveAccelerationStructureDescriptor` → `MTLAccelerationStructureCommandEncoder`
+- [x] Implement TLAS build: `MTLInstanceAccelerationStructureDescriptor`
+- [x] Implement ray tracing pipeline: build `MTLIntersectionFunctionTable` + visible function table, link into `MTLComputePipelineState` with `linkedFunctions`
+- [x] Implement `RayTracingPassEncoder` via compute pass + `MTLIntersectionFunctionTable` binds + `dispatchThreads` (Metal ray tracing uses a compute pass, not a dedicated pass type)
+
+### DirectX 12 Backend
+- [x] Verify `D3D12_RAYTRACING_TIER_1_0` detection in `src/directx/adapter.cpp` correctly inserts `Feature::raytracing`
+- [x] Add `AccelerationStructureHandle` — wraps `ID3D12Resource*` for AS GPU VA (in `common.hpp`)
+- [x] Implement BLAS build: `ID3D12GraphicsCommandList4::BuildRaytracingAccelerationStructure`
+- [x] Implement TLAS build: same API with instance descs in an upload heap buffer
+- [x] Implement ray tracing pipeline: `ID3D12Device5::CreateStateObject` with `D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE`, export associations for ray gen / miss / hit groups
+- [x] Build Shader Table (ray gen record, miss records, hit group records) into `ID3D12Resource`
+- [x] Implement `RayTracingPassEncoder`: `ID3D12GraphicsCommandList4::DispatchRays()` with shader table addresses
+
+### Tests & Examples
+- [x] Add unit tests in `tests/platform/test_raytracing.cpp` covering BLAS/TLAS creation, build, pipeline creation, and feature-gated skip when `Feature::raytracing` is absent
+- [x] Add a minimal raytracing example in `examples/android/` — `RaytracingDemo.h/.cpp` (single-triangle BLAS→TLAS→RT pipeline, SPIR-V shaders, writes to storage texture via traceRays)
+- [x] Add a minimal raytracing example in `examples/apple/` — `RaytracingDemo.h/.mm` + `RaytracingShaders.metal` (same flow using Metal raytracing kernel)
+
 ## Public API / headers
 
 - [x] `RenderPassEncoder::setBindGroup()` — implemented in Vulkan; present in Metal and DirectX

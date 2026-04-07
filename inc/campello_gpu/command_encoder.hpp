@@ -2,8 +2,12 @@
 
 #include <memory>
 #include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
+#include <campello_gpu/descriptors/bottom_level_acceleration_structure_descriptor.hpp>
+#include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
 #include <campello_gpu/render_pass_encoder.hpp>
 #include <campello_gpu/compute_pass_encoder.hpp>
+#include <campello_gpu/ray_tracing_pass_encoder.hpp>
+#include <campello_gpu/acceleration_structure.hpp>
 #include <campello_gpu/command_buffer.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/texture.hpp>
@@ -199,6 +203,87 @@ namespace systems::leal::campello_gpu
          * @param queryIndex Index of the slot to write into.
          */
         void writeTimestamp(std::shared_ptr<QuerySet> querySet, uint32_t queryIndex);
+
+        // ------------------------------------------------------------------
+        // Ray tracing commands (requires Feature::raytracing)
+        // ------------------------------------------------------------------
+
+        /**
+         * @brief Begins a ray tracing pass and returns an encoder for it.
+         *
+         * All `traceRays()` dispatches must happen inside a ray tracing pass. Only
+         * one pass (render, compute, or ray tracing) may be active at a time.
+         *
+         * Requires `Feature::raytracing` on the device.
+         *
+         * @return A `RayTracingPassEncoder` for recording ray dispatch commands.
+         */
+        std::shared_ptr<RayTracingPassEncoder> beginRayTracingPass();
+
+        /**
+         * @brief Records a bottom-level acceleration structure build.
+         *
+         * The GPU builds (or rebuilds) the BVH for `dst` using the geometry described
+         * in `descriptor` and the provided scratch buffer. `dst` must have been created
+         * with `Device::createBottomLevelAccelerationStructure(descriptor)` using the
+         * same descriptor. `scratchBuffer` must be at least
+         * `dst->getBuildScratchSize()` bytes with `BufferUsage::storage`.
+         *
+         * @param dst          The acceleration structure to build into.
+         * @param descriptor   Geometry and build-flag configuration (must match creation).
+         * @param scratchBuffer Temporary GPU scratch space for the builder.
+         */
+        void buildAccelerationStructure(
+            std::shared_ptr<AccelerationStructure> dst,
+            const BottomLevelAccelerationStructureDescriptor &descriptor,
+            std::shared_ptr<Buffer> scratchBuffer);
+
+        /**
+         * @brief Records a top-level acceleration structure build.
+         *
+         * Builds the instance BVH for `dst`. All BLAS handles in `descriptor.instances`
+         * must be fully built before this command executes on the GPU.
+         * `scratchBuffer` must be at least `dst->getBuildScratchSize()` bytes with
+         * `BufferUsage::storage`.
+         *
+         * @param dst          The acceleration structure to build into.
+         * @param descriptor   Instance list and build-flag configuration (must match creation).
+         * @param scratchBuffer Temporary GPU scratch space for the builder.
+         */
+        void buildAccelerationStructure(
+            std::shared_ptr<AccelerationStructure> dst,
+            const TopLevelAccelerationStructureDescriptor &descriptor,
+            std::shared_ptr<Buffer> scratchBuffer);
+
+        /**
+         * @brief Records an incremental acceleration structure update.
+         *
+         * Updates `dst` from `src` without a full rebuild. Both structures must have
+         * been created with `AccelerationStructureBuildFlag::allowUpdate`.
+         * `scratchBuffer` must be at least `dst->getUpdateScratchSize()` bytes.
+         *
+         * @param src          Source structure (previous frame's AS).
+         * @param dst          Destination structure to update in place.
+         * @param scratchBuffer Temporary GPU scratch space for the update.
+         */
+        void updateAccelerationStructure(
+            std::shared_ptr<AccelerationStructure> src,
+            std::shared_ptr<AccelerationStructure> dst,
+            std::shared_ptr<Buffer> scratchBuffer);
+
+        /**
+         * @brief Records an acceleration structure copy (for compaction or cloning).
+         *
+         * Copies `src` into `dst`. Used primarily to compact an AS after building with
+         * `AccelerationStructureBuildFlag::allowCompaction` to reduce GPU memory usage.
+         * Query the compacted size before allocating `dst`.
+         *
+         * @param src Source acceleration structure.
+         * @param dst Destination acceleration structure (must have sufficient backing memory).
+         */
+        void copyAccelerationStructure(
+            std::shared_ptr<AccelerationStructure> src,
+            std::shared_ptr<AccelerationStructure> dst);
     };
 
 }

@@ -49,6 +49,7 @@ if(BUILD_INTEGRATION_TESTS)
         platform/test_render_pipeline.cpp
         platform/test_render_pass_encoder.cpp
         platform/test_compute_pass_encoder.cpp
+        platform/test_raytracing.cpp
     )
     target_include_directories(campello_gpu_integration_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/inc

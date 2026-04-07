@@ -10,9 +10,10 @@ namespace systems::leal::campello_gpu {
 
     /** @brief The resource category of a bind group layout entry. */
     enum class EntryObjectType {
-        buffer,  ///< A buffer resource (uniform, storage, or read-only storage).
-        texture, ///< A texture resource.
-        sampler  ///< A sampler state.
+        buffer,               ///< A buffer resource (uniform, storage, or read-only storage).
+        texture,              ///< A texture resource.
+        sampler,              ///< A sampler state.
+        accelerationStructure ///< An acceleration structure (BLAS or TLAS) for ray tracing.
     };
 
     /** @brief The specific buffer binding type. */
