@@ -49,6 +49,9 @@ void loadDynamicRenderingFunctions(VkDevice device)
     pfnCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR");
 }
 
+// vkGetBufferDeviceAddress is Vulkan 1.2 core; load via proc addr so it works on API-28 (Vulkan 1.1).
+PFN_vkGetBufferDeviceAddress pfnGetBufferDeviceAddress = nullptr;
+
 // Function pointers for VK_KHR_acceleration_structure and VK_KHR_ray_tracing_pipeline.
 PFN_vkCreateAccelerationStructureKHR           pfnCreateAccelerationStructureKHR          = nullptr;
 PFN_vkDestroyAccelerationStructureKHR          pfnDestroyAccelerationStructureKHR         = nullptr;
@@ -61,6 +64,7 @@ PFN_vkGetRayTracingShaderGroupHandlesKHR       pfnGetRayTracingShaderGroupHandle
 PFN_vkCmdTraceRaysKHR                          pfnCmdTraceRaysKHR                         = nullptr;
 
 static void loadRayTracingFunctions(VkDevice device) {
+    pfnGetBufferDeviceAddress           = (PFN_vkGetBufferDeviceAddress)           vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress");
     pfnCreateAccelerationStructureKHR          = (PFN_vkCreateAccelerationStructureKHR)         vkGetDeviceProcAddr(device, "vkCreateAccelerationStructureKHR");
     pfnDestroyAccelerationStructureKHR         = (PFN_vkDestroyAccelerationStructureKHR)        vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR");
     pfnGetAccelerationStructureBuildSizesKHR   = (PFN_vkGetAccelerationStructureBuildSizesKHR)  vkGetDeviceProcAddr(device, "vkGetAccelerationStructureBuildSizesKHR");
@@ -2118,7 +2122,7 @@ static VkDeviceAddress getBufferDeviceAddr(VkDevice device, VkBuffer buffer) {
     VkBufferDeviceAddressInfo info{};
     info.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     info.buffer = buffer;
-    return vkGetBufferDeviceAddress(device, &info);
+    return pfnGetBufferDeviceAddress(device, &info);
 }
 
 static VkFormat componentTypeToVertexFormat(ComponentType ct) {

@@ -28,6 +28,7 @@ using namespace systems::leal::campello_gpu;
 extern PFN_vkCmdBeginRenderingKHR pfnCmdBeginRenderingKHR;
 
 // Extern function pointers for VK_KHR_acceleration_structure + VK_KHR_ray_tracing_pipeline
+extern PFN_vkGetBufferDeviceAddress                pfnGetBufferDeviceAddress;
 extern PFN_vkCmdBuildAccelerationStructuresKHR     pfnCmdBuildAccelerationStructuresKHR;
 extern PFN_vkCmdCopyAccelerationStructureKHR       pfnCmdCopyAccelerationStructureKHR;
 
@@ -598,7 +599,7 @@ static VkDeviceAddress allocAndUploadStaging(
     VkBufferDeviceAddressInfo addrInfo{};
     addrInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     addrInfo.buffer = buf;
-    return vkGetBufferDeviceAddress(data->device, &addrInfo);
+    return pfnGetBufferDeviceAddress(data->device, &addrInfo);
 }
 
 static VkBuildAccelerationStructureFlagsKHR mapBuildFlags(AccelerationStructureBuildFlag f) {
@@ -615,7 +616,7 @@ static VkDeviceAddress bufAddr(VkDevice device, VkBuffer buffer) {
     VkBufferDeviceAddressInfo i{};
     i.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
     i.buffer = buffer;
-    return vkGetBufferDeviceAddress(device, &i);
+    return pfnGetBufferDeviceAddress(device, &i);
 }
 
 void CommandEncoder::buildAccelerationStructure(
@@ -791,7 +792,7 @@ void CommandEncoder::buildAccelerationStructure(
                 VkBufferDeviceAddressInfo addrInfo{};
                 addrInfo.sType  = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
                 addrInfo.buffer = instBuf;
-                instAddr = vkGetBufferDeviceAddress(data->device, &addrInfo);
+                instAddr = pfnGetBufferDeviceAddress(data->device, &addrInfo);
             } else {
                 vkDestroyBuffer(data->device, instBuf, nullptr);
             }
