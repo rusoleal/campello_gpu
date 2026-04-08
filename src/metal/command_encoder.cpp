@@ -259,7 +259,10 @@ void CommandEncoder::buildAccelerationStructure(
     auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
     if (!asEncoder) return;
 
-    auto *primDesc = makePrimASDescriptor(descriptor);
+    auto bufToMTL = [](const std::shared_ptr<Buffer> &b) -> MTL::Buffer * {
+        return b ? static_cast<MTL::Buffer *>(b->native) : nullptr;
+    };
+    auto *primDesc = makePrimASDescriptor(descriptor, bufToMTL);
     asEncoder->buildAccelerationStructure(
         static_cast<MetalAccelerationStructureData *>(dst->native)->accelerationStructure,
         primDesc,
@@ -285,7 +288,10 @@ void CommandEncoder::buildAccelerationStructure(
                       ->accelerationStructure;
     auto *dev = mtlAs->device();
 
-    auto [instanceDesc, instanceBuf] = makeInstanceASDescriptor(dev, descriptor);
+    auto asToMTLData = [](const std::shared_ptr<AccelerationStructure> &a) {
+        return static_cast<MetalAccelerationStructureData *>(a->native);
+    };
+    auto [instanceDesc, instanceBuf] = makeInstanceASDescriptor(dev, descriptor, asToMTLData);
     if (!instanceDesc) { asEncoder->endEncoding(); return; }
 
     asEncoder->buildAccelerationStructure(

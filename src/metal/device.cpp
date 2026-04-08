@@ -515,7 +515,10 @@ std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStru
     if (!dev->supportsRaytracing()) return nullptr;
     if (descriptor.geometries.empty()) return nullptr;
 
-    auto *primDesc = makePrimASDescriptor(descriptor);
+    auto bufToMTL = [](const std::shared_ptr<Buffer> &b) -> MTL::Buffer * {
+        return b ? static_cast<MTL::Buffer *>(b->native) : nullptr;
+    };
+    auto *primDesc = makePrimASDescriptor(descriptor, bufToMTL);
     auto sizes     = dev->accelerationStructureSizes(primDesc);
     auto *as       = dev->newAccelerationStructure(sizes.accelerationStructureSize);
     primDesc->release();
@@ -537,7 +540,10 @@ std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructu
     if (!dev->supportsRaytracing()) return nullptr;
     if (descriptor.instances.empty()) return nullptr;
 
-    auto [instanceDesc, instanceBuf] = makeInstanceASDescriptor(dev, descriptor);
+    auto asToMTLData = [](const std::shared_ptr<AccelerationStructure> &a) {
+        return static_cast<MetalAccelerationStructureData *>(a->native);
+    };
+    auto [instanceDesc, instanceBuf] = makeInstanceASDescriptor(dev, descriptor, asToMTLData);
     if (!instanceDesc) return nullptr;
 
     auto sizes = dev->accelerationStructureSizes(instanceDesc);
@@ -590,7 +596,7 @@ std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
     struct IntersectionEntry { size_t index; MTL::Function *func; };
     std::vector<IntersectionEntry> isFuncs;
 
-    auto *linkedFuncsArray = NS::MutableArray::alloc()->init();
+    std::vector<NS::Object *> linkedFuncObjects;
     for (size_t i = 0; i < descriptor.hitGroups.size(); i++) {
         const auto &hg = descriptor.hitGroups[i];
         if (!hg.intersection || !hg.intersection->module) continue;
@@ -603,7 +609,7 @@ std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
         isLib->release();
         if (!isFunc) continue;
 
-        linkedFuncsArray->addObject(isFunc);
+        linkedFuncObjects.push_back(isFunc);
         isFuncs.push_back({ i, isFunc });
     }
 
@@ -612,16 +618,19 @@ std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
     pipelineDesc->setComputeFunction(rgFunc);
     rgFunc->release();
 
-    if (linkedFuncsArray->count() > 0) {
+    if (!linkedFuncObjects.empty()) {
+        auto *linkedFuncsArray = NS::Array::array(
+            linkedFuncObjects.data(),
+            static_cast<NS::UInteger>(linkedFuncObjects.size()));
         auto *linked = MTL::LinkedFunctions::alloc()->init();
-        linked->setFunctions(static_cast<NS::Array *>(linkedFuncsArray));
+        linked->setFunctions(linkedFuncsArray);
         pipelineDesc->setLinkedFunctions(linked);
         linked->release();
     }
-    linkedFuncsArray->release();
 
     NS::Error *err = nullptr;
-    auto *pipelineState = dev->newComputePipelineState(pipelineDesc, &err);
+    auto *pipelineState = dev->newComputePipelineState(
+        pipelineDesc, MTL::PipelineOptionNone, nullptr, &err);
     pipelineDesc->release();
     if (!pipelineState) {
         if (err)

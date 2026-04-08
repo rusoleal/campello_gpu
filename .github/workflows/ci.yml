@@ -114,3 +114,21 @@ jobs:
 
       - name: Build
         run: cmake --build build
+
+  # ---------------------------------------------------------------------------
+  # Windows build check — compile the DirectX 12 backend.
+  # No tests are executed: GPU integration tests require a DX12-capable device
+  # which is not available on standard GitHub-hosted Windows runners.
+  # ---------------------------------------------------------------------------
+  build-windows:
+    name: Build check (Windows / DirectX 12)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
