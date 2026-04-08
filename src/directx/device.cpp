@@ -1,4 +1,5 @@
 #define NOMINMAX
+#include <functional>
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include "campello_gpu_config.h"
@@ -978,7 +979,7 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
     UINT baseIdx  = 0;
 
     for (const auto& entry : descriptor.entries) {
-        if (auto* bbPtr = std::get_if<BindGroupDescriptor::BufferBinding>(&entry.resource)) {
+        if (auto* bbPtr = std::get_if<BufferBinding>(&entry.resource)) {
             auto& bb = *bbPtr;
             if (bb.buffer && bb.buffer->native) {
                 auto* bh = static_cast<BufferHandle*>(bb.buffer->native);
@@ -1249,7 +1250,8 @@ static D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS mapBuildFlags(Acceler
 }
 
 static std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> buildGeometryDescs(
-    const BottomLevelAccelerationStructureDescriptor& descriptor)
+    const BottomLevelAccelerationStructureDescriptor& descriptor,
+    const std::function<BufferHandle*(const std::shared_ptr<Buffer>&)>& bufToHandle)
 {
     std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> descs;
     descs.reserve(descriptor.geometries.size());
@@ -1260,36 +1262,43 @@ static std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> buildGeometryDescs(
         if (geo.type == AccelerationStructureGeometryType::triangles) {
             gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
             auto& tri = gd.Triangles;
-            if (geo.vertexBuffer && geo.vertexBuffer->native) {
-                auto* bh = static_cast<BufferHandle*>(geo.vertexBuffer->native);
-                tri.VertexBuffer.StartAddress  = bh->resource->GetGPUVirtualAddress() + geo.vertexOffset;
-                tri.VertexBuffer.StrideInBytes = geo.vertexStride;
-                tri.VertexCount                = geo.vertexCount;
-                tri.VertexFormat = (geo.componentType == ComponentType::ctFloat)
-                    ? DXGI_FORMAT_R32G32B32_FLOAT : DXGI_FORMAT_R32G32B32_FLOAT;
+            if (geo.vertexBuffer) {
+                auto* bh = bufToHandle(geo.vertexBuffer);
+                if (bh) {
+                    tri.VertexBuffer.StartAddress  = bh->resource->GetGPUVirtualAddress() + geo.vertexOffset;
+                    tri.VertexBuffer.StrideInBytes = geo.vertexStride;
+                    tri.VertexCount                = geo.vertexCount;
+                    tri.VertexFormat = (geo.componentType == ComponentType::ctFloat)
+                        ? DXGI_FORMAT_R32G32B32_FLOAT : DXGI_FORMAT_R32G32B32_FLOAT;
+                }
             }
-            if (geo.indexBuffer && geo.indexBuffer->native && geo.indexCount > 0) {
-                auto* ib = static_cast<BufferHandle*>(geo.indexBuffer->native);
-                tri.IndexBuffer = ib->resource->GetGPUVirtualAddress();
-                tri.IndexCount  = geo.indexCount;
-                tri.IndexFormat = (geo.indexFormat == IndexFormat::uint16)
-                    ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
+            if (geo.indexBuffer && geo.indexCount > 0) {
+                auto* ib = bufToHandle(geo.indexBuffer);
+                if (ib) {
+                    tri.IndexBuffer = ib->resource->GetGPUVirtualAddress();
+                    tri.IndexCount  = geo.indexCount;
+                    tri.IndexFormat = (geo.indexFormat == IndexFormat::uint16)
+                        ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
+                }
             } else {
                 tri.IndexCount  = 0;
                 tri.IndexFormat = DXGI_FORMAT_UNKNOWN;
             }
-            if (geo.transformBuffer && geo.transformBuffer->native) {
-                auto* tb = static_cast<BufferHandle*>(geo.transformBuffer->native);
-                tri.Transform3x4 = tb->resource->GetGPUVirtualAddress() + geo.transformOffset;
+            if (geo.transformBuffer) {
+                auto* tb = bufToHandle(geo.transformBuffer);
+                if (tb)
+                    tri.Transform3x4 = tb->resource->GetGPUVirtualAddress() + geo.transformOffset;
             }
         } else {
             gd.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
             auto& aabb = gd.AABBs;
-            if (geo.aabbBuffer && geo.aabbBuffer->native) {
-                auto* ab = static_cast<BufferHandle*>(geo.aabbBuffer->native);
-                aabb.AABBs.StartAddress  = ab->resource->GetGPUVirtualAddress() + geo.aabbOffset;
-                aabb.AABBs.StrideInBytes = geo.aabbStride;
-                aabb.AABBCount           = geo.aabbCount;
+            if (geo.aabbBuffer) {
+                auto* ab = bufToHandle(geo.aabbBuffer);
+                if (ab) {
+                    aabb.AABBs.StartAddress  = ab->resource->GetGPUVirtualAddress() + geo.aabbOffset;
+                    aabb.AABBs.StrideInBytes = geo.aabbStride;
+                    aabb.AABBCount           = geo.aabbCount;
+                }
             }
         }
         descs.push_back(gd);
@@ -1329,7 +1338,10 @@ std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStru
     ID3D12Device5* dev5 = nullptr;
     if (FAILED(d->device->QueryInterface(IID_PPV_ARGS(&dev5)))) return nullptr;
 
-    auto geomDescs = buildGeometryDescs(descriptor);
+    auto bufToHandle = [](const std::shared_ptr<Buffer>& b) -> BufferHandle* {
+        return b ? static_cast<BufferHandle*>(b->native) : nullptr;
+    };
+    auto geomDescs = buildGeometryDescs(descriptor, bufToHandle);
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs = {};
     inputs.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;

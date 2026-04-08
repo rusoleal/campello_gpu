@@ -17,7 +17,10 @@ add_library(${PROJECT_NAME} SHARED
     src/metal/context.cpp
     src/metal/device.cpp
     src/metal/pipeline_layout.cpp
+    src/metal/acceleration_structure.cpp
     src/metal/query_set.cpp
+    src/metal/ray_tracing_pass_encoder.cpp
+    src/metal/ray_tracing_pipeline.cpp
     src/metal/render_pass_encoder.cpp
     src/metal/render_pipeline.cpp
     src/metal/sampler.cpp
