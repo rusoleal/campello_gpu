@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <vector>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
@@ -2130,9 +2131,11 @@ static VkFormat componentTypeToVertexFormat(ComponentType ct) {
 }
 
 // Build VkAccelerationStructureGeometryKHR + primitive counts for a BLAS descriptor.
+// bufAddr resolves a Buffer shared_ptr + byte offset to a VkDeviceAddress; the caller
+// provides this lambda so that the free function never touches Buffer::native directly.
 static void buildBlasGeometry(
-    VkDevice device,
     const BottomLevelAccelerationStructureDescriptor &descriptor,
+    const std::function<VkDeviceAddress(const std::shared_ptr<Buffer>&, uint64_t)> &bufAddr,
     std::vector<VkAccelerationStructureGeometryKHR> &geometries,
     std::vector<uint32_t> &primitiveCounts)
 {
@@ -2153,20 +2156,15 @@ static void buildBlasGeometry(
             tri.maxVertex     = g.vertexCount > 0 ? g.vertexCount - 1 : 0;
             tri.indexType     = VK_INDEX_TYPE_NONE_KHR;
 
-            if (g.vertexBuffer) {
-                auto *bh = (BufferHandle *)g.vertexBuffer->native;
-                tri.vertexData.deviceAddress = getBufferDeviceAddr(device, bh->buffer) + g.vertexOffset;
-            }
+            if (g.vertexBuffer)
+                tri.vertexData.deviceAddress = bufAddr(g.vertexBuffer, g.vertexOffset);
             if (g.indexBuffer) {
-                auto *ih = (BufferHandle *)g.indexBuffer->native;
                 tri.indexType = (g.indexFormat == IndexFormat::uint16)
                                 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-                tri.indexData.deviceAddress = getBufferDeviceAddr(device, ih->buffer);
+                tri.indexData.deviceAddress = bufAddr(g.indexBuffer, 0);
             }
-            if (g.transformBuffer) {
-                auto *th = (BufferHandle *)g.transformBuffer->native;
-                tri.transformData.deviceAddress = getBufferDeviceAddr(device, th->buffer) + g.transformOffset;
-            }
+            if (g.transformBuffer)
+                tri.transformData.deviceAddress = bufAddr(g.transformBuffer, g.transformOffset);
 
             uint32_t primitiveCount = g.indexBuffer
                 ? g.indexCount / 3
@@ -2177,10 +2175,8 @@ static void buildBlasGeometry(
             auto &aabb        = geom.geometry.aabbs;
             aabb.sType        = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
             aabb.stride       = g.aabbStride;
-            if (g.aabbBuffer) {
-                auto *ab = (BufferHandle *)g.aabbBuffer->native;
-                aabb.data.deviceAddress = getBufferDeviceAddr(device, ab->buffer) + g.aabbOffset;
-            }
+            if (g.aabbBuffer)
+                aabb.data.deviceAddress = bufAddr(g.aabbBuffer, g.aabbOffset);
             primitiveCounts.push_back(g.aabbCount);
         }
         geometries.push_back(geom);
@@ -2198,9 +2194,15 @@ Device::createBottomLevelAccelerationStructure(
     auto *d = (DeviceData *)native;
     if (!d->rayTracingEnabled) return nullptr;
 
+    auto bufAddr = [d](const std::shared_ptr<Buffer> &buf, uint64_t offset) -> VkDeviceAddress {
+        if (!buf) return 0;
+        auto *bh = (BufferHandle *)buf->native;
+        return getBufferDeviceAddr(d->device, bh->buffer) + offset;
+    };
+
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
     std::vector<uint32_t> primitiveCounts;
-    buildBlasGeometry(d->device, descriptor, geometries, primitiveCounts);
+    buildBlasGeometry(descriptor, bufAddr, geometries, primitiveCounts);
     if (geometries.empty()) return nullptr;
 
     // Map build flags.
