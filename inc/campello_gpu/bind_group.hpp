@@ -30,6 +30,7 @@ namespace systems::leal::campello_gpu {
         friend class Device;
         friend class RenderPassEncoder;
         friend class ComputePassEncoder;
+        friend class RayTracingPassEncoder;
         void *native;
         BindGroup(void *pd);
     public:
