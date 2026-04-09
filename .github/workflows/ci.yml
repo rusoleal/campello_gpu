@@ -28,7 +28,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -B build -DBUILD_TESTS=ON
@@ -49,7 +49,7 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -B build -DBUILD_INTEGRATION_TESTS=ON
@@ -71,7 +71,7 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure (iOS simulator)
         run: |
@@ -102,7 +102,7 @@ jobs:
         abi: [arm64-v8a, armeabi-v7a, x86_64, x86]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure (${{ matrix.abi }}, API 28)
         run: |
@@ -125,7 +125,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
