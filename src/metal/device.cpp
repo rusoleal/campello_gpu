@@ -239,8 +239,15 @@ std::shared_ptr<Texture> Device::createTexture(
                            pixelFormat == PixelFormat::depth24plus_stencil8  ||
                            pixelFormat == PixelFormat::depth32float_stencil8 ||
                            pixelFormat == PixelFormat::stencil8);
+    MTL::StorageMode colorStorageMode;
+#if TARGET_OS_IOS || TARGET_OS_SIMULATOR
+    // MTLStorageModeManaged is macOS-only; use Shared on iOS/Simulator.
+    colorStorageMode = MTL::StorageModeShared;
+#else
+    colorStorageMode = MTL::StorageModeManaged;
+#endif
     pTextureDesc->setStorageMode(isDepthStencil ? MTL::StorageModePrivate
-                                                : MTL::StorageModeManaged);
+                                                : colorStorageMode);
 
     switch (type) {
         case TextureType::tt1d:
@@ -278,7 +285,12 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     if (u & (static_cast<int>(BufferUsage::mapRead) | static_cast<int>(BufferUsage::mapWrite))) {
         options = MTL::ResourceStorageModeShared;
     } else {
+#if TARGET_OS_IOS || TARGET_OS_SIMULATOR
+        // MTLResourceStorageModeManaged is macOS-only; use Shared on iOS/Simulator.
+        options = MTL::ResourceStorageModeShared;
+#else
         options = MTL::ResourceStorageModeManaged;
+#endif
     }
     MTL::Buffer *pBuffer = dev->newBuffer(size, options);
     if (pBuffer == nullptr) return nullptr;

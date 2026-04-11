@@ -2,6 +2,15 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.7.1] - 2026-04-11
+
+### Fixed
+
+- **Metal** `Device::createTexture()` — use `MTLStorageModeShared` instead of `MTLStorageModeManaged` for color textures on iOS and Simulator; `Managed` is macOS-only and caused a validation failure on iOS targets
+- **Metal** `Device::createBuffer()` — use `MTLResourceStorageModeShared` instead of `MTLResourceStorageModeManaged` for non-mappable buffers on iOS and Simulator; same macOS-only restriction applies
+
+---
+
 ## [0.7.0] - 2026-04-07
 
 ### Added
