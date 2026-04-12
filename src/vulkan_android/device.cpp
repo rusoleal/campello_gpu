@@ -680,7 +680,7 @@ std::shared_ptr<Texture> Device::createTexture(
     toReturn->deviceData     = deviceData;
     
     // Get the buffer's allocated size for memory tracking
-    auto bufferHandle = (BufferHandle *)buffer->getNative();
+    auto bufferHandle = (BufferHandle *)buffer->native;
     toReturn->allocatedSize = bufferHandle->allocatedSize;
 
     deviceData->textureCount++;
