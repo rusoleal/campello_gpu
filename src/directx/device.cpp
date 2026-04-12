@@ -628,7 +628,11 @@ MemoryPressureLevel Device::getMemoryPressureLevel() {
     // Get adapter memory info
     DXGI_QUERY_VIDEO_MEMORY_INFO memInfo = {};
     if (d->adapter) {
-        d->adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo);
+        IDXGIAdapter3* adapter3 = nullptr;
+        if (SUCCEEDED(d->adapter->QueryInterface(IID_PPV_ARGS(&adapter3)))) {
+            adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo);
+            adapter3->Release();
+        }
     }
     
     // Use budget from DXGI if available, otherwise fall back to tracked total
