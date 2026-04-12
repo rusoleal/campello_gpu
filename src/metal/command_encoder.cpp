@@ -1,6 +1,8 @@
 #include "Metal.hpp"
 #include "acceleration_structure_handle.hpp"
 #include "acceleration_structure_helpers.hpp"
+#include "buffer_handle.hpp"
+#include "texture_handle.hpp"
 #include <campello_gpu/command_encoder.hpp>
 #include <campello_gpu/command_buffer.hpp>
 #include <campello_gpu/render_pass_encoder.hpp>
@@ -85,8 +87,9 @@ std::shared_ptr<ComputePassEncoder> CommandEncoder::beginComputePass() {
 void CommandEncoder::clearBuffer(std::shared_ptr<Buffer> buffer, uint64_t offset, uint64_t size) {
     auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
     auto *blitEncoder = cmdBuffer->blitCommandEncoder();
+    auto *bufferHandle = static_cast<MetalBufferHandle *>(buffer->native);
     blitEncoder->fillBuffer(
-        static_cast<MTL::Buffer *>(buffer->native),
+        bufferHandle->buffer,
         NS::Range::Make(offset, size), 0);
     blitEncoder->endEncoding();
 }
@@ -98,9 +101,11 @@ void CommandEncoder::copyBufferToBuffer(
 
     auto *cmdBuffer   = static_cast<MTL::CommandBuffer *>(native);
     auto *blitEncoder = cmdBuffer->blitCommandEncoder();
+    auto *sourceHandle = static_cast<MetalBufferHandle *>(source->native);
+    auto *destHandle = static_cast<MetalBufferHandle *>(destination->native);
     blitEncoder->copyFromBuffer(
-        static_cast<MTL::Buffer *>(source->native), sourceOffset,
-        static_cast<MTL::Buffer *>(destination->native), destinationOffset,
+        sourceHandle->buffer, sourceOffset,
+        destHandle->buffer, destinationOffset,
         size);
     blitEncoder->endEncoding();
 }
@@ -115,10 +120,13 @@ void CommandEncoder::copyBufferToTexture(
 {
     if (!native || !source || !destination) return;
     auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
-    auto *buf        = static_cast<MTL::Buffer *>(source->native);
-    auto *tex        = static_cast<MTL::Texture *>(destination->native);
+    auto *bufHandle  = static_cast<MetalBufferHandle *>(source->native);
+    auto *texHandle  = static_cast<MetalTextureHandle *>(destination->native);
     auto *blitEncoder = cmdBuffer->blitCommandEncoder();
     if (!blitEncoder) return;
+
+    auto *buf = bufHandle->buffer;
+    auto *tex = texHandle->texture;
 
     uint32_t mipWidth  = std::max(1u, (uint32_t)tex->width()  >> mipLevel);
     uint32_t mipHeight = std::max(1u, (uint32_t)tex->height() >> mipLevel);
@@ -150,8 +158,10 @@ void CommandEncoder::copyTextureToBuffer(
 {
     if (!native || !source || !destination) return;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
-    auto *tex       = static_cast<MTL::Texture *>(source->native);
-    auto *buf       = static_cast<MTL::Buffer *>(destination->native);
+    auto *texHandle = static_cast<MetalTextureHandle *>(source->native);
+    auto *bufHandle = static_cast<MetalBufferHandle *>(destination->native);
+    auto *tex       = texHandle->texture;
+    auto *buf       = bufHandle->buffer;
 
     auto *blitEncoder = cmdBuffer->blitCommandEncoder();
     if (!blitEncoder) return;
@@ -193,8 +203,10 @@ void CommandEncoder::copyTextureToTexture(
     if (!native || !source || !destination) return;
 
     auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
-    auto *srcTex     = static_cast<MTL::Texture *>(source->native);
-    auto *dstTex     = static_cast<MTL::Texture *>(destination->native);
+    auto *srcHandle  = static_cast<MetalTextureHandle *>(source->native);
+    auto *dstHandle  = static_cast<MetalTextureHandle *>(destination->native);
+    auto *srcTex     = srcHandle->texture;
+    auto *dstTex     = dstHandle->texture;
 
     auto *blit = cmdBuffer->blitCommandEncoder();
     if (!blit) return;
@@ -224,10 +236,11 @@ void CommandEncoder::resolveQuerySet(
     // Copy the relevant region to the destination buffer.
     auto *cmdBuffer   = static_cast<MTL::CommandBuffer *>(native);
     auto *blitEncoder = cmdBuffer->blitCommandEncoder();
+    auto *destHandle  = static_cast<MetalBufferHandle *>(destination->native);
     blitEncoder->copyFromBuffer(
         static_cast<MTL::Buffer *>(querySet->native),
         firstQuery * sizeof(uint64_t),
-        static_cast<MTL::Buffer *>(destination->native),
+        destHandle->buffer,
         destinationOffset,
         queryCount * sizeof(uint64_t));
     blitEncoder->endEncoding();
@@ -260,13 +273,16 @@ void CommandEncoder::buildAccelerationStructure(
     if (!asEncoder) return;
 
     auto bufToMTL = [](const std::shared_ptr<Buffer> &b) -> MTL::Buffer * {
-        return b ? static_cast<MTL::Buffer *>(b->native) : nullptr;
+        if (!b) return nullptr;
+        auto *handle = static_cast<MetalBufferHandle *>(b->native);
+        return handle ? handle->buffer : nullptr;
     };
     auto *primDesc = makePrimASDescriptor(descriptor, bufToMTL);
+    auto *scratchHandle = static_cast<MetalBufferHandle *>(scratchBuffer->native);
     asEncoder->buildAccelerationStructure(
         static_cast<MetalAccelerationStructureData *>(dst->native)->accelerationStructure,
         primDesc,
-        static_cast<MTL::Buffer *>(scratchBuffer->native),
+        scratchHandle->buffer,
         0);
     primDesc->release();
     asEncoder->endEncoding();
@@ -294,10 +310,11 @@ void CommandEncoder::buildAccelerationStructure(
     auto [instanceDesc, instanceBuf] = makeInstanceASDescriptor(dev, descriptor, asToMTLData);
     if (!instanceDesc) { asEncoder->endEncoding(); return; }
 
+    auto *scratchHandle = static_cast<MetalBufferHandle *>(scratchBuffer->native);
     asEncoder->buildAccelerationStructure(
         mtlAs,
         instanceDesc,
-        static_cast<MTL::Buffer *>(scratchBuffer->native),
+        scratchHandle->buffer,
         0);
     instanceDesc->release();
     instanceBuf->release();
@@ -314,12 +331,13 @@ void CommandEncoder::updateAccelerationStructure(
     auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
     if (!asEncoder) return;
 
+    auto *scratchHandle = static_cast<MetalBufferHandle *>(scratchBuffer->native);
     // Pass nullptr as the descriptor to refit using the original build geometry.
     asEncoder->refitAccelerationStructure(
         static_cast<MetalAccelerationStructureData *>(src->native)->accelerationStructure,
         nullptr,
         static_cast<MetalAccelerationStructureData *>(dst->native)->accelerationStructure,
-        static_cast<MTL::Buffer *>(scratchBuffer->native),
+        scratchHandle->buffer,
         0);
     asEncoder->endEncoding();
 }

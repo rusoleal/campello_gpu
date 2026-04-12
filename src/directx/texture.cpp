@@ -20,6 +20,13 @@ Texture::Texture(void* pd) : native(pd) {}
 Texture::~Texture() {
     if (!native) return;
     auto* h = static_cast<TextureHandle*>(native);
+    
+    // Phase 2: Update memory tracking
+    if (h->deviceData) {
+        h->deviceData->textureCount--;
+        h->deviceData->textureBytes.fetch_sub(h->allocatedSize);
+    }
+    
     if (h->resource) h->resource->Release();
     delete h;
 }

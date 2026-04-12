@@ -1,6 +1,8 @@
 #include "Metal.hpp"
 #include "ray_tracing_pipeline_handle.hpp"
 #include "acceleration_structure_handle.hpp"
+#include "bind_group_data.hpp"
+#include "buffer_handle.hpp"
 #include <campello_gpu/ray_tracing_pass_encoder.hpp>
 #include <campello_gpu/ray_tracing_pipeline.hpp>
 #include <campello_gpu/bind_group.hpp>
@@ -10,11 +12,6 @@
 #include <campello_gpu/descriptors/bind_group_descriptor.hpp>
 
 using namespace systems::leal::campello_gpu;
-
-// Mirrors the definition in device.cpp / bind_group.cpp.
-struct MetalBindGroupData {
-    std::vector<BindGroupEntryDescriptor> entries;
-};
 
 // Internal state: compute encoder + current pipeline metadata for thread dispatch.
 struct MetalRayTracingEncoderData {
@@ -78,7 +75,8 @@ void RayTracingPassEncoder::setBindGroup(uint32_t index,
             enc->setSamplerState(samp, entry.binding);
         } else if (std::holds_alternative<BufferBinding>(entry.resource)) {
             const auto &bb  = std::get<BufferBinding>(entry.resource);
-            auto       *buf = static_cast<MTL::Buffer *>(bb.buffer->native);
+            auto *bufHandle = static_cast<MetalBufferHandle *>(bb.buffer->native);
+            auto       *buf = bufHandle->buffer;
             enc->setBuffer(buf, bb.offset, entry.binding);
         }
     }

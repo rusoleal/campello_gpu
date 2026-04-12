@@ -2,6 +2,7 @@
 #include <memory>
 #include <campello_gpu/buffer.hpp>
 #include "buffer_handle.hpp"
+#include "common.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -12,6 +13,13 @@ Buffer::Buffer(void *pd) {
 
 Buffer::~Buffer() {
     auto data = (BufferHandle *)this->native;
+    
+    // Phase 2: Update memory tracking
+    if (data->deviceData) {
+        data->deviceData->bufferCount--;
+        data->deviceData->bufferBytes.fetch_sub(data->allocatedSize);
+    }
+    
     vkFreeMemory(data->device, data->memory, nullptr);
     vkDestroyBuffer(data->device, data->buffer, nullptr);
     delete data;

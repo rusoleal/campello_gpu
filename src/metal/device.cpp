@@ -1,9 +1,13 @@
 #include "Metal.hpp"
+#include "common.hpp"
 #include "render_pipeline_handle.hpp"
 #include "shader_module_handle.hpp"
 #include "acceleration_structure_handle.hpp"
 #include "ray_tracing_pipeline_handle.hpp"
 #include "acceleration_structure_helpers.hpp"
+#include "bind_group_data.hpp"
+#include "buffer_handle.hpp"
+#include "texture_handle.hpp"
 #include "campello_gpu_config.h"
 #include "TargetConditionals.h"
 #include <campello_gpu/device.hpp>
@@ -33,13 +37,10 @@
 #include <dispatch/dispatch.h>
 #include <iostream>
 #include <cmath>
+#include <atomic>
+#include <unistd.h>
 
 using namespace systems::leal::campello_gpu;
-
-struct MetalDeviceData {
-    MTL::Device       *device;
-    MTL::CommandQueue *commandQueue;
-};
 
 // --- Mapping helpers ---
 
@@ -146,11 +147,33 @@ Device::Device(void *pd) {
     std::cout << "  - hasUnifiedMemory: " << dev->hasUnifiedMemory() << std::endl;
     std::cout << "  - currentAllocatedSize: " << dev->currentAllocatedSize() / (1024 * 1024.0) << "Mb." << std::endl;
     std::cout << "  - recommendedMaxWorkingSetSize: " << dev->recommendedMaxWorkingSetSize() / (1024 * 1024.0) << "Mb." << std::endl;
+    
+    // Calibrate GPU timestamps using sampleTimestamps
+    MTL::Timestamp cpuTimestamp1, gpuTimestamp1;
+    MTL::Timestamp cpuTimestamp2, gpuTimestamp2;
+    dev->sampleTimestamps(&cpuTimestamp1, &gpuTimestamp1);
+    // Small delay to get a measurable delta
+    usleep(1000);  // 1ms
+    dev->sampleTimestamps(&cpuTimestamp2, &gpuTimestamp2);
+    
+    // Calculate GPU clock to nanoseconds conversion
+    uint64_t cpuDeltaNs = (cpuTimestamp2 - cpuTimestamp1);  // CPU time is in nanoseconds
+    uint64_t gpuDeltaTicks = gpuTimestamp2 - gpuTimestamp1;
+    
+    if (gpuDeltaTicks > 0) {
+        deviceData->gpuTimestampNumerator = cpuDeltaNs;
+        deviceData->gpuTimestampDenominator = gpuDeltaTicks;
+    }
+    
+    // Create timestamp query buffer (64 timestamps, 8 bytes each)
+    deviceData->timestampQueryBuffer = dev->newBuffer(
+        64 * sizeof(uint64_t), MTL::ResourceStorageModeShared);
 }
 
 Device::~Device() {
     if (native != nullptr) {
         auto *deviceData = static_cast<MetalDeviceData *>(native);
+        if (deviceData->timestampQueryBuffer) deviceData->timestampQueryBuffer->release();
         if (deviceData->commandQueue) deviceData->commandQueue->release();
         if (deviceData->device)       deviceData->device->release();
         delete deviceData;
@@ -219,6 +242,227 @@ std::string Device::getEngineVersion() {
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Metrics and monitoring (Phase 1)
+// ---------------------------------------------------------------------------
+
+DeviceMemoryInfo Device::getMemoryInfo() {
+    DeviceMemoryInfo info;
+    auto *dev = static_cast<MetalDeviceData *>(native)->device;
+    
+    info.currentAllocatedSize = dev->currentAllocatedSize();
+    info.recommendedMaxWorkingSet = dev->recommendedMaxWorkingSetSize();
+    info.hasUnifiedMemory = dev->hasUnifiedMemory();
+    
+    // For total memory, we use recommended working set as a proxy
+    // on Apple Silicon this is meaningful, on discrete GPUs it's VRAM
+    info.totalDeviceMemory = info.hasUnifiedMemory ? 0 : info.recommendedMaxWorkingSet;
+    
+    // Calculate available as working set minus current (clamped to 0)
+    if (info.recommendedMaxWorkingSet > info.currentAllocatedSize) {
+        info.availableDeviceMemory = info.recommendedMaxWorkingSet - info.currentAllocatedSize;
+    } else {
+        info.availableDeviceMemory = 0;
+    }
+    
+    return info;
+}
+
+ResourceCounters Device::getResourceCounters() {
+    ResourceCounters counters;
+    auto *data = static_cast<MetalDeviceData *>(native);
+    
+    counters.bufferCount = data->bufferCount.load();
+    counters.textureCount = data->textureCount.load();
+    counters.renderPipelineCount = data->renderPipelineCount.load();
+    counters.computePipelineCount = data->computePipelineCount.load();
+    counters.rayTracingPipelineCount = data->rayTracingPipelineCount.load();
+    counters.accelerationStructureCount = data->accelerationStructureCount.load();
+    counters.shaderModuleCount = data->shaderModuleCount.load();
+    counters.samplerCount = data->samplerCount.load();
+    counters.bindGroupCount = data->bindGroupCount.load();
+    counters.bindGroupLayoutCount = data->bindGroupLayoutCount.load();
+    counters.pipelineLayoutCount = data->pipelineLayoutCount.load();
+    counters.querySetCount = data->querySetCount.load();
+    
+    return counters;
+}
+
+CommandStats Device::getCommandStats() {
+    CommandStats stats;
+    auto *data = static_cast<MetalDeviceData *>(native);
+    
+    stats.commandsSubmitted = data->commandsSubmitted.load();
+    stats.renderPasses = data->renderPasses.load();
+    stats.computePasses = data->computePasses.load();
+    stats.rayTracingPasses = data->rayTracingPasses.load();
+    stats.drawCalls = data->drawCalls.load();
+    stats.dispatchCalls = data->dispatchCalls.load();
+    stats.traceRaysCalls = data->traceRaysCalls.load();
+    stats.copies = data->copies.load();
+    
+    return stats;
+}
+
+Metrics Device::getMetrics() {
+    Metrics m;
+    m.deviceMemory = getMemoryInfo();
+    m.resources = getResourceCounters();
+    m.commands = getCommandStats();
+    m.resourceMemory = getResourceMemoryStats();
+    return m;
+}
+
+void Device::resetCommandStats() {
+    auto *data = static_cast<MetalDeviceData *>(native);
+    
+    data->commandsSubmitted = 0;
+    data->renderPasses = 0;
+    data->computePasses = 0;
+    data->rayTracingPasses = 0;
+    data->drawCalls = 0;
+    data->dispatchCalls = 0;
+    data->traceRaysCalls = 0;
+    data->copies = 0;
+}
+
+ResourceMemoryStats Device::getResourceMemoryStats() {
+    ResourceMemoryStats stats;
+    auto *data = static_cast<MetalDeviceData *>(native);
+    
+    stats.bufferBytes = data->bufferBytes.load();
+    stats.textureBytes = data->textureBytes.load();
+    stats.accelerationStructureBytes = data->accelerationStructureBytes.load();
+    stats.shaderModuleBytes = data->shaderModuleBytes.load();
+    stats.querySetBytes = data->querySetBytes.load();
+    stats.totalTrackedBytes = stats.bufferBytes + stats.textureBytes + 
+                               stats.accelerationStructureBytes + stats.querySetBytes;
+    
+    stats.peakBufferBytes = data->peakBufferBytes.load();
+    stats.peakTextureBytes = data->peakTextureBytes.load();
+    stats.peakAccelerationStructureBytes = data->peakAccelerationStructureBytes.load();
+    stats.peakTotalBytes = data->peakTotalBytes.load();
+    
+    return stats;
+}
+
+void Device::resetPeakMemoryStats() {
+    auto *data = static_cast<MetalDeviceData *>(native);
+    
+    // Reset peaks to current values
+    uint64_t currentBuffer = data->bufferBytes.load();
+    uint64_t currentTexture = data->textureBytes.load();
+    uint64_t currentAS = data->accelerationStructureBytes.load();
+    uint64_t currentTotal = currentBuffer + currentTexture + currentAS + data->querySetBytes.load();
+    
+    data->peakBufferBytes = currentBuffer;
+    data->peakTextureBytes = currentTexture;
+    data->peakAccelerationStructureBytes = currentAS;
+    data->peakTotalBytes = currentTotal;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: GPU Timing and Memory Pressure
+// ---------------------------------------------------------------------------
+
+PassPerformanceStats Device::getPassPerformanceStats() {
+    PassPerformanceStats stats;
+    auto *data = static_cast<MetalDeviceData *>(native);
+    
+    stats.renderPassTimeNs = data->renderPassTimeNs.load();
+    stats.computePassTimeNs = data->computePassTimeNs.load();
+    stats.rayTracingPassTimeNs = data->rayTracingPassTimeNs.load();
+    stats.totalPassTimeNs = stats.renderPassTimeNs + stats.computePassTimeNs + stats.rayTracingPassTimeNs;
+    stats.renderPassSampleCount = data->renderPassSampleCount.load();
+    stats.computePassSampleCount = data->computePassSampleCount.load();
+    stats.rayTracingPassSampleCount = data->rayTracingPassSampleCount.load();
+    
+    return stats;
+}
+
+void Device::resetPassPerformanceStats() {
+    auto *data = static_cast<MetalDeviceData *>(native);
+    
+    data->renderPassTimeNs = 0;
+    data->computePassTimeNs = 0;
+    data->rayTracingPassTimeNs = 0;
+    data->renderPassSampleCount = 0;
+    data->computePassSampleCount = 0;
+    data->rayTracingPassSampleCount = 0;
+}
+
+MemoryPressureLevel Device::getMemoryPressureLevel() {
+    auto *data = static_cast<MetalDeviceData *>(native);
+    auto stats = getResourceMemoryStats();
+    
+    // Get the recommended working set size
+    uint64_t recommendedSize = data->device->recommendedMaxWorkingSetSize();
+    if (recommendedSize == 0) {
+        // Fallback: use total device memory if available
+        recommendedSize = getMemoryInfo().totalDeviceMemory;
+    }
+    if (recommendedSize == 0) {
+        // Can't determine pressure without a budget
+        return MemoryPressureLevel::Normal;
+    }
+    
+    uint64_t currentUsage = stats.totalTrackedBytes;
+    uint64_t warningThreshold = (recommendedSize * data->memoryBudget.warningThresholdPercent) / 100;
+    uint64_t criticalThreshold = (recommendedSize * data->memoryBudget.criticalThresholdPercent) / 100;
+    
+    if (currentUsage >= criticalThreshold) {
+        return MemoryPressureLevel::Critical;
+    } else if (currentUsage >= warningThreshold) {
+        return MemoryPressureLevel::Warning;
+    }
+    return MemoryPressureLevel::Normal;
+}
+
+void Device::setMemoryBudget(const MemoryBudget& budget) {
+    auto *data = static_cast<MetalDeviceData *>(native);
+    data->memoryBudget = budget;
+}
+
+MemoryBudget Device::getMemoryBudget() {
+    auto *data = static_cast<MetalDeviceData *>(native);
+    return data->memoryBudget;
+}
+
+void Device::setMemoryPressureCallback(MemoryPressureCallback callback) {
+    auto *data = static_cast<MetalDeviceData *>(native);
+    data->memoryPressureCallback = callback;
+}
+
+MemoryPressureLevel Device::checkMemoryPressure() {
+    auto *data = static_cast<MetalDeviceData *>(native);
+    auto currentLevel = getMemoryPressureLevel();
+    auto previousLevel = data->lastPressureLevel.exchange(currentLevel);
+    
+    // Invoke callback if level changed or if critically pressured
+    if (data->memoryPressureCallback && 
+        (currentLevel != previousLevel || currentLevel == MemoryPressureLevel::Critical)) {
+        data->memoryPressureCallback(currentLevel, getResourceMemoryStats());
+    }
+    
+    // TODO: Implement automatic resource eviction if enabled and critical
+    
+    return currentLevel;
+}
+
+MetricsWithTiming Device::getMetricsWithTiming() {
+    MetricsWithTiming m;
+    m.deviceMemory = getMemoryInfo();
+    m.resources = getResourceCounters();
+    m.commands = getCommandStats();
+    m.resourceMemory = getResourceMemoryStats();
+    m.passPerformance = getPassPerformanceStats();
+    return m;
+}
+
+// ---------------------------------------------------------------------------
+// Resource creation
+// ---------------------------------------------------------------------------
+
 std::shared_ptr<Texture> Device::createTexture(
     TextureType type, PixelFormat pixelFormat,
     uint32_t width, uint32_t height, uint32_t depth,
@@ -275,7 +519,30 @@ std::shared_ptr<Texture> Device::createTexture(
     MTL::Texture *pTexture = dev->newTexture(pTextureDesc);
     pTextureDesc->release();
     if (pTexture == nullptr) return nullptr;
-    return std::shared_ptr<Texture>(new Texture(pTexture));
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->textureCount++;
+    
+    // Phase 2: Track texture memory
+    uint64_t allocatedSize = pTexture->allocatedSize();
+    uint64_t newTextureBytes = deviceData->textureBytes.fetch_add(allocatedSize) + allocatedSize;
+    
+    // Update peak if needed
+    uint64_t currentPeak = deviceData->peakTextureBytes.load();
+    while (newTextureBytes > currentPeak && !deviceData->peakTextureBytes.compare_exchange_weak(currentPeak, newTextureBytes)) {
+        // Retry if another thread updated the peak
+    }
+    
+    // Update total peak
+    uint64_t totalBytes = deviceData->bufferBytes.load() + deviceData->textureBytes.load() + 
+                          deviceData->accelerationStructureBytes.load() + deviceData->querySetBytes.load();
+    uint64_t currentTotalPeak = deviceData->peakTotalBytes.load();
+    while (totalBytes > currentTotalPeak && !deviceData->peakTotalBytes.compare_exchange_weak(currentTotalPeak, totalBytes)) {
+        // Retry if another thread updated the peak
+    }
+    
+    auto handle = new MetalTextureHandle{pTexture, allocatedSize, deviceData};
+    return std::shared_ptr<Texture>(new Texture(handle));
 }
 
 std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
@@ -294,11 +561,39 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     }
     MTL::Buffer *pBuffer = dev->newBuffer(size, options);
     if (pBuffer == nullptr) return nullptr;
-    return std::shared_ptr<Buffer>(new Buffer(pBuffer));
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->bufferCount++;
+    
+    // Phase 2: Track buffer memory
+    // Metal buffers are rounded up to page boundaries, use allocatedSize for accurate tracking
+    uint64_t allocatedSize = pBuffer->allocatedSize();
+    uint64_t newBufferBytes = deviceData->bufferBytes.fetch_add(allocatedSize) + allocatedSize;
+    
+    // Update peak if needed
+    uint64_t currentPeak = deviceData->peakBufferBytes.load();
+    while (newBufferBytes > currentPeak && !deviceData->peakBufferBytes.compare_exchange_weak(currentPeak, newBufferBytes)) {
+        // Retry if another thread updated the peak
+    }
+    
+    // Update total peak
+    uint64_t totalBytes = deviceData->bufferBytes.load() + deviceData->textureBytes.load() + 
+                          deviceData->accelerationStructureBytes.load() + deviceData->querySetBytes.load();
+    uint64_t currentTotalPeak = deviceData->peakTotalBytes.load();
+    while (totalBytes > currentTotalPeak && !deviceData->peakTotalBytes.compare_exchange_weak(currentTotalPeak, totalBytes)) {
+        // Retry if another thread updated the peak
+    }
+    
+    auto handle = new MetalBufferHandle{pBuffer, allocatedSize, deviceData};
+    return std::shared_ptr<Buffer>(new Buffer(handle));
 }
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, uint64_t size) {
     auto *data = new MetalShaderModuleData{ std::vector<uint8_t>(buffer, buffer + size) };
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->shaderModuleCount++;
+    
     return std::shared_ptr<ShaderModule>(new ShaderModule(data));
 }
 
@@ -407,6 +702,10 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     }
 
     auto *handle = new MetalRenderPipelineData{ pipelineState, depthStencilState };
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->renderPipelineCount++;
+    
     return std::shared_ptr<RenderPipeline>(new RenderPipeline(handle));
 }
 
@@ -438,25 +737,33 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
                              << error->localizedDescription()->utf8String() << std::endl;
         return nullptr;
     }
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->computePipelineCount++;
+    
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(pipelineState));
 }
 
 std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLayoutDescriptor &descriptor) {
     // Metal uses implicit binding; no separate layout object is required.
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->bindGroupLayoutCount++;
     return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(nullptr));
 }
 
-struct MetalBindGroupData {
-    std::vector<BindGroupEntryDescriptor> entries;
-};
-
 std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor) {
     auto *data = new MetalBindGroupData{ descriptor.entries };
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->bindGroupCount++;
+    
     return std::shared_ptr<BindGroup>(new BindGroup(data));
 }
 
 std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayoutDescriptor &descriptor) {
     // Metal uses implicit pipeline layout; no separate object is required.
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->pipelineLayoutCount++;
     return std::shared_ptr<PipelineLayout>(new PipelineLayout(nullptr));
 }
 
@@ -480,6 +787,10 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor &descript
     auto *samplerState = dev->newSamplerState(desc);
     desc->release();
     if (!samplerState) return nullptr;
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->samplerCount++;
+    
     return std::shared_ptr<Sampler>(new Sampler(samplerState));
 }
 
@@ -489,6 +800,10 @@ std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor &descr
     auto *buffer = dev->newBuffer(
         descriptor.count * sizeof(uint64_t), MTL::ResourceStorageModeShared);
     if (!buffer) return nullptr;
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->querySetCount++;
+    
     return std::shared_ptr<QuerySet>(new QuerySet(buffer));
 }
 
@@ -502,6 +817,9 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     static_cast<MTL::CommandBuffer *>(commandBuffer->native)->commit();
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->commandsSubmitted++;
 }
 
 std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
@@ -528,7 +846,9 @@ std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStru
     if (descriptor.geometries.empty()) return nullptr;
 
     auto bufToMTL = [](const std::shared_ptr<Buffer> &b) -> MTL::Buffer * {
-        return b ? static_cast<MTL::Buffer *>(b->native) : nullptr;
+        if (!b) return nullptr;
+        auto *handle = static_cast<MetalBufferHandle *>(b->native);
+        return handle ? handle->buffer : nullptr;
     };
     auto *primDesc = makePrimASDescriptor(descriptor, bufToMTL);
     auto sizes     = dev->accelerationStructureSizes(primDesc);
@@ -542,6 +862,10 @@ std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStru
         static_cast<uint64_t>(sizes.buildScratchBufferSize),
         static_cast<uint64_t>(sizes.refitScratchBufferSize)
     };
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->accelerationStructureCount++;
+    
     return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
 }
 
@@ -570,6 +894,10 @@ std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructu
         static_cast<uint64_t>(sizes.buildScratchBufferSize),
         static_cast<uint64_t>(sizes.refitScratchBufferSize)
     };
+    
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->accelerationStructureCount++;
+    
     return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
 }
 
@@ -676,5 +1004,9 @@ std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
         pipelineState->threadExecutionWidth(),
         pipelineState->maxTotalThreadsPerThreadgroup()
     };
+    
+    auto *deviceData2 = static_cast<MetalDeviceData *>(native);
+    deviceData2->rayTracingPipelineCount++;
+    
     return std::shared_ptr<RayTracingPipeline>(new RayTracingPipeline(rtHandle));
 }

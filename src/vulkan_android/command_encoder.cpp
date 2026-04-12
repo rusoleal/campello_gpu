@@ -35,19 +35,49 @@ extern PFN_vkCmdCopyAccelerationStructureKHR       pfnCmdCopyAccelerationStructu
 CommandEncoder::CommandEncoder(void *pd) {
     this->native = pd;
 
+    auto data = (CommandEncoderHandle *)pd;
+    
+    // Create timestamp query pool for GPU timing
+    if (data->physicalDevice != VK_NULL_HANDLE) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(data->physicalDevice, &props);
+        
+        // Check if timestamps are supported
+        if (props.limits.timestampComputeAndGraphics) {
+            VkQueryPoolCreateInfo queryPoolInfo{};
+            queryPoolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            queryPoolInfo.queryCount = 2;  // Start and end timestamps
+            
+            if (vkCreateQueryPool(data->device, &queryPoolInfo, nullptr, &data->timestampQueryPool) == VK_SUCCESS) {
+                data->timestampPeriod = props.limits.timestampPeriod;
+                data->timestampQueryIndex = 0;
+            }
+        }
+    }
+
     // Begin the command buffer immediately so finish() always has a recording to end,
     // even if beginRenderPass / beginComputePass are never called.
-    auto data = (CommandEncoderHandle *)pd;
     VkCommandBufferBeginInfo info{};
     info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(data->commandBuffer, &info);
+    
+    // Reset and write start timestamp if query pool was created
+    if (data->timestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdResetQueryPool(data->commandBuffer, data->timestampQueryPool, 0, 2);
+        vkCmdWriteTimestamp(data->commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, data->timestampQueryPool, 0);
+    }
 
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "CommandEncoder::CommandEncoder()");
 }
 
 CommandEncoder::~CommandEncoder() {
     auto data = (CommandEncoderHandle *)this->native;
+    // Clean up query pool if it wasn't transferred to CommandBuffer
+    if (data->timestampQueryPool != VK_NULL_HANDLE) {
+        vkDestroyQueryPool(data->device, data->timestampQueryPool, nullptr);
+    }
     delete data;
     __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "CommandEncoder::~CommandEncoder()");
 }
@@ -483,6 +513,11 @@ void CommandEncoder::copyTextureToTexture(
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     auto data = (CommandEncoderHandle *)this->native;
 
+    // Write end timestamp before ending command buffer
+    if (data->timestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdWriteTimestamp(data->commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, data->timestampQueryPool, 1);
+    }
+
     if (vkEndCommandBuffer(data->commandBuffer) != VK_SUCCESS) {
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
                             "CommandEncoder::finish: vkEndCommandBuffer failed");
@@ -499,6 +534,17 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbHandle->hasSwapchain       = (data->swapchain != VK_NULL_HANDLE);
     cbHandle->stagingBuffers     = std::move(data->stagingBuffers);
     cbHandle->stagingMemories    = std::move(data->stagingMemories);
+    
+    // Transfer timing data
+    if (data->timestampQueryPool != VK_NULL_HANDLE) {
+        cbHandle->queryPool = data->timestampQueryPool;
+        cbHandle->timestampPeriod = data->timestampPeriod;
+        cbHandle->queryStartIndex = 0;
+        cbHandle->queryEndIndex = 1;
+        cbHandle->hasTimingData = true;
+        // Null out the encoder's reference so it doesn't get destroyed
+        data->timestampQueryPool = VK_NULL_HANDLE;
+    }
 
     return std::shared_ptr<CommandBuffer>(new CommandBuffer(cbHandle));
 }

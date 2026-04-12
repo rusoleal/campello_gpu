@@ -467,6 +467,227 @@ std::string Device::getEngineVersion() {
 }
 
 // -----------------------------------------------------------------------
+// Metrics and monitoring (Phase 1)
+// -----------------------------------------------------------------------
+
+DeviceMemoryInfo Device::getMemoryInfo() {
+    DeviceMemoryInfo info;
+    auto* d = static_cast<DeviceData*>(native);
+    
+    // Query DXGI memory info
+    IDXGIAdapter3* adapter3 = nullptr;
+    if (SUCCEEDED(d->adapter->QueryInterface(IID_PPV_ARGS(&adapter3)))) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO memInfo = {};
+        if (SUCCEEDED(adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo))) {
+            info.currentAllocatedSize = memInfo.CurrentUsage;
+            info.availableDeviceMemory = memInfo.Budget > memInfo.CurrentUsage ? 
+                memInfo.Budget - memInfo.CurrentUsage : 0;
+            info.recommendedMaxWorkingSet = memInfo.Budget;
+        }
+        
+        // Get total dedicated memory
+        DXGI_ADAPTER_DESC1 desc = {};
+        d->adapter->GetDesc1(&desc);
+        info.totalDeviceMemory = desc.DedicatedVideoMemory;
+        info.hasUnifiedMemory = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) || 
+                                desc.DedicatedVideoMemory == 0;
+        
+        adapter3->Release();
+    }
+    
+    return info;
+}
+
+ResourceCounters Device::getResourceCounters() {
+    ResourceCounters counters;
+    auto* d = static_cast<DeviceData*>(native);
+    
+    counters.bufferCount = d->bufferCount.load();
+    counters.textureCount = d->textureCount.load();
+    counters.renderPipelineCount = d->renderPipelineCount.load();
+    counters.computePipelineCount = d->computePipelineCount.load();
+    counters.rayTracingPipelineCount = d->rayTracingPipelineCount.load();
+    counters.accelerationStructureCount = d->accelerationStructureCount.load();
+    counters.shaderModuleCount = d->shaderModuleCount.load();
+    counters.samplerCount = d->samplerCount.load();
+    counters.bindGroupCount = d->bindGroupCount.load();
+    counters.bindGroupLayoutCount = d->bindGroupLayoutCount.load();
+    counters.pipelineLayoutCount = d->pipelineLayoutCount.load();
+    counters.querySetCount = d->querySetCount.load();
+    
+    return counters;
+}
+
+CommandStats Device::getCommandStats() {
+    CommandStats stats;
+    auto* d = static_cast<DeviceData*>(native);
+    
+    stats.commandsSubmitted = d->commandsSubmitted.load();
+    stats.renderPasses = d->renderPasses.load();
+    stats.computePasses = d->computePasses.load();
+    stats.rayTracingPasses = d->rayTracingPasses.load();
+    stats.drawCalls = d->drawCalls.load();
+    stats.dispatchCalls = d->dispatchCalls.load();
+    stats.traceRaysCalls = d->traceRaysCalls.load();
+    stats.copies = d->copies.load();
+    
+    return stats;
+}
+
+Metrics Device::getMetrics() {
+    Metrics m;
+    m.deviceMemory = getMemoryInfo();
+    m.resources = getResourceCounters();
+    m.commands = getCommandStats();
+    m.resourceMemory = getResourceMemoryStats();
+    return m;
+}
+
+void Device::resetCommandStats() {
+    auto* d = static_cast<DeviceData*>(native);
+    
+    d->commandsSubmitted = 0;
+    d->renderPasses = 0;
+    d->computePasses = 0;
+    d->rayTracingPasses = 0;
+    d->drawCalls = 0;
+    d->dispatchCalls = 0;
+    d->traceRaysCalls = 0;
+    d->copies = 0;
+}
+
+ResourceMemoryStats Device::getResourceMemoryStats() {
+    ResourceMemoryStats stats;
+    auto* d = static_cast<DeviceData*>(native);
+    
+    stats.bufferBytes = d->bufferBytes.load();
+    stats.textureBytes = d->textureBytes.load();
+    stats.accelerationStructureBytes = d->accelerationStructureBytes.load();
+    stats.shaderModuleBytes = d->shaderModuleBytes.load();
+    stats.querySetBytes = d->querySetBytes.load();
+    stats.totalTrackedBytes = stats.bufferBytes + stats.textureBytes + 
+                               stats.accelerationStructureBytes + stats.querySetBytes;
+    
+    stats.peakBufferBytes = d->peakBufferBytes.load();
+    stats.peakTextureBytes = d->peakTextureBytes.load();
+    stats.peakAccelerationStructureBytes = d->peakAccelerationStructureBytes.load();
+    stats.peakTotalBytes = d->peakTotalBytes.load();
+    
+    return stats;
+}
+
+void Device::resetPeakMemoryStats() {
+    auto* d = static_cast<DeviceData*>(native);
+    
+    // Reset peaks to current values
+    uint64_t currentBuffer = d->bufferBytes.load();
+    uint64_t currentTexture = d->textureBytes.load();
+    uint64_t currentAS = d->accelerationStructureBytes.load();
+    uint64_t currentTotal = currentBuffer + currentTexture + currentAS + d->querySetBytes.load();
+    
+    d->peakBufferBytes = currentBuffer;
+    d->peakTextureBytes = currentTexture;
+    d->peakAccelerationStructureBytes = currentAS;
+    d->peakTotalBytes = currentTotal;
+}
+
+// -----------------------------------------------------------------------------
+// Phase 3: GPU Timing and Memory Pressure
+// -----------------------------------------------------------------------------
+
+PassPerformanceStats Device::getPassPerformanceStats() {
+    PassPerformanceStats stats;
+    auto* d = static_cast<DeviceData*>(native);
+    
+    stats.renderPassTimeNs = d->renderPassTimeNs.load();
+    stats.computePassTimeNs = d->computePassTimeNs.load();
+    stats.rayTracingPassTimeNs = d->rayTracingPassTimeNs.load();
+    stats.totalPassTimeNs = stats.renderPassTimeNs + stats.computePassTimeNs + stats.rayTracingPassTimeNs;
+    stats.renderPassSampleCount = d->renderPassSampleCount.load();
+    stats.computePassSampleCount = d->computePassSampleCount.load();
+    stats.rayTracingPassSampleCount = d->rayTracingPassSampleCount.load();
+    
+    return stats;
+}
+
+void Device::resetPassPerformanceStats() {
+    auto* d = static_cast<DeviceData*>(native);
+    
+    d->renderPassTimeNs = 0;
+    d->computePassTimeNs = 0;
+    d->rayTracingPassTimeNs = 0;
+    d->renderPassSampleCount = 0;
+    d->computePassSampleCount = 0;
+    d->rayTracingPassSampleCount = 0;
+}
+
+MemoryPressureLevel Device::getMemoryPressureLevel() {
+    auto* d = static_cast<DeviceData*>(native);
+    auto stats = getResourceMemoryStats();
+    
+    // Get adapter memory info
+    DXGI_QUERY_VIDEO_MEMORY_INFO memInfo = {};
+    if (d->adapter) {
+        d->adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &memInfo);
+    }
+    
+    // Use budget from DXGI if available, otherwise fall back to tracked total
+    uint64_t budget = memInfo.Budget > 0 ? memInfo.Budget : stats.totalTrackedBytes * 2;
+    if (budget == 0) {
+        return MemoryPressureLevel::Normal;
+    }
+    
+    uint64_t currentUsage = stats.totalTrackedBytes;
+    uint64_t warningThreshold = (budget * d->memoryBudget.warningThresholdPercent) / 100;
+    uint64_t criticalThreshold = (budget * d->memoryBudget.criticalThresholdPercent) / 100;
+    
+    if (currentUsage >= criticalThreshold) {
+        return MemoryPressureLevel::Critical;
+    } else if (currentUsage >= warningThreshold) {
+        return MemoryPressureLevel::Warning;
+    }
+    return MemoryPressureLevel::Normal;
+}
+
+void Device::setMemoryBudget(const MemoryBudget& budget) {
+    auto* d = static_cast<DeviceData*>(native);
+    d->memoryBudget = budget;
+}
+
+MemoryBudget Device::getMemoryBudget() {
+    auto* d = static_cast<DeviceData*>(native);
+    return d->memoryBudget;
+}
+
+void Device::setMemoryPressureCallback(MemoryPressureCallback callback) {
+    auto* d = static_cast<DeviceData*>(native);
+    d->memoryPressureCallback = callback;
+}
+
+MemoryPressureLevel Device::checkMemoryPressure() {
+    auto* d = static_cast<DeviceData*>(native);
+    auto currentLevel = getMemoryPressureLevel();
+    auto previousLevel = d->lastPressureLevel.exchange(currentLevel);
+    
+    if (d->memoryPressureCallback && 
+        (currentLevel != previousLevel || currentLevel == MemoryPressureLevel::Critical)) {
+        d->memoryPressureCallback(currentLevel, getResourceMemoryStats());
+    }
+    
+    return currentLevel;
+}
+
+MetricsWithTiming Device::getMetricsWithTiming() {
+    MetricsWithTiming m;
+    m.deviceMemory = getMemoryInfo();
+    m.resources = getResourceCounters();
+    m.commands = getCommandStats();
+    m.resourceMemory = getResourceMemoryStats();
+    m.passPerformance = getPassPerformanceStats();
+    return m;
+}
+
+// -----------------------------------------------------------------------
 // Resource creation
 // -----------------------------------------------------------------------
 
@@ -516,6 +737,8 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     handle->queue      = d->queue;
     handle->size       = size;
     handle->isReadback = isReadback;
+    handle->allocatedSize = rd.Width;  // Aligned allocation size
+    handle->deviceData = d;
 
     // Persistently map CPU-accessible heaps (upload / readback); not for default-heap UAV
     if (!isUAV) {
@@ -523,6 +746,25 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
         resource->Map(0, &readRange, &handle->mapped);
     }
 
+    d->bufferCount++;
+    
+    // Phase 2: Track buffer memory
+    uint64_t newBufferBytes = d->bufferBytes.fetch_add(rd.Width) + rd.Width;
+    
+    // Update peak if needed
+    uint64_t currentPeak = d->peakBufferBytes.load();
+    while (newBufferBytes > currentPeak && !d->peakBufferBytes.compare_exchange_weak(currentPeak, newBufferBytes)) {
+        // Retry if another thread updated the peak
+    }
+    
+    // Update total peak
+    uint64_t totalBytes = d->bufferBytes.load() + d->textureBytes.load() + 
+                          d->accelerationStructureBytes.load() + d->querySetBytes.load();
+    uint64_t currentTotalPeak = d->peakTotalBytes.load();
+    while (totalBytes > currentTotalPeak && !d->peakTotalBytes.compare_exchange_weak(currentTotalPeak, totalBytes)) {
+        // Retry if another thread updated the peak
+    }
+    
     return std::shared_ptr<Buffer>(new Buffer(handle));
 }
 
@@ -654,6 +896,63 @@ std::shared_ptr<Texture> Device::createTexture(
         dev->CreateShaderResourceView(resource, &srvDesc, handle->srvCpuHandle);
     }
 
+    d->textureCount++;
+    
+    // Phase 2: Estimate texture memory (actual allocation is GPU-dependent)
+    // Calculate size based on dimensions, format, and mip levels
+    uint32_t formatSize = 4;  // Default to 4 bytes (RGBA8)
+    switch (pixelFormat) {
+        case PixelFormat::r8unorm:
+        case PixelFormat::r8uint:
+        case PixelFormat::r8sint:
+        case PixelFormat::stencil8:
+            formatSize = 1; break;
+        case PixelFormat::r16unorm:
+        case PixelFormat::r16float:
+        case PixelFormat::rg8unorm:
+        case PixelFormat::rg8uint:
+        case PixelFormat::depth16unorm:
+            formatSize = 2; break;
+        case PixelFormat::r32float:
+        case PixelFormat::rg16float:
+        case PixelFormat::rgba8unorm:
+        case PixelFormat::bgra8unorm:
+        case PixelFormat::depth24plus_stencil8:
+            formatSize = 4; break;
+        case PixelFormat::rg32float:
+        case PixelFormat::rgba16float:
+            formatSize = 8; break;
+        case PixelFormat::rgba32float:
+            formatSize = 16; break;
+        default: formatSize = 4; break;
+    }
+    
+    uint64_t texSize = 0;
+    uint32_t w = width, h = height, dep = std::max(depth, 1u);
+    for (uint32_t mip = 0; mip < mipLevels; mip++) {
+        texSize += static_cast<uint64_t>(w) * h * dep * formatSize * samples;
+        w = std::max(1u, w / 2);
+        h = std::max(1u, h / 2);
+        dep = std::max(1u, dep / 2);
+    }
+    handle->allocatedSize = texSize;
+    
+    uint64_t newTextureBytes = d->textureBytes.fetch_add(texSize) + texSize;
+    
+    // Update peak if needed
+    uint64_t currentPeak = d->peakTextureBytes.load();
+    while (newTextureBytes > currentPeak && !d->peakTextureBytes.compare_exchange_weak(currentPeak, newTextureBytes)) {
+        // Retry if another thread updated the peak
+    }
+    
+    // Update total peak
+    uint64_t totalBytes = d->bufferBytes.load() + d->textureBytes.load() + 
+                          d->accelerationStructureBytes.load() + d->querySetBytes.load();
+    uint64_t currentTotalPeak = d->peakTotalBytes.load();
+    while (totalBytes > currentTotalPeak && !d->peakTotalBytes.compare_exchange_weak(currentTotalPeak, totalBytes)) {
+        // Retry if another thread updated the peak
+    }
+    
     return std::shared_ptr<Texture>(new Texture(handle));
 }
 
@@ -661,6 +960,10 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(
     const uint8_t* buffer, uint64_t size) {
     auto* h = new ShaderModuleHandle();
     h->bytecode.assign(buffer, buffer + size);
+    
+    auto* d = static_cast<DeviceData*>(native);
+    d->shaderModuleCount++;
+    
     return std::shared_ptr<ShaderModule>(new ShaderModule(h));
 }
 
@@ -895,6 +1198,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
     h->vertexStrides.reserve(descriptor.vertex.buffers.size());
     for (const auto& layout : descriptor.vertex.buffers)
         h->vertexStrides.push_back(static_cast<UINT>(layout.arrayStride));
+    d->renderPipelineCount++;
     return std::shared_ptr<RenderPipeline>(new RenderPipeline(h));
 }
 
@@ -927,6 +1231,7 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(
     auto* h          = new ComputePipelineHandle();
     h->pso           = pso;
     h->rootSignature = rootSig;
+    d->computePipelineCount++;
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(h));
 }
 
@@ -963,6 +1268,9 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(
         h->ranges.push_back(range);
         ++h->numDescriptors;
     }
+    
+    auto* deviceData = static_cast<DeviceData*>(native);
+    deviceData->bindGroupLayoutCount++;
     return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(h));
 }
 
@@ -1026,6 +1334,7 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
     if (!firstSrv)
         h->gpuHandle = d->srvGpuAt(baseIdx);
 
+    d->bindGroupCount++;
     return std::shared_ptr<BindGroup>(new BindGroup(h));
 }
 
@@ -1041,6 +1350,7 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(
 
     auto* h         = new PipelineLayoutHandle();
     h->rootSignature = rs;
+    d->pipelineLayoutCount++;
     return std::shared_ptr<PipelineLayout>(new PipelineLayout(h));
 }
 
@@ -1090,6 +1400,7 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor& descript
     h->cpuHandle = cpu;
     h->gpuHandle = d->samplerGpuAt(idx);
     h->heapIndex = idx;
+    d->samplerCount++;
     return std::shared_ptr<Sampler>(new Sampler(h));
 }
 
@@ -1131,6 +1442,7 @@ std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor& descr
     h->queryType     = (descriptor.type == QuerySetType::timestamp)
                            ? D3D12_QUERY_TYPE_TIMESTAMP
                            : D3D12_QUERY_TYPE_OCCLUSION;
+    d->querySetCount++;
     return std::shared_ptr<QuerySet>(new QuerySet(h));
 }
 
@@ -1163,10 +1475,51 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
         list->ResourceBarrier(1, &barrier);
     }
 
+    // Create timestamp query resources for GPU timing
+    ID3D12QueryHeap* timestampHeap = nullptr;
+    ID3D12Resource* readbackBuffer = nullptr;
+    
+    D3D12_QUERY_HEAP_DESC queryHeapDesc = {};
+    queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    queryHeapDesc.Count = 2;  // Start and end timestamps
+    queryHeapDesc.NodeMask = 0;
+    
+    if (SUCCEEDED(dev->CreateQueryHeap(&queryHeapDesc, IID_PPV_ARGS(&timestampHeap)))) {
+        // Create readback buffer for query results
+        D3D12_HEAP_PROPERTIES heapProps = {};
+        heapProps.Type = D3D12_HEAP_TYPE_READBACK;
+        
+        D3D12_RESOURCE_DESC bufferDesc = {};
+        bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bufferDesc.Width = 2 * sizeof(uint64_t);  // Two timestamps
+        bufferDesc.Height = 1;
+        bufferDesc.DepthOrArraySize = 1;
+        bufferDesc.MipLevels = 1;
+        bufferDesc.SampleDesc.Count = 1;
+        bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        
+        dev->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                     D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                     IID_PPV_ARGS(&readbackBuffer));
+    }
+    
+    // Get timestamp frequency (ticks per second)
+    uint64_t freq = 0;
+    d->queue->GetTimestampFrequency(&freq);
+
     auto* h          = new CommandEncoderHandle();
     h->allocator     = alloc;
     h->cmdList       = list;
     h->deviceData    = d;
+    h->timestampQueryHeap = timestampHeap;
+    h->timestampReadbackBuffer = readbackBuffer;
+    h->timestampFrequency = static_cast<double>(freq);
+    
+    // Write start timestamp if query heap was created
+    if (timestampHeap) {
+        list->EndQuery(timestampHeap, D3D12_QUERY_TYPE_TIMESTAMP, 0);
+    }
+    
     return std::shared_ptr<CommandEncoder>(new CommandEncoder(h));
 }
 
@@ -1183,6 +1536,7 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     }
 
     d->waitForGpu();
+    d->commandsSubmitted++;
 }
 
 

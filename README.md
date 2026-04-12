@@ -217,3 +217,73 @@ Or use the convenience method for synchronous texture readback:
 std::vector<uint8_t> pixels(width * height * 4);
 texture->download(mipLevel, arrayLayer, pixels.data(), pixels.size());
 ```
+
+
+### Observability & Metrics
+
+Comprehensive profiling and memory monitoring across all backends:
+
+```cpp
+#include <campello_gpu/metrics.hpp>
+
+// --- Resource counters (Phase 1) ---
+ResourceCounters counters = device->getResourceCounters();
+std::cout << "Buffers: " << counters.bufferCount << "\n";
+std::cout << "Textures: " << counters.textureCount << "\n";
+std::cout << "Render pipelines: " << counters.renderPipelineCount << "\n";
+
+CommandStats stats = device->getCommandStats();
+std::cout << "Draw calls: " << stats.drawCalls << "\n";
+std::cout << "Compute dispatches: " << stats.dispatchCalls << "\n";
+
+// Complete snapshot
+Metrics m = device->getMetrics();
+
+// --- Memory tracking (Phase 2) ---
+ResourceMemoryStats mem = device->getResourceMemoryStats();
+std::cout << "GPU memory used: " << mem.totalTrackedBytes / (1024*1024) << " MB\n";
+std::cout << "  Buffers: " << mem.bufferBytes / (1024*1024) << " MB\n";
+std::cout << "  Textures: " << mem.textureBytes / (1024*1024) << " MB\n";
+std::cout << "Peak memory: " << mem.peakTotalBytes / (1024*1024) << " MB\n";
+
+// Reset peak tracking for a new measurement period
+device->resetPeakMemoryStats();
+
+// --- GPU timing (Phase 3) ---
+auto encoder = device->createCommandEncoder();
+// ... record commands ...
+auto cmdBuffer = encoder->finish();
+device->submit(cmdBuffer);
+
+// Get actual GPU execution time (nanoseconds)
+uint64_t gpuTimeNs = cmdBuffer->getGPUExecutionTime();
+std::cout << "GPU time: " << (gpuTimeNs / 1e6) << " ms\n";
+
+// Accumulated pass performance stats
+PassPerformanceStats perf = device->getPassPerformanceStats();
+std::cout << "Render pass GPU time: " << perf.renderPassTimeNs / 1e6 << " ms\n";
+
+// --- Memory pressure management ---
+// Configure budget thresholds
+MemoryBudget budget;
+budget.warningThresholdPercent = 75;   // 75% of available memory
+budget.criticalThresholdPercent = 90;  // 90% of available memory
+device->setMemoryBudget(budget);
+
+// Register callback for pressure changes
+device->setMemoryPressureCallback([](MemoryPressureLevel level, const ResourceMemoryStats& stats) {
+    switch (level) {
+        case MemoryPressureLevel::Warning:
+            std::cerr << "Memory warning: " << stats.totalTrackedBytes / (1024*1024) << " MB\n";
+            break;
+        case MemoryPressureLevel::Critical:
+            std::cerr << "Memory critical! Consider freeing resources\n";
+            break;
+        default:
+            break;
+    }
+});
+
+// Check current pressure level
+MemoryPressureLevel level = device->checkMemoryPressure();
+```

@@ -253,6 +253,16 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     if (!native) return nullptr;
     auto* h = static_cast<CommandEncoderHandle*>(native);
 
+    // Write end timestamp if query heap exists
+    if (h->timestampQueryHeap) {
+        h->cmdList->EndQuery(h->timestampQueryHeap, D3D12_QUERY_TYPE_TIMESTAMP, 1);
+        // Resolve query data to readback buffer
+        if (h->timestampReadbackBuffer) {
+            h->cmdList->ResolveQueryData(h->timestampQueryHeap, D3D12_QUERY_TYPE_TIMESTAMP, 0, 2,
+                                         h->timestampReadbackBuffer, 0);
+        }
+    }
+
     // Transition swapchain back buffer from RENDER_TARGET back to PRESENT
     if (h->deviceData->swapChain) {
         UINT frameIdx = h->deviceData->frameIndex;
@@ -275,6 +285,16 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbh->allocator          = h->allocator;
     cbh->deviceData         = h->deviceData;
     cbh->stagingResources   = std::move(h->stagingResources);
+    
+    // Transfer timing resources
+    if (h->timestampQueryHeap && h->timestampReadbackBuffer) {
+        cbh->timestampQueryHeap = h->timestampQueryHeap;
+        cbh->timestampReadbackBuffer = h->timestampReadbackBuffer;
+        cbh->timestampFrequency = h->timestampFrequency;
+        cbh->hasTimingData = true;
+        h->timestampQueryHeap = nullptr;
+        h->timestampReadbackBuffer = nullptr;
+    }
 
     // Ownership transferred to CommandBufferHandle
     h->cmdList   = nullptr;

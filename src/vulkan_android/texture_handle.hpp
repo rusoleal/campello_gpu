@@ -9,6 +9,8 @@
 
 namespace systems::leal::campello_gpu {
 
+    struct DeviceData;  // Forward declaration
+
     struct TextureHandle {
         VkDevice               device;
         VkPhysicalDevice       physicalDevice;
@@ -26,6 +28,8 @@ namespace systems::leal::campello_gpu {
         PixelFormat            pixelFormat;
         TextureUsage           usage;
         TextureType            textureType;
+        uint64_t               allocatedSize;  // Actual GPU memory allocated
+        DeviceData*            deviceData;     // For metrics tracking on destruction
     };
 
 }

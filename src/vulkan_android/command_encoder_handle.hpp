@@ -21,5 +21,11 @@ namespace systems::leal::campello_gpu
         // Staging resources (e.g. TLAS instance buffers) transferred to CommandBufferHandle in finish().
         std::vector<VkBuffer>       stagingBuffers;
         std::vector<VkDeviceMemory> stagingMemories;
+        
+        // GPU timing support
+        VkPhysicalDevice         physicalDevice;
+        VkQueryPool              timestampQueryPool;
+        uint32_t                 timestampQueryIndex;
+        float                    timestampPeriod;
     };
 }

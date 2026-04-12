@@ -1,6 +1,7 @@
 #include "Metal.hpp"
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/texture_view.hpp>
+#include "texture_handle.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -10,28 +11,37 @@ Texture::Texture(void *pd) {
 
 Texture::~Texture() {
     if (native != nullptr) {
-        ((MTL::Texture *)native)->release();
+        auto handle = (MetalTextureHandle *)native;
+        
+        // Phase 2: Update memory tracking
+        if (handle->deviceData) {
+            handle->deviceData->textureCount--;
+            handle->deviceData->textureBytes.fetch_sub(handle->allocatedSize);
+        }
+        
+        handle->texture->release();
+        delete handle;
     }
 }
 
 PixelFormat Texture::getFormat() {
-    return (PixelFormat)((MTL::Texture *)native)->pixelFormat();
+    return (PixelFormat)((MetalTextureHandle *)native)->texture->pixelFormat();
 }
 
 uint32_t Texture::getWidth() {
-    return (uint32_t)((MTL::Texture *)native)->width();
+    return (uint32_t)((MetalTextureHandle *)native)->texture->width();
 }
 
 uint32_t Texture::getHeight() {
-    return (uint32_t)((MTL::Texture *)native)->height();
+    return (uint32_t)((MetalTextureHandle *)native)->texture->height();
 }
 
 uint32_t Texture::getDepthOrarrayLayers() {
-    return (uint32_t)((MTL::Texture *)native)->depth();
+    return (uint32_t)((MetalTextureHandle *)native)->texture->depth();
 }
 
 TextureType Texture::getDimension() {
-    switch (((MTL::Texture *)native)->textureType()) {
+    switch (((MetalTextureHandle *)native)->texture->textureType()) {
         case MTL::TextureType1D:            return TextureType::tt1d;
         case MTL::TextureType3D:            return TextureType::tt3d;
         case MTL::TextureType2D:
@@ -41,15 +51,15 @@ TextureType Texture::getDimension() {
 }
 
 uint32_t Texture::getMipLevelCount() {
-    return (uint32_t)((MTL::Texture *)native)->mipmapLevelCount();
+    return (uint32_t)((MetalTextureHandle *)native)->texture->mipmapLevelCount();
 }
 
 uint32_t Texture::getSampleCount() {
-    return (uint32_t)((MTL::Texture *)native)->sampleCount();
+    return (uint32_t)((MetalTextureHandle *)native)->texture->sampleCount();
 }
 
 TextureUsage Texture::getUsage() {
-    MTL::TextureUsage mtlUsage = ((MTL::Texture *)native)->usage();
+    MTL::TextureUsage mtlUsage = ((MetalTextureHandle *)native)->texture->usage();
     int result = 0;
     if (mtlUsage & MTL::TextureUsageShaderRead)   result |= static_cast<int>(TextureUsage::textureBinding);
     if (mtlUsage & MTL::TextureUsageShaderWrite)  result |= static_cast<int>(TextureUsage::storageBinding);
@@ -58,7 +68,8 @@ TextureUsage Texture::getUsage() {
 }
 
 bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
-    auto *tex    = static_cast<MTL::Texture *>(native);
+    auto handle = (MetalTextureHandle *)native;
+    auto *tex    = handle->texture;
     uint32_t w   = (uint32_t)tex->width();
     uint32_t h   = (uint32_t)tex->height();
     uint32_t d   = (uint32_t)tex->depth();
@@ -76,7 +87,8 @@ bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
 
 bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint64_t length) {
     if (!native || !data || length == 0) return false;
-    auto *tex = static_cast<MTL::Texture *>(native);
+    auto handle = (MetalTextureHandle *)native;
+    auto *tex = handle->texture;
     auto *device = tex->device();
     if (!device) return false;
 
@@ -149,7 +161,8 @@ std::shared_ptr<TextureView> Texture::createView(
     uint32_t baseMipLevel,
     TextureType dimension) {
 
-    auto *tex = static_cast<MTL::Texture *>(native);
+    auto handle = (MetalTextureHandle *)native;
+    auto *tex = handle->texture;
 
     MTL::TextureType mtlType;
     switch (dimension) {

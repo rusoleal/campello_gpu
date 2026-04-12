@@ -1,5 +1,7 @@
 #include "Metal.hpp"
 #include "render_pipeline_handle.hpp"
+#include "bind_group_data.hpp"
+#include "buffer_handle.hpp"
 #include <campello_gpu/render_pass_encoder.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/render_pipeline.hpp>
@@ -9,11 +11,6 @@
 #include <campello_gpu/descriptors/bind_group_descriptor.hpp>
 
 using namespace systems::leal::campello_gpu;
-
-// Mirrors the definition in device.cpp and bind_group.cpp.
-struct MetalBindGroupData {
-    std::vector<BindGroupEntryDescriptor> entries;
-};
 
 // Internal state needed to support setIndexBuffer + drawIndexed.
 struct MetalRenderEncoderData {
@@ -73,21 +70,23 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
 
 void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer, uint64_t indirectOffset) {
     auto *enc = static_cast<MetalRenderEncoderData *>(native)->encoder;
+    auto *bufHandle = static_cast<MetalBufferHandle *>(indirectBuffer->native);
     enc->drawPrimitives(
         MTL::PrimitiveTypeTriangle,
-        static_cast<MTL::Buffer *>(indirectBuffer->native),
+        bufHandle->buffer,
         indirectOffset);
 }
 
 void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuffer, uint64_t indirectOffset) {
     auto *data = static_cast<MetalRenderEncoderData *>(native);
     if (!data->indexBuffer) return;
+    auto *bufHandle = static_cast<MetalBufferHandle *>(indirectBuffer->native);
     data->encoder->drawIndexedPrimitives(
         MTL::PrimitiveTypeTriangle,
         data->indexType,
         data->indexBuffer,
         data->indexOffset,
-        static_cast<MTL::Buffer *>(indirectBuffer->native),
+        bufHandle->buffer,
         indirectOffset);
 }
 
@@ -104,7 +103,8 @@ void RenderPassEncoder::setIndexBuffer(std::shared_ptr<Buffer> buffer,
                                        IndexFormat indexFormat,
                                        uint64_t offset, int64_t size) {
     auto *data        = static_cast<MetalRenderEncoderData *>(native);
-    data->indexBuffer = static_cast<MTL::Buffer *>(buffer->native);
+    auto *bufHandle   = static_cast<MetalBufferHandle *>(buffer->native);
+    data->indexBuffer = bufHandle->buffer;
     data->indexType   = (indexFormat == IndexFormat::uint32)
                             ? MTL::IndexTypeUInt32 : MTL::IndexTypeUInt16;
     data->indexOffset = (NS::UInteger)offset;
@@ -134,7 +134,8 @@ void RenderPassEncoder::setStencilReference(uint32_t reference) {
 void RenderPassEncoder::setVertexBuffer(uint32_t slot, std::shared_ptr<Buffer> buffer,
                                         uint64_t offset, int64_t size) {
     auto *enc = static_cast<MetalRenderEncoderData *>(native)->encoder;
-    enc->setVertexBuffer(static_cast<MTL::Buffer *>(buffer->native), offset, slot);
+    auto *bufHandle = static_cast<MetalBufferHandle *>(buffer->native);
+    enc->setVertexBuffer(bufHandle->buffer, offset, slot);
 }
 
 void RenderPassEncoder::setViewport(float x, float y, float width, float height,
@@ -170,7 +171,8 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
             enc->setFragmentSamplerState(samp, entry.binding);
         } else if (std::holds_alternative<BufferBinding>(entry.resource)) {
             const auto &bb  = std::get<BufferBinding>(entry.resource);
-            auto       *buf = static_cast<MTL::Buffer *>(bb.buffer->native);
+            auto *bufHandle = static_cast<MetalBufferHandle *>(bb.buffer->native);
+            auto       *buf = bufHandle->buffer;
             enc->setVertexBuffer(buf, bb.offset, entry.binding);
             enc->setFragmentBuffer(buf, bb.offset, entry.binding);
         }

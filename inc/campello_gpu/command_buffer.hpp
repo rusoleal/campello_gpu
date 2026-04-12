@@ -31,6 +31,16 @@ namespace systems::leal::campello_gpu
         CommandBuffer(void *pd);
     public:
         ~CommandBuffer();
+        
+        /**
+         * @brief Returns the GPU execution time in nanoseconds.
+         * 
+         * This is only valid after the command buffer has completed execution
+         * on the GPU. Returns 0 if timing is not available.
+         * 
+         * @return GPU execution time in nanoseconds.
+         */
+        uint64_t getGPUExecutionTime();
     };
 
 }

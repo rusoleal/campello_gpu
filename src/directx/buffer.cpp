@@ -10,6 +10,13 @@ Buffer::Buffer(void* pd) : native(pd) {}
 Buffer::~Buffer() {
     if (!native) return;
     auto* h = static_cast<BufferHandle*>(native);
+    
+    // Phase 2: Update memory tracking
+    if (h->deviceData) {
+        h->deviceData->bufferCount--;
+        h->deviceData->bufferBytes.fetch_sub(h->allocatedSize);
+    }
+    
     if (h->resource) {
         if (h->mapped) h->resource->Unmap(0, nullptr);
         h->resource->Release();

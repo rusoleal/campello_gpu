@@ -2,6 +2,64 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.8.0] - 2026-04-12
+
+### Added
+
+**Comprehensive Metrics & Observability System (3-Phase Implementation)**
+
+- **Phase 1 — Resource & Command Counters**
+  - `ResourceCounters` struct — live counts of buffers, textures, pipelines, acceleration structures, shader modules, samplers, bind groups, etc.
+  - `CommandStats` struct — accumulated submission statistics: command buffers submitted, render/compute/ray tracing passes, draw/dispatch/trace/copy counts
+  - `Device::getResourceCounters()`, `Device::getCommandStats()`, `Device::resetCommandStats()`
+  - `Metrics` aggregate struct combining memory info, resource counters, and command stats
+  - `Device::getMetrics()` convenience method returning complete snapshot
+
+- **Phase 2 — Memory Usage Tracking**
+  - `ResourceMemoryStats` struct — per-resource-type byte tracking:
+    - `bufferBytes`, `textureBytes`, `accelerationStructureBytes`, `shaderModuleBytes`, `querySetBytes`
+    - `totalTrackedBytes` (sum of all types)
+    - Peak tracking: `peakBufferBytes`, `peakTextureBytes`, `peakAccelerationStructureBytes`, `peakTotalBytes`
+  - `Device::getResourceMemoryStats()` — current memory breakdown
+  - `Device::resetPeakMemoryStats()` — reset high-water marks
+  - Automatic byte tracking on all resource create/destroy operations across all backends
+  - Atomic counters ensure thread-safe updates without contention
+
+- **Phase 3 — GPU Timing & Memory Pressure Management**
+  - **GPU Timestamp Collection** (all backends):
+    - `CommandBuffer::getGPUExecutionTime()` — returns actual GPU execution time in nanoseconds
+    - Metal: uses `MTLCommandBuffer::GPUStartTime`/`GPUEndTime` with timestamp calibration via `sampleTimestamps`
+    - Vulkan: uses `VK_QUERY_TYPE_TIMESTAMP` with query pools; start (`TOP_OF_PIPE`) and end (`BOTTOM_OF_PIPE`) timestamps
+    - DirectX 12: uses `D3D12_QUERY_HEAP_TYPE_TIMESTAMP` with `EndQuery`/`ResolveQueryData` to readback buffer
+  - `PassPerformanceStats` struct — accumulated GPU timing per pass type (render/compute/ray tracing)
+  - `Device::getPassPerformanceStats()`, `Device::resetPassPerformanceStats()`
+  - **Memory Pressure Management**:
+    - `MemoryPressureLevel` enum — `Normal`, `Warning`, `Critical`
+    - `MemoryBudget` struct — configurable thresholds (`warningThresholdPercent` 80%, `criticalThresholdPercent` 95%, `targetUsagePercent` 70%)
+    - `MemoryPressureCallback` type — user-registered callback invoked on pressure level changes
+    - `Device::getMemoryPressureLevel()`, `Device::setMemoryBudget()`, `Device::getMemoryBudget()`
+    - `Device::setMemoryPressureCallback()`, `Device::checkMemoryPressure()`
+  - `MetricsWithTiming` struct — extends `Metrics` with GPU pass performance data
+  - `Device::getMetricsWithTiming()` — complete profiling snapshot
+
+### Changed
+
+- **Metal** `Buffer` and `Texture` handles now store `allocatedSize` and `deviceData` pointer for memory tracking
+- **Vulkan** `CommandBufferHandle` extended with GPU timing fields (timestamp query results)
+- **DirectX** `CommandBufferHandle` extended with `ID3D12QueryHeap*` and `ID3D12Resource*` for timestamp queries
+- Internal `MetalDeviceData`, `DeviceData` (Vulkan), `DeviceData` (DirectX) extended with metrics counters
+
+### Test Coverage
+
+- 29 Device tests covering all metrics phases:
+  - Resource counters (buffer, texture, sampler creation)
+  - Memory stats (bytes tracked, peak tracking)
+  - GPU timing (pass performance stats)
+  - Memory pressure (budget configuration, callbacks)
+- 2 CommandBuffer tests for GPU execution time retrieval
+
+---
+
 ## [0.7.1] - 2026-04-11
 
 ### Fixed

@@ -32,6 +32,7 @@
 #include <campello_gpu/constants/texture_usage.hpp>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/feature.hpp>
+#include <campello_gpu/metrics.hpp>
 
 namespace systems::leal::campello_gpu
 {
@@ -90,6 +91,165 @@ namespace systems::leal::campello_gpu
          * @return Set of `Feature` enum values available on this device.
          */
         std::set<Feature> getFeatures();
+
+        // ------------------------------------------------------------------
+        // Metrics and monitoring (Phase 1)
+        // ------------------------------------------------------------------
+
+        /**
+         * @brief Returns current GPU memory metrics from the driver.
+         *
+         * Note: Not all backends support all fields. Fields that cannot be queried
+         * will be set to 0. Check hasUnifiedMemory to understand memory architecture.
+         *
+         * @return DeviceMemoryInfo with driver-reported memory statistics.
+         */
+        DeviceMemoryInfo getMemoryInfo();
+
+        /**
+         * @brief Returns current resource creation counters.
+         *
+         * These counters track live resources created through this Device.
+         * They increment on creation and decrement on destruction.
+         *
+         * @return ResourceCounters with current resource counts.
+         */
+        ResourceCounters getResourceCounters();
+
+        /**
+         * @brief Returns command submission statistics.
+         *
+         * These counters accumulate since device creation or the last reset.
+         *
+         * @return CommandStats with accumulated command counts.
+         */
+        CommandStats getCommandStats();
+
+        /**
+         * @brief Returns a complete metrics snapshot (convenience method).
+         *
+         * Equivalent to querying getMemoryInfo(), getResourceCounters(), and
+         * getCommandStats() in a single call.
+         *
+         * @return Metrics struct with all available metrics.
+         */
+        Metrics getMetrics();
+
+        /**
+         * @brief Resets command statistics counters to zero.
+         *
+         * This resets all counters in CommandStats. Resource counters and
+         * memory info are not affected.
+         */
+        void resetCommandStats();
+
+        // ------------------------------------------------------------------
+        // Metrics and monitoring (Phase 2 - Enhanced)
+        // ------------------------------------------------------------------
+
+        /**
+         * @brief Returns detailed resource memory statistics.
+         *
+         * Provides per-resource-type byte counts and peak allocation tracking.
+         * Useful for memory profiling and leak detection.
+         *
+         * @return ResourceMemoryStats with current and peak memory usage per type.
+         */
+        ResourceMemoryStats getResourceMemoryStats();
+
+        /**
+         * @brief Resets peak memory tracking counters.
+         *
+         * This resets all peak_* fields in ResourceMemoryStats to their
+         * current values. Useful for measuring memory spikes over specific
+         * time periods or operations.
+         */
+        void resetPeakMemoryStats();
+
+        // ------------------------------------------------------------------
+        // Metrics and monitoring (Phase 3 - Advanced)
+        // ------------------------------------------------------------------
+
+        /**
+         * @brief Returns GPU timing statistics for passes.
+         *
+         * Provides accumulated GPU time for render, compute, and ray tracing
+         * passes. Times are in nanoseconds. Use resetPassPerformanceStats()
+         * to start a new measurement period.
+         *
+         * @return PassPerformanceStats with GPU timing data.
+         */
+        PassPerformanceStats getPassPerformanceStats();
+
+        /**
+         * @brief Resets GPU pass timing statistics to zero.
+         *
+         * This resets all timing counters in PassPerformanceStats. Call this
+         * before starting a new profiling period.
+         */
+        void resetPassPerformanceStats();
+
+        /**
+         * @brief Gets the current memory pressure level.
+         *
+         * Compares current memory usage against configured budget thresholds
+         * to determine if the system is under memory pressure.
+         *
+         * @return MemoryPressureLevel indicating current pressure state.
+         */
+        MemoryPressureLevel getMemoryPressureLevel();
+
+        /**
+         * @brief Configures memory budget and automatic resource management.
+         *
+         * Sets thresholds for memory pressure detection and configures
+         * automatic resource eviction behavior. The budget is applied
+         * immediately.
+         *
+         * @param budget MemoryBudget configuration structure.
+         */
+        void setMemoryBudget(const MemoryBudget& budget);
+
+        /**
+         * @brief Gets the current memory budget configuration.
+         *
+         * @return Current MemoryBudget settings.
+         */
+        MemoryBudget getMemoryBudget();
+
+        /**
+         * @brief Registers a callback for memory pressure events.
+         *
+         * The callback is invoked when memory pressure changes (Normal ->
+         * Warning, Warning -> Critical, etc.). Only one callback can be
+         * registered; subsequent calls replace the previous callback.
+         *
+         * Pass nullptr to unregister the callback.
+         *
+         * @param callback MemoryPressureCallback function or nullptr.
+         */
+        void setMemoryPressureCallback(MemoryPressureCallback callback);
+
+        /**
+         * @brief Manually triggers memory pressure check and eviction.
+         *
+         * Forces a memory pressure evaluation. If pressure is Critical and
+         * automatic eviction is enabled, this may evict resources. Returns
+         * the current pressure level after any eviction.
+         *
+         * @return MemoryPressureLevel after handling pressure.
+         */
+        MemoryPressureLevel checkMemoryPressure();
+
+        /**
+         * @brief Returns complete metrics with GPU timing data.
+         *
+         * Equivalent to getMetrics() plus GPU pass performance stats.
+         * This is a convenience method for comprehensive profiling.
+         *
+         * @return MetricsWithTiming with all metrics and timing data.
+         */
+        MetricsWithTiming getMetricsWithTiming();
 
         // ------------------------------------------------------------------
         // Resource creation

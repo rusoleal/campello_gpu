@@ -45,6 +45,7 @@ if(BUILD_INTEGRATION_TESTS)
         platform/test_buffer.cpp
         platform/test_texture.cpp
         platform/test_command_encoder.cpp
+        platform/test_command_buffer.cpp
         platform/test_shader_module.cpp
         platform/test_render_pipeline.cpp
         platform/test_render_pass_encoder.cpp

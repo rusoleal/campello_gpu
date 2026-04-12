@@ -4,10 +4,12 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <vector>
+#include <atomic>
 #include <cstdint>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/texture_type.hpp>
 #include <campello_gpu/constants/texture_usage.hpp>
+#include <campello_gpu/metrics.hpp>
 
 namespace systems::leal::campello_gpu {
 
@@ -98,6 +100,56 @@ struct DeviceData {
     ID3D12CommandSignature* drawCmdSig        = nullptr;
     ID3D12CommandSignature* drawIndexedCmdSig = nullptr;
     ID3D12CommandSignature* dispatchCmdSig    = nullptr;
+    
+    // Resource counters for metrics
+    std::atomic<uint32_t> bufferCount{0};
+    std::atomic<uint32_t> textureCount{0};
+    std::atomic<uint32_t> renderPipelineCount{0};
+    std::atomic<uint32_t> computePipelineCount{0};
+    std::atomic<uint32_t> rayTracingPipelineCount{0};
+    std::atomic<uint32_t> accelerationStructureCount{0};
+    std::atomic<uint32_t> shaderModuleCount{0};
+    std::atomic<uint32_t> samplerCount{0};
+    std::atomic<uint32_t> bindGroupCount{0};
+    std::atomic<uint32_t> bindGroupLayoutCount{0};
+    std::atomic<uint32_t> pipelineLayoutCount{0};
+    std::atomic<uint32_t> querySetCount{0};
+    
+    // Command stats
+    std::atomic<uint64_t> commandsSubmitted{0};
+    std::atomic<uint64_t> renderPasses{0};
+    std::atomic<uint64_t> computePasses{0};
+    std::atomic<uint64_t> rayTracingPasses{0};
+    std::atomic<uint64_t> drawCalls{0};
+    std::atomic<uint64_t> dispatchCalls{0};
+    std::atomic<uint64_t> traceRaysCalls{0};
+    std::atomic<uint64_t> copies{0};
+    
+    // Phase 2: Resource memory tracking (bytes)
+    std::atomic<uint64_t> bufferBytes{0};
+    std::atomic<uint64_t> textureBytes{0};
+    std::atomic<uint64_t> accelerationStructureBytes{0};
+    std::atomic<uint64_t> shaderModuleBytes{0};
+    std::atomic<uint64_t> querySetBytes{0};
+    
+    // Phase 2: Peak memory tracking
+    std::atomic<uint64_t> peakBufferBytes{0};
+    std::atomic<uint64_t> peakTextureBytes{0};
+    std::atomic<uint64_t> peakAccelerationStructureBytes{0};
+    std::atomic<uint64_t> peakTotalBytes{0};
+    
+    // Phase 3: GPU pass timing (nanoseconds)
+    std::atomic<uint64_t> renderPassTimeNs{0};
+    std::atomic<uint64_t> computePassTimeNs{0};
+    std::atomic<uint64_t> rayTracingPassTimeNs{0};
+    std::atomic<uint32_t> renderPassSampleCount{0};
+    std::atomic<uint32_t> computePassSampleCount{0};
+    std::atomic<uint32_t> rayTracingPassSampleCount{0};
+    
+    // Phase 3: Memory budget and pressure management
+    MemoryBudget memoryBudget;
+    MemoryPressureCallback memoryPressureCallback;
+    std::atomic<MemoryPressureLevel> lastPressureLevel{MemoryPressureLevel::Normal};
 
     void ensureDrawCommandSignature() {
         if (drawCmdSig) return;
@@ -155,6 +207,8 @@ struct BufferHandle {
     uint64_t        size      = 0;
     void*           mapped    = nullptr;  // persistently mapped upload-heap or readback-heap pointer
     bool            isReadback = false;   // true if created as READBACK heap
+    uint64_t        allocatedSize = 0;    // Actual GPU memory allocated (includes alignment)
+    DeviceData*     deviceData = nullptr; // For metrics tracking on destruction
 };
 
 struct TextureHandle {
@@ -170,6 +224,7 @@ struct TextureHandle {
     uint32_t        mipLevels     = 1;
     uint32_t        sampleCount   = 1;
     TextureUsage    usage         = static_cast<TextureUsage>(0);
+    uint64_t        allocatedSize = 0;  // Actual GPU memory allocated
     // Descriptor handles (filled by createView or createTexture for render targets)
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle    = {};
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle    = {};
@@ -259,6 +314,11 @@ struct CommandEncoderHandle {
     ID3D12GraphicsCommandList* cmdList           = nullptr;
     DeviceData*                deviceData        = nullptr;
     std::vector<ID3D12Resource*> stagingResources; // freed after GPU completes (via CommandBuffer)
+    
+    // GPU timestamp query resources
+    ID3D12QueryHeap*           timestampQueryHeap = nullptr;
+    ID3D12Resource*            timestampReadbackBuffer = nullptr;
+    double                     timestampFrequency = 0.0;
 };
 
 struct RenderPassEncoderHandle {
@@ -286,6 +346,14 @@ struct CommandBufferHandle {
     ID3D12CommandAllocator*    allocator         = nullptr;
     DeviceData*                deviceData        = nullptr;
     std::vector<ID3D12Resource*> stagingResources; // upload-heap buffers kept alive until GPU completes
+    
+    // GPU timing data
+    ID3D12QueryHeap*           timestampQueryHeap = nullptr;
+    ID3D12Resource*            timestampReadbackBuffer = nullptr;
+    uint64_t                   gpuStartTimestamp = 0;
+    uint64_t                   gpuEndTimestamp = 0;
+    bool                       hasTimingData = false;
+    double                     timestampFrequency = 0.0;  // Ticks per second
 };
 
 } // namespace systems::leal::campello_gpu

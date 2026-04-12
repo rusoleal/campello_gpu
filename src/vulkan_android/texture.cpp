@@ -8,6 +8,7 @@
 #include "texture_handle.hpp"
 #include "texture_view_handle.hpp"
 #include "buffer_handle.hpp"
+#include "common.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -20,6 +21,13 @@ Texture::Texture(void *pd) {
 
 Texture::~Texture() {
     auto handle = (TextureHandle *)native;
+    
+    // Phase 2: Update memory tracking
+    if (handle->deviceData) {
+        handle->deviceData->textureCount--;
+        handle->deviceData->textureBytes.fetch_sub(handle->allocatedSize);
+    }
+    
     handle->buffer = nullptr;
     if (handle->defaultView != VK_NULL_HANDLE) {
         vkDestroyImageView(handle->device, handle->defaultView, nullptr);
