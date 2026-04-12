@@ -65,22 +65,27 @@ void RayTracingPassEncoder::setBindGroup(uint32_t index,
 
     for (const auto &entry : bgData->entries) {
         if (std::holds_alternative<std::shared_ptr<AccelerationStructure>>(entry.resource)) {
-            auto *asData = static_cast<MetalAccelerationStructureData *>(
-                std::get<std::shared_ptr<AccelerationStructure>>(entry.resource)->native);
-            if (asData) enc->setAccelerationStructure(asData->accelerationStructure, entry.binding);
+            const auto &asPtr = std::get<std::shared_ptr<AccelerationStructure>>(entry.resource);
+            if (!asPtr || !asPtr->native) continue;
+            auto *asData = static_cast<MetalAccelerationStructureData *>(asPtr->native);
+            if (asData && asData->accelerationStructure)
+                enc->setAccelerationStructure(asData->accelerationStructure, entry.binding);
         } else if (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource)) {
-            auto *tex = static_cast<MTL::Texture *>(
-                std::get<std::shared_ptr<Texture>>(entry.resource)->native);
+            const auto &texPtr = std::get<std::shared_ptr<Texture>>(entry.resource);
+            if (!texPtr || !texPtr->native) continue;
+            auto *tex = static_cast<MTL::Texture *>(texPtr->native);
             enc->setTexture(tex, entry.binding);
         } else if (std::holds_alternative<std::shared_ptr<Sampler>>(entry.resource)) {
-            auto *samp = static_cast<MTL::SamplerState *>(
-                std::get<std::shared_ptr<Sampler>>(entry.resource)->native);
+            const auto &sampPtr = std::get<std::shared_ptr<Sampler>>(entry.resource);
+            if (!sampPtr || !sampPtr->native) continue;
+            auto *samp = static_cast<MTL::SamplerState *>(sampPtr->native);
             enc->setSamplerState(samp, entry.binding);
         } else if (std::holds_alternative<BufferBinding>(entry.resource)) {
             const auto &bb  = std::get<BufferBinding>(entry.resource);
+            if (!bb.buffer || !bb.buffer->native) continue;
             auto *bufHandle = static_cast<MetalBufferHandle *>(bb.buffer->native);
-            auto       *buf = bufHandle->buffer;
-            enc->setBuffer(buf, bb.offset, entry.binding);
+            if (!bufHandle->buffer) continue;
+            enc->setBuffer(bufHandle->buffer, bb.offset, entry.binding);
         }
     }
 }

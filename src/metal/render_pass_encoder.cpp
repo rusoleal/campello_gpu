@@ -2,6 +2,7 @@
 #include "render_pipeline_handle.hpp"
 #include "bind_group_data.hpp"
 #include "buffer_handle.hpp"
+#include "texture_handle.hpp"
 #include <campello_gpu/render_pass_encoder.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/render_pipeline.hpp>
@@ -163,21 +164,25 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
 
     for (const auto &entry : bgData->entries) {
         if (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource)) {
-            auto *tex = static_cast<MTL::Texture *>(
-                std::get<std::shared_ptr<Texture>>(entry.resource)->native);
-            enc->setVertexTexture(tex, entry.binding);
-            enc->setFragmentTexture(tex, entry.binding);
+            const auto &texPtr = std::get<std::shared_ptr<Texture>>(entry.resource);
+            if (!texPtr || !texPtr->native) continue;
+            auto *texHandle = static_cast<MetalTextureHandle *>(texPtr->native);
+            if (!texHandle->texture) continue;
+            enc->setVertexTexture(texHandle->texture, entry.binding);
+            enc->setFragmentTexture(texHandle->texture, entry.binding);
         } else if (std::holds_alternative<std::shared_ptr<Sampler>>(entry.resource)) {
-            auto *samp = static_cast<MTL::SamplerState *>(
-                std::get<std::shared_ptr<Sampler>>(entry.resource)->native);
+            const auto &sampPtr = std::get<std::shared_ptr<Sampler>>(entry.resource);
+            if (!sampPtr || !sampPtr->native) continue;
+            auto *samp = static_cast<MTL::SamplerState *>(sampPtr->native);
             enc->setVertexSamplerState(samp, entry.binding);
             enc->setFragmentSamplerState(samp, entry.binding);
         } else if (std::holds_alternative<BufferBinding>(entry.resource)) {
             const auto &bb  = std::get<BufferBinding>(entry.resource);
+            if (!bb.buffer || !bb.buffer->native) continue;
             auto *bufHandle = static_cast<MetalBufferHandle *>(bb.buffer->native);
-            auto       *buf = bufHandle->buffer;
-            enc->setVertexBuffer(buf, bb.offset, entry.binding);
-            enc->setFragmentBuffer(buf, bb.offset, entry.binding);
+            if (!bufHandle->buffer) continue;
+            enc->setVertexBuffer(bufHandle->buffer, bb.offset, entry.binding);
+            enc->setFragmentBuffer(bufHandle->buffer, bb.offset, entry.binding);
         }
     }
 }

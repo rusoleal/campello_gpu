@@ -19,6 +19,12 @@
 #include <campello_gpu/constants/texture_usage.hpp>
 #include <campello_gpu/constants/index_format.hpp>
 #include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
+#include <campello_gpu/descriptors/bind_group_descriptor.hpp>
+#include <campello_gpu/descriptors/bind_group_layout_descriptor.hpp>
+#include <campello_gpu/bind_group.hpp>
+#include <campello_gpu/bind_group_layout.hpp>
+#include <campello_gpu/sampler.hpp>
+#include <campello_gpu/constants/shader_stage.hpp>
 
 using namespace systems::leal::campello_gpu;
 
@@ -344,4 +350,220 @@ TEST(RenderPassEncoder, FullPassWithColorAttachmentProducesCommandBuffer) {
 
     auto cmdBuf = encoder->finish();
     EXPECT_NE(cmdBuf, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// setBindGroup
+// ---------------------------------------------------------------------------
+
+TEST(RenderPassEncoder, SetBindGroupWithNullDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    // Passing a null BindGroup; the implementation guards against this.
+    EXPECT_NO_THROW(pass->setBindGroup(0, nullptr, {}, 0, 0));
+}
+
+TEST(RenderPassEncoder, SetBindGroupWithEmptyGroupDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    BindGroupLayoutDescriptor layoutDesc{};
+    auto layout = device->createBindGroupLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+
+    BindGroupDescriptor bgDesc{};
+    bgDesc.layout = layout;
+    auto bindGroup = device->createBindGroup(bgDesc);
+    ASSERT_NE(bindGroup, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    EXPECT_NO_THROW(pass->setBindGroup(0, bindGroup, {}, 0, 0));
+}
+
+TEST(RenderPassEncoder, SetBindGroupWithTextureDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    // Create a texture for binding
+    auto texture = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        64, 64, 1, 1, 1, TextureUsage::textureBinding);
+    ASSERT_NE(texture, nullptr);
+
+    // Create bind group layout with texture entry
+    BindGroupLayoutDescriptor layoutDesc{};
+    EntryObject texEntry{};
+    texEntry.binding = 0;
+    texEntry.visibility = ShaderStage::fragment;
+    texEntry.type = EntryObjectType::texture;
+    texEntry.data.texture.sampleType = EntryObjectTextureType::ttFloat;
+    texEntry.data.texture.viewDimension = TextureType::tt2d;
+    texEntry.data.texture.multisampled = false;
+    layoutDesc.entries.push_back(texEntry);
+    auto layout = device->createBindGroupLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+
+    // Create bind group with texture entry
+    BindGroupDescriptor bgDesc{};
+    bgDesc.layout = layout;
+    bgDesc.entries = { {0, texture} };
+    auto bindGroup = device->createBindGroup(bgDesc);
+    ASSERT_NE(bindGroup, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    // This would have crashed before the fix due to incorrect texture handle casting
+    EXPECT_NO_THROW(pass->setBindGroup(0, bindGroup, {}, 0, 0));
+}
+
+TEST(RenderPassEncoder, SetBindGroupWithSamplerDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    // Create a sampler for binding
+    SamplerDescriptor sampDesc{};
+    auto sampler = device->createSampler(sampDesc);
+    ASSERT_NE(sampler, nullptr);
+
+    // Create bind group layout with sampler entry
+    BindGroupLayoutDescriptor layoutDesc{};
+    EntryObject sampEntry{};
+    sampEntry.binding = 1;
+    sampEntry.visibility = ShaderStage::fragment;
+    sampEntry.type = EntryObjectType::sampler;
+    sampEntry.data.sampler.type = EntryObjectSamplerType::filtering;
+    layoutDesc.entries.push_back(sampEntry);
+    auto layout = device->createBindGroupLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+
+    // Create bind group with sampler entry
+    BindGroupDescriptor bgDesc{};
+    bgDesc.layout = layout;
+    bgDesc.entries = { {1, sampler} };
+    auto bindGroup = device->createBindGroup(bgDesc);
+    ASSERT_NE(bindGroup, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    EXPECT_NO_THROW(pass->setBindGroup(0, bindGroup, {}, 0, 0));
+}
+
+TEST(RenderPassEncoder, SetBindGroupWithBufferDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    // Create a uniform buffer for binding
+    auto buffer = device->createBuffer(256, BufferUsage::uniform);
+    ASSERT_NE(buffer, nullptr);
+
+    // Create bind group layout with buffer entry
+    BindGroupLayoutDescriptor layoutDesc{};
+    EntryObject bufferEntry{};
+    bufferEntry.binding = 2;
+    bufferEntry.visibility = ShaderStage::vertex;
+    bufferEntry.type = EntryObjectType::buffer;
+    bufferEntry.data.buffer.type = EntryObjectBufferType::uniform;
+    bufferEntry.data.buffer.hasDinamicOffaset = false;
+    bufferEntry.data.buffer.minBindingSize = 256;
+    layoutDesc.entries.push_back(bufferEntry);
+    auto layout = device->createBindGroupLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+
+    // Create bind group with buffer entry
+    BindGroupDescriptor bgDesc{};
+    bgDesc.layout = layout;
+    bgDesc.entries = { {2, BufferBinding{buffer, 0, 256}} };
+    auto bindGroup = device->createBindGroup(bgDesc);
+    ASSERT_NE(bindGroup, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    EXPECT_NO_THROW(pass->setBindGroup(0, bindGroup, {}, 0, 0));
+}
+
+TEST(RenderPassEncoder, SetBindGroupWithMixedResourcesDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    // Create resources
+    auto texture = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        64, 64, 1, 1, 1, TextureUsage::textureBinding);
+    ASSERT_NE(texture, nullptr);
+
+    SamplerDescriptor sampDesc{};
+    auto sampler = device->createSampler(sampDesc);
+    ASSERT_NE(sampler, nullptr);
+
+    auto buffer = device->createBuffer(256, BufferUsage::uniform);
+    ASSERT_NE(buffer, nullptr);
+
+    // Create bind group layout with multiple entries
+    BindGroupLayoutDescriptor layoutDesc{};
+    // Texture at binding 0
+    EntryObject texEntry{};
+    texEntry.binding = 0;
+    texEntry.visibility = ShaderStage::fragment;
+    texEntry.type = EntryObjectType::texture;
+    texEntry.data.texture.sampleType = EntryObjectTextureType::ttFloat;
+    texEntry.data.texture.viewDimension = TextureType::tt2d;
+    texEntry.data.texture.multisampled = false;
+    layoutDesc.entries.push_back(texEntry);
+    // Sampler at binding 1
+    EntryObject sampEntry{};
+    sampEntry.binding = 1;
+    sampEntry.visibility = ShaderStage::fragment;
+    sampEntry.type = EntryObjectType::sampler;
+    sampEntry.data.sampler.type = EntryObjectSamplerType::filtering;
+    layoutDesc.entries.push_back(sampEntry);
+    // Buffer at binding 2
+    EntryObject bufferEntry{};
+    bufferEntry.binding = 2;
+    bufferEntry.visibility = ShaderStage::vertex;
+    bufferEntry.type = EntryObjectType::buffer;
+    bufferEntry.data.buffer.type = EntryObjectBufferType::uniform;
+    bufferEntry.data.buffer.hasDinamicOffaset = false;
+    bufferEntry.data.buffer.minBindingSize = 256;
+    layoutDesc.entries.push_back(bufferEntry);
+
+    auto layout = device->createBindGroupLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+
+    // Create bind group with all resource types
+    BindGroupDescriptor bgDesc{};
+    bgDesc.layout = layout;
+    bgDesc.entries = {
+        {0, texture},
+        {1, sampler},
+        {2, BufferBinding{buffer, 0, 256}}
+    };
+    auto bindGroup = device->createBindGroup(bgDesc);
+    ASSERT_NE(bindGroup, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    // This test exercises all resource binding paths (texture, sampler, buffer)
+    EXPECT_NO_THROW(pass->setBindGroup(0, bindGroup, {}, 0, 0));
 }
