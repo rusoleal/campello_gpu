@@ -19,8 +19,13 @@ RayTracingPassEncoder::~RayTracingPassEncoder() {
 }
 
 void RayTracingPassEncoder::setPipeline(std::shared_ptr<RayTracingPipeline> pipeline) {
+    if (!native) return;
+    if (!pipeline) return;
     auto *h  = (RayTracingPassEncoderHandle *)native;
+    if (h->commandBuffer == VK_NULL_HANDLE) return;
+    if (!pipeline->native) return;
     auto *ph = (RayTracingPipelineHandle *)pipeline->native;
+    if (ph->pipeline == VK_NULL_HANDLE) return;
 
     vkCmdBindPipeline(h->commandBuffer, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, ph->pipeline);
     h->currentPipelineLayout = ph->pipelineLayout;
@@ -35,9 +40,13 @@ void RayTracingPassEncoder::setBindGroup(uint32_t index,
                                           const std::vector<uint32_t> &dynamicOffsets,
                                           uint64_t dynamicOffsetsStart,
                                           uint64_t dynamicOffsetsLength) {
+    if (!native) return;
+    if (!bindGroup) return;
     auto *h  = (RayTracingPassEncoderHandle *)native;
     if (!h->currentPipelineLayout) return;
+    if (!bindGroup->native) return;
     auto *bg = (BindGroupHandle *)bindGroup->native;
+    if (bg->descriptorSet == VK_NULL_HANDLE) return;
 
     uint32_t dynCount = (dynamicOffsetsLength > 0)
         ? (uint32_t)dynamicOffsetsLength

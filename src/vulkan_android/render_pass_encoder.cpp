@@ -114,8 +114,14 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
                                       const std::vector<uint32_t> &dynamicOffsets,
                                       uint64_t dynamicOffsetsStart,
                                       uint64_t dynamicOffsetsLength) {
+    if (!native) return;
+    if (!bindGroup) return;
     auto data = (RenderPassEncoderHandle *)native;
+    if (data->commandBuffer == VK_NULL_HANDLE) return;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
+    if (!bindGroup->native) return;
     auto bg   = (BindGroupHandle *)bindGroup->native;
+    if (bg->descriptorSet == VK_NULL_HANDLE) return;
 
     const uint32_t *offsets     = dynamicOffsets.empty() ? nullptr
                                   : dynamicOffsets.data() + dynamicOffsetsStart;
@@ -130,8 +136,13 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
 }
 
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
+    if (!native) return;
+    if (!pipeline) return;
     auto data = (RenderPassEncoderHandle *)native;
+    if (data->commandBuffer == VK_NULL_HANDLE) return;
+    if (!pipeline->native) return;
     auto pipe = (RenderPipelineHandle *)pipeline->native;
+    if (pipe->pipeline == VK_NULL_HANDLE) return;
     vkCmdBindPipeline(data->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe->pipeline);
     data->pipelineLayout = pipe->pipelineLayout; // cache for setBindGroup
 }

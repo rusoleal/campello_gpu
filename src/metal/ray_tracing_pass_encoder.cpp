@@ -56,7 +56,10 @@ void RayTracingPassEncoder::setBindGroup(uint32_t index,
                                          uint64_t dynamicOffsetsStart,
                                          uint64_t dynamicOffsetsLength) {
     (void)index; (void)dynamicOffsets; (void)dynamicOffsetsStart; (void)dynamicOffsetsLength;
+    if (!native) return;
+    if (!bindGroup) return;
     auto *enc    = static_cast<MetalRayTracingEncoderData *>(native)->encoder;
+    if (!enc) return;
     auto *bgData = static_cast<MetalBindGroupData *>(bindGroup->native);
     if (!bgData) return;
 

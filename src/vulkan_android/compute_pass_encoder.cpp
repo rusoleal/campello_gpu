@@ -20,8 +20,13 @@ ComputePassEncoder::~ComputePassEncoder() {
 }
 
 void ComputePassEncoder::setPipeline(std::shared_ptr<ComputePipeline> pipeline) {
+    if (!native) return;
+    if (!pipeline) return;
     auto data = (ComputePassEncoderHandle *)native;
+    if (data->commandBuffer == VK_NULL_HANDLE) return;
+    if (!pipeline->native) return;
     auto pipe = (ComputePipelineHandle *)pipeline->native;
+    if (pipe->pipeline == VK_NULL_HANDLE) return;
     vkCmdBindPipeline(data->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipe->pipeline);
     data->pipelineLayout = pipe->pipelineLayout; // cache for setBindGroup
 }
@@ -48,8 +53,14 @@ void ComputePassEncoder::setBindGroup(uint32_t index,
                                        const std::vector<uint32_t> &dynamicOffsets,
                                        uint64_t dynamicOffsetsStart,
                                        uint64_t dynamicOffsetsLength) {
+    if (!native) return;
+    if (!bindGroup) return;
     auto data = (ComputePassEncoderHandle *)native;
+    if (data->commandBuffer == VK_NULL_HANDLE) return;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
+    if (!bindGroup->native) return;
     auto bg   = (BindGroupHandle *)bindGroup->native;
+    if (bg->descriptorSet == VK_NULL_HANDLE) return;
 
     const uint32_t *offsets    = dynamicOffsets.empty() ? nullptr
                                   : dynamicOffsets.data() + dynamicOffsetsStart;

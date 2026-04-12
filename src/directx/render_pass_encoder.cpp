@@ -163,8 +163,11 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
                                      const std::vector<uint32_t>& dynamicOffsets,
                                      uint64_t dynamicOffsetsStart,
                                      uint64_t dynamicOffsetsLength) {
-    if (!native || !bindGroup || !bindGroup->native) return;
+    if (!native) return;
+    if (!bindGroup) return;
     auto* h   = static_cast<RenderPassEncoderHandle*>(native);
+    if (!h->cmdList) return;
+    if (!bindGroup->native) return;
     auto* bgh = static_cast<BindGroupHandle*>(bindGroup->native);
 
     if (bgh->gpuHandle.ptr != 0)

@@ -154,7 +154,10 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
                                      const std::vector<uint32_t> &dynamicOffsets,
                                      uint64_t dynamicOffsetsStart,
                                      uint64_t dynamicOffsetsLength) {
+    if (!native) return;
+    if (!bindGroup) return;
     auto *enc    = static_cast<MetalRenderEncoderData *>(native)->encoder;
+    if (!enc) return;
     auto *bgData = static_cast<MetalBindGroupData *>(bindGroup->native);
     if (!bgData) return;
 
