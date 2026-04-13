@@ -2,6 +2,28 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.8.1] - 2026-04-12
+
+### Added
+
+- **New Device synchronization API**
+  - `Device::scheduleNextPresent(void* nativeDrawable)` — schedules a platform drawable to be presented after the next submitted command buffer completes; on Metal this fixes "present before render" artefacts by tying presentation to GPU completion and display vsync; no-op on Vulkan and DirectX (presentation handled inside `submit()`)
+  - `Device::waitForIdle()` — blocks the calling thread until all previously submitted commands have finished executing on the GPU; useful for cross-device synchronization when one device renders to a texture that another will read
+
+### Fixed
+
+- **Metal** `RenderPassEncoder::setBindGroup` and `RayTracingPassEncoder::setBindGroup` — texture handles were incorrectly cast via `reinterpret_cast` instead of accessing the native handle through the proper indirection, causing crashes when binding textures; corrected to use `tvh->cpuHandle.ptr` for texture and sampler binding
+
+### Test Coverage
+
+- 4 new `RenderPassEncoder` tests for `setBindGroup`:
+  - `SetBindGroupWithNullDoesNotCrash`
+  - `SetBindGroupWithEmptyGroupDoesNotCrash`
+  - `SetBindGroupWithTextureDoesNotCrash` — validates the texture handle casting fix
+  - `SetBindGroupWithSamplerDoesNotCrash`
+
+---
+
 ## [0.8.0] - 2026-04-12
 
 ### Added

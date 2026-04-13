@@ -1544,6 +1544,15 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 }
 
 
+void Device::waitForIdle() {
+    auto* d = static_cast<DeviceData*>(native);
+    d->waitForGpu();
+}
+
+void Device::scheduleNextPresent(void* /*nativeDrawable*/) {
+    // DirectX handles swapchain presentation inside submit() — no-op here.
+}
+
 std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     auto* d = static_cast<DeviceData*>(native);
     if (!d->swapChain || !d->rtvHeap) return nullptr;

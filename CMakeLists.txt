@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.8.0)
+project(campello_gpu VERSION 0.8.1)
 
 set(CMAKE_CXX_STANDARD 20)
 

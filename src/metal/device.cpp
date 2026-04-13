@@ -816,10 +816,42 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
 }
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
-    static_cast<MTL::CommandBuffer *>(commandBuffer->native)->commit();
-    
     auto *deviceData = static_cast<MetalDeviceData *>(native);
+    auto *cmdBuf     = static_cast<MTL::CommandBuffer *>(commandBuffer->native);
+
+    // If a drawable was scheduled via scheduleNextPresent(), attach it to this
+    // command buffer before committing.  Metal then presents the drawable at
+    // the next vsync AFTER the GPU finishes, preventing "present before render"
+    // artefacts.  The pointer is cleared after each use.
+    if (deviceData->pendingPresentDrawable) {
+        auto *drawable = static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable);
+        cmdBuf->presentDrawable(drawable);
+        deviceData->pendingPresentDrawable = nullptr;
+    }
+
+    cmdBuf->commit();
     deviceData->commandsSubmitted++;
+}
+
+void Device::scheduleNextPresent(void* nativeDrawable) {
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    deviceData->pendingPresentDrawable = nativeDrawable;
+}
+
+void Device::waitForIdle() {
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    // Commit an empty sentinel command buffer on the same queue and wait for it.
+    // Metal executes command buffers in order within a queue, so when this
+    // sentinel completes all previously committed buffers are guaranteed done.
+    // commandBuffer() returns an autoreleased object; retain() to take ownership,
+    // then release() after we're finished (mirrors createCommandEncoder pattern).
+    MTL::CommandBuffer *sentinel = deviceData->commandQueue->commandBuffer();
+    if (sentinel) {
+        sentinel->retain();
+        sentinel->commit();
+        sentinel->waitUntilCompleted();
+        sentinel->release();
+    }
 }
 
 std::shared_ptr<TextureView> Device::getSwapchainTextureView() {

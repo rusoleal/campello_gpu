@@ -454,6 +454,44 @@ namespace systems::leal::campello_gpu
          */
         void submit(std::shared_ptr<CommandBuffer> commandBuffer);
 
+        /**
+         * @brief Schedules a platform drawable to be presented after the next
+         *        submitted command buffer completes on the GPU.
+         *
+         * Call this once per frame, before the final `submit()` that renders to
+         * the drawable's texture.  On Metal, this calls
+         * `[MTLCommandBuffer presentDrawable:]` before `commit()`, which ties
+         * presentation to the GPU completion signal and to the display vsync —
+         * eliminating tearing and "present before render" artefacts that occur
+         * when `[drawable present]` is called separately on the CPU.
+         *
+         * The stored pointer is consumed by the very next `submit()` call and
+         * then cleared, so it must be set again every frame.
+         *
+         * On Vulkan and DirectX the function is a no-op (those backends handle
+         * swapchain presentation inside `submit()` already).
+         *
+         * @param nativeDrawable  Platform drawable handle — on macOS/iOS this is
+         *                        `(__bridge void*)id<CAMetalDrawable>`.
+         */
+        void scheduleNextPresent(void* nativeDrawable);
+
+        /**
+         * @brief Blocks the calling thread until all previously submitted commands
+         *        on this device's queue have finished executing on the GPU.
+         *
+         * Use this to synchronize CPU and GPU when a texture rendered by one
+         * `Device` must be fully written before another `Device` (or the display
+         * compositor) reads it.  For example, call this after submitting an
+         * offscreen render pass and before presenting the result to the screen.
+         *
+         * This is a CPU-side wait: it does not stall other GPU work on unrelated
+         * queues, but it does block the calling thread until the GPU drains.
+         * Avoid calling it every frame on a performance-critical path; prefer
+         * event-based synchronization when possible.
+         */
+        void waitForIdle();
+
         // ------------------------------------------------------------------
         // Static factory methods
         // ------------------------------------------------------------------

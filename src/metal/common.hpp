@@ -23,7 +23,11 @@ namespace systems::leal::campello_gpu {
 struct MetalDeviceData {
     MTL::Device       *device;
     MTL::CommandQueue *commandQueue;
-    
+
+    // Drawable scheduled via Device::scheduleNextPresent() — consumed on the
+    // next Device::submit() call to attach presentDrawable: before commit().
+    void* pendingPresentDrawable = nullptr;
+
     // Resource counters
     std::atomic<uint32_t> bufferCount{0};
     std::atomic<uint32_t> textureCount{0};

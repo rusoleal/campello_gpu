@@ -1890,6 +1890,15 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     deviceData->commandsSubmitted++;
 }
 
+void Device::waitForIdle() {
+    auto deviceData = (DeviceData *)this->native;
+    vkQueueWaitIdle(deviceData->graphicsQueue);
+}
+
+void Device::scheduleNextPresent(void* /*nativeDrawable*/) {
+    // Vulkan handles swapchain presentation inside submit() — no-op here.
+}
+
 std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     // On Vulkan/Android the swapchain image is acquired per-frame via
     // vkAcquireNextImageKHR. Use TextureView::fromNative() with the
