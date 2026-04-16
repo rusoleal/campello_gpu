@@ -18,12 +18,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          - os: macos-15-intel
+            name: macOS Intel (x86_64)
+          - os: macos-latest
             name: macOS
           - os: ubuntu-latest
             name: Linux
+          - os: ubuntu-24.04-arm
+            name: Linux arm64 — PulseAudio
           - os: windows-latest
             name: Windows
+          - os: windows-11-arm
+            name: Windows arm64
 
     runs-on: ${{ matrix.os }}
 
