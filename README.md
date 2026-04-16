@@ -2,6 +2,15 @@
 
 A cross-platform GPU abstraction library (C++20) with a WebGPU-inspired API. Provides a unified interface over Metal, Vulkan, and DirectX 12 for both rendering and compute workloads.
 
+## 🚀 Part of the Campello Engine
+
+This project is a module within the **Campello** ecosystem.
+
+👉 Main repository: https://github.com/rusoleal/campello
+
+Campello is a modular, composable game engine built as a collection of independent libraries.
+Each module is designed to work standalone, but integrates seamlessly into the engine runtime.
+
 ## Platforms
 
 | OS | Engine | Status |
