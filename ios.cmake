@@ -38,5 +38,5 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC
-    "${PROJECT_BINARY_DIR}"
+    "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>"
 )
