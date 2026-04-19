@@ -42,6 +42,34 @@ make -C build
 
 CMake automatically selects the backend based on the target platform (`android.cmake`, `macos.cmake`, `windows.cmake`, etc.).
 
+## Integration
+
+### find_package (installed library)
+
+```bash
+cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --install build
+```
+
+```cmake
+find_package(campello_gpu REQUIRED)
+target_link_libraries(your_target PRIVATE campello_gpu::campello_gpu)
+```
+
+### FetchContent
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    campello_gpu
+    GIT_REPOSITORY https://github.com/rusoleal/campello_gpu.git
+    GIT_TAG        main
+)
+FetchContent_MakeAvailable(campello_gpu)
+
+target_link_libraries(your_target PRIVATE campello_gpu::campello_gpu)
+```
+
 ## Usage
 
 All types are in the `systems::leal::campello_gpu` namespace.

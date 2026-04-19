@@ -1,10 +1,12 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.8.1)
+project(campello_gpu VERSION 0.9.0)
 
 set(CMAKE_CXX_STANDARD 20)
 
 message(STATUS "CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}")
+
+include(GNUInstallDirs)
 
 include_directories(inc)
 
@@ -21,6 +23,60 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
 elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     include(linux.cmake)
 endif()
+
+# ---------------------------------------------------------------------------
+# Alias target — lets consumers link against campello_gpu::campello_gpu
+# whether they use FetchContent (add_subdirectory) or find_package.
+# ---------------------------------------------------------------------------
+add_library(campello_gpu::campello_gpu ALIAS ${PROJECT_NAME})
+
+# Expose the installed header path for consumers that use find_package.
+target_include_directories(${PROJECT_NAME} PUBLIC
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
+# ---------------------------------------------------------------------------
+# Install & export — required for find_package support.
+# FetchContent users (add_subdirectory) do not need this block;
+# they get the target directly via the alias above.
+# ---------------------------------------------------------------------------
+install(TARGETS ${PROJECT_NAME}
+    EXPORT campello_gpuTargets
+    LIBRARY  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE  DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME  DESTINATION ${CMAKE_INSTALL_BINDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(DIRECTORY inc/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(EXPORT campello_gpuTargets
+    FILE      campello_gpuTargets.cmake
+    NAMESPACE campello_gpu::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/campello_gpu
+)
+
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    cmake/campello_gpuConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/campello_gpuConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/campello_gpu
+)
+
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/campello_gpuConfigVersion.cmake
+    VERSION     ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/campello_gpuConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/campello_gpuConfigVersion.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/campello_gpu
+)
 
 # ---------------------------------------------------------------------------
 # Tests

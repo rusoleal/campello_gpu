@@ -2,6 +2,20 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.9.0] - 2026-04-19
+
+### Added
+
+- **CMake package installation support** — `campello_gpu` can now be consumed via `find_package(campello_gpu)` in addition to `FetchContent`/`add_subdirectory`
+  - `include(GNUInstallDirs)` for standard install path variables
+  - `campello_gpu::campello_gpu` alias target works transparently in both `add_subdirectory` and `find_package` contexts
+  - `install(TARGETS)` exports the library to `lib/cmake/campello_gpu/campello_gpuTargets.cmake`
+  - `install(DIRECTORY inc/)` installs public headers to the system include path
+  - `cmake/campello_gpuConfig.cmake.in` — package config template for `find_package` discovery
+  - `campello_gpuConfigVersion.cmake` generated via `write_basic_package_version_file` with `SameMajorVersion` compatibility
+
+---
+
 ## [0.8.1] - 2026-04-12
 
 ### Added
