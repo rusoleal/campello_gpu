@@ -8,6 +8,7 @@ add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
     src/vulkan_android/device.cpp
+    src/vulkan_android/fence.cpp
     src/vulkan_android/adapter.cpp
     src/vulkan_android/buffer.cpp
     src/vulkan_android/texture.cpp

@@ -67,6 +67,9 @@ namespace systems::leal::campello_gpu {
 
         /** @brief Shader input location index this attribute feeds into. */
         uint32_t shaderLocation;
+
+        /** @brief When true, integer component types are normalized to [-1,1] or [0,1]. */
+        bool normalized = false;
     };
 
     /**

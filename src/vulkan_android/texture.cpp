@@ -154,8 +154,10 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
 
     VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
     switch (dimension) {
-        case TextureType::tt1d: viewType = VK_IMAGE_VIEW_TYPE_1D; break;
-        case TextureType::tt3d: viewType = VK_IMAGE_VIEW_TYPE_3D; break;
+        case TextureType::tt1d:       viewType = VK_IMAGE_VIEW_TYPE_1D;       break;
+        case TextureType::tt3d:       viewType = VK_IMAGE_VIEW_TYPE_3D;       break;
+        case TextureType::ttCube:     viewType = VK_IMAGE_VIEW_TYPE_CUBE;     break;
+        case TextureType::ttCubeArray: viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY; break;
         default: break;
     }
 
@@ -194,7 +196,10 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
 }
 
 uint32_t Texture::getDepthOrarrayLayers() {
-    return ((TextureHandle *)native)->depth;
+    auto* h = (TextureHandle *)native;
+    if (h->textureType == TextureType::tt3d)
+        return h->depth;
+    return h->arrayLayers;
 }
 
 TextureType Texture::getDimension() {

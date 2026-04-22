@@ -61,13 +61,19 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(const BeginRe
                 ? MTL::StoreActionStore : MTL::StoreActionDontCare);
             depthAtt->setClearDepth(dsa.depthClearValue);
 
-            auto *stencilAtt = passDesc->stencilAttachment();
-            stencilAtt->setTexture(mtlTex);
-            stencilAtt->setLoadAction(dsa.stencilLoadOp == LoadOp::clear
-                ? MTL::LoadActionClear : MTL::LoadActionLoad);
-            stencilAtt->setStoreAction(dsa.stencilStoreOp == StoreOp::store
-                ? MTL::StoreActionStore : MTL::StoreActionDontCare);
-            stencilAtt->setClearStencil(dsa.stencilClearValue);
+            auto texFormat = mtlTex->pixelFormat();
+            bool hasStencil = (texFormat == MTL::PixelFormatDepth32Float_Stencil8)
+                             || (texFormat == MTL::PixelFormatDepth24Unorm_Stencil8);
+
+            if (hasStencil) {
+                auto *stencilAtt = passDesc->stencilAttachment();
+                stencilAtt->setTexture(mtlTex);
+                stencilAtt->setLoadAction(dsa.stencilLoadOp == LoadOp::clear
+                    ? MTL::LoadActionClear : MTL::LoadActionLoad);
+                stencilAtt->setStoreAction(dsa.stencilStoreOp == StoreOp::store
+                    ? MTL::StoreActionStore : MTL::StoreActionDontCare);
+                stencilAtt->setClearStencil(dsa.stencilClearValue);
+            }
         }
     }
 

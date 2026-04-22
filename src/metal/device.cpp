@@ -6,6 +6,7 @@
 #include "ray_tracing_pipeline_handle.hpp"
 #include "acceleration_structure_helpers.hpp"
 #include "bind_group_data.hpp"
+#include "bind_group_layout_data.hpp"
 #include "buffer_handle.hpp"
 #include "texture_handle.hpp"
 #include "campello_gpu_config.h"
@@ -84,46 +85,46 @@ static MTL::CompareFunction toMTLCompare(CompareOp op) {
     }
 }
 
-static MTL::VertexFormat toMTLVertexFormat(ComponentType comp, AccessorType acc) {
+static MTL::VertexFormat toMTLVertexFormat(ComponentType comp, AccessorType acc, bool normalized) {
     switch (acc) {
         case AccessorType::acScalar:
             switch (comp) {
                 case ComponentType::ctFloat:         return MTL::VertexFormatFloat;
                 case ComponentType::ctUnsignedInt:   return MTL::VertexFormatUInt;
-                case ComponentType::ctByte:          return MTL::VertexFormatChar;
-                case ComponentType::ctUnsignedByte:  return MTL::VertexFormatUChar;
-                case ComponentType::ctShort:         return MTL::VertexFormatShort;
-                case ComponentType::ctUnsignedShort: return MTL::VertexFormatUShort;
+                case ComponentType::ctByte:          return normalized ? MTL::VertexFormatCharNormalized : MTL::VertexFormatChar;
+                case ComponentType::ctUnsignedByte:  return normalized ? MTL::VertexFormatUCharNormalized : MTL::VertexFormatUChar;
+                case ComponentType::ctShort:         return normalized ? MTL::VertexFormatShortNormalized : MTL::VertexFormatShort;
+                case ComponentType::ctUnsignedShort: return normalized ? MTL::VertexFormatUShortNormalized : MTL::VertexFormatUShort;
                 default:                             return MTL::VertexFormatFloat;
             }
         case AccessorType::acVec2:
             switch (comp) {
                 case ComponentType::ctFloat:         return MTL::VertexFormatFloat2;
                 case ComponentType::ctUnsignedInt:   return MTL::VertexFormatUInt2;
-                case ComponentType::ctByte:          return MTL::VertexFormatChar2;
-                case ComponentType::ctUnsignedByte:  return MTL::VertexFormatUChar2;
-                case ComponentType::ctShort:         return MTL::VertexFormatShort2;
-                case ComponentType::ctUnsignedShort: return MTL::VertexFormatUShort2;
+                case ComponentType::ctByte:          return normalized ? MTL::VertexFormatChar2Normalized : MTL::VertexFormatChar2;
+                case ComponentType::ctUnsignedByte:  return normalized ? MTL::VertexFormatUChar2Normalized : MTL::VertexFormatUChar2;
+                case ComponentType::ctShort:         return normalized ? MTL::VertexFormatShort2Normalized : MTL::VertexFormatShort2;
+                case ComponentType::ctUnsignedShort: return normalized ? MTL::VertexFormatUShort2Normalized : MTL::VertexFormatUShort2;
                 default:                             return MTL::VertexFormatFloat2;
             }
         case AccessorType::acVec3:
             switch (comp) {
                 case ComponentType::ctFloat:         return MTL::VertexFormatFloat3;
                 case ComponentType::ctUnsignedInt:   return MTL::VertexFormatUInt3;
-                case ComponentType::ctByte:          return MTL::VertexFormatChar3;
-                case ComponentType::ctUnsignedByte:  return MTL::VertexFormatUChar3;
-                case ComponentType::ctShort:         return MTL::VertexFormatShort3;
-                case ComponentType::ctUnsignedShort: return MTL::VertexFormatUShort3;
+                case ComponentType::ctByte:          return normalized ? MTL::VertexFormatChar3Normalized : MTL::VertexFormatChar3;
+                case ComponentType::ctUnsignedByte:  return normalized ? MTL::VertexFormatUChar3Normalized : MTL::VertexFormatUChar3;
+                case ComponentType::ctShort:         return normalized ? MTL::VertexFormatShort3Normalized : MTL::VertexFormatShort3;
+                case ComponentType::ctUnsignedShort: return normalized ? MTL::VertexFormatUShort3Normalized : MTL::VertexFormatUShort3;
                 default:                             return MTL::VertexFormatFloat3;
             }
         case AccessorType::acVec4:
             switch (comp) {
                 case ComponentType::ctFloat:         return MTL::VertexFormatFloat4;
                 case ComponentType::ctUnsignedInt:   return MTL::VertexFormatUInt4;
-                case ComponentType::ctByte:          return MTL::VertexFormatChar4;
-                case ComponentType::ctUnsignedByte:  return MTL::VertexFormatUChar4;
-                case ComponentType::ctShort:         return MTL::VertexFormatShort4;
-                case ComponentType::ctUnsignedShort: return MTL::VertexFormatUShort4;
+                case ComponentType::ctByte:          return normalized ? MTL::VertexFormatChar4Normalized : MTL::VertexFormatChar4;
+                case ComponentType::ctUnsignedByte:  return normalized ? MTL::VertexFormatUChar4Normalized : MTL::VertexFormatUChar4;
+                case ComponentType::ctShort:         return normalized ? MTL::VertexFormatShort4Normalized : MTL::VertexFormatShort4;
+                case ComponentType::ctUnsignedShort: return normalized ? MTL::VertexFormatUShort4Normalized : MTL::VertexFormatUShort4;
                 default:                             return MTL::VertexFormatFloat4;
             }
         default:
@@ -496,14 +497,37 @@ std::shared_ptr<Texture> Device::createTexture(
     switch (type) {
         case TextureType::tt1d:
             pTextureDesc->setTextureType(MTL::TextureType1D);
-            break;
-        case TextureType::tt2d:
-            pTextureDesc->setTextureType(
-                samples > 1 ? MTL::TextureType2DMultisample : MTL::TextureType2D);
+            pTextureDesc->setDepth(1);
+            pTextureDesc->setArrayLength(1);
             break;
         case TextureType::tt3d:
             pTextureDesc->setTextureType(MTL::TextureType3D);
+            pTextureDesc->setArrayLength(1);
             break;
+        case TextureType::ttCube:
+            pTextureDesc->setTextureType(MTL::TextureTypeCube);
+            pTextureDesc->setHeight(width);
+            pTextureDesc->setDepth(1);
+            pTextureDesc->setArrayLength(1);
+            break;
+        case TextureType::ttCubeArray:
+            pTextureDesc->setTextureType(MTL::TextureTypeCubeArray);
+            pTextureDesc->setHeight(width);
+            pTextureDesc->setDepth(1);
+            pTextureDesc->setArrayLength((depth > 0 ? depth : 6) / 6);
+            break;
+        default: {
+            uint32_t arrLen = depth > 0 ? depth : 1;
+            if (arrLen > 1) {
+                pTextureDesc->setTextureType(MTL::TextureType2DArray);
+            } else {
+                pTextureDesc->setTextureType(
+                    samples > 1 ? MTL::TextureType2DMultisample : MTL::TextureType2D);
+            }
+            pTextureDesc->setDepth(1);
+            pTextureDesc->setArrayLength(arrLen);
+            break;
+        }
     }
 
     MTL::TextureUsage mtlUsage = MTL::TextureUsageUnknown;
@@ -673,7 +697,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
                 auto *attrDesc = vertexDesc->attributes()->object(attr.shaderLocation);
                 attrDesc->setBufferIndex(bufIdx);
                 attrDesc->setOffset(attr.offset);
-                attrDesc->setFormat(toMTLVertexFormat(attr.componentType, attr.accessorType));
+                attrDesc->setFormat(toMTLVertexFormat(attr.componentType, attr.accessorType, attr.normalized));
             }
         }
         pipelineDesc->setVertexDescriptor(vertexDesc);
@@ -745,18 +769,25 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
 }
 
 std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLayoutDescriptor &descriptor) {
-    // Metal uses implicit binding; no separate layout object is required.
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->bindGroupLayoutCount++;
-    return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(nullptr));
+    auto *data = new MetalBindGroupLayoutData{ descriptor.entries };
+    return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(data));
 }
 
 std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor) {
-    auto *data = new MetalBindGroupData{ descriptor.entries };
-    
+    auto *data = new MetalBindGroupData{};
+    data->entries = descriptor.entries;
+    if (descriptor.layout && descriptor.layout->native) {
+        auto *layoutData = static_cast<MetalBindGroupLayoutData *>(descriptor.layout->native);
+        for (const auto &entry : layoutData->entries) {
+            data->visibility[entry.binding] = entry.visibility;
+        }
+    }
+
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->bindGroupCount++;
-    
+
     return std::shared_ptr<BindGroup>(new BindGroup(data));
 }
 
@@ -833,6 +864,27 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     deviceData->commandsSubmitted++;
 }
 
+void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
+                    std::shared_ptr<Fence> signalFence) {
+    auto *deviceData = static_cast<MetalDeviceData *>(native);
+    auto *cmdBuf     = static_cast<MTL::CommandBuffer *>(commandBuffer->native);
+
+    if (deviceData->pendingPresentDrawable) {
+        auto *drawable = static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable);
+        cmdBuf->presentDrawable(drawable);
+        deviceData->pendingPresentDrawable = nullptr;
+    }
+
+    // Capture shared_ptr so the fence stays alive until the GPU finishes.
+    cmdBuf->addCompletedHandler([signalFence](MTL::CommandBuffer*) {
+        auto *fenceData = static_cast<MetalFenceData *>(signalFence->native);
+        fenceData->signal();
+    });
+
+    cmdBuf->commit();
+    deviceData->commandsSubmitted++;
+}
+
 void Device::scheduleNextPresent(void* nativeDrawable) {
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->pendingPresentDrawable = nativeDrawable;
@@ -852,6 +904,11 @@ void Device::waitForIdle() {
         sentinel->waitUntilCompleted();
         sentinel->release();
     }
+}
+
+std::shared_ptr<Fence> Device::createFence() {
+    auto *fenceData = new MetalFenceData();
+    return std::shared_ptr<Fence>(new Fence(fenceData));
 }
 
 std::shared_ptr<TextureView> Device::getSwapchainTextureView() {

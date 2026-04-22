@@ -16,6 +16,7 @@ add_library(${PROJECT_NAME} SHARED
     src/metal/compute_pipeline.cpp
     src/metal/context.cpp
     src/metal/device.cpp
+    src/metal/fence.cpp
     src/metal/pipeline_layout.cpp
     src/metal/acceleration_structure.cpp
     src/metal/query_set.cpp

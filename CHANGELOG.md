@@ -2,6 +2,34 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [Unreleased]
+
+## [0.10.0] - 2026-04-22
+
+### Added
+
+- **Cubemap texture support** (`ttCube`, `ttCubeArray`) across all backends
+  - `TextureType::ttCube = 5` and `TextureType::ttCubeArray = 6` added to public enum
+  - WebGPU-style semantics: storage is a 2D texture with `depthOrArrayLayers = 6` (or multiple thereof); cubemap semantics come from the **view** dimension passed to `Texture::createView(..., dimension)`
+  - **Metal**: `createTexture()` maps `ttCube` → `MTLTextureTypeCube`, `ttCubeArray` → `MTLTextureTypeCubeArray`; `tt2d` with `depth > 1` uses `MTLTextureType2DArray`; `getDimension()` and `getDepthOrArrayLayers()` updated for cube types
+  - **Vulkan**: `createTexture()` sets `arrayLayers` from `depth` for 2D textures, adds `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT` for cube-compatible images; `createView()` supports `VK_IMAGE_VIEW_TYPE_CUBE` and `VK_IMAGE_VIEW_TYPE_CUBE_ARRAY`
+  - **DirectX**: `createView()` bug fixed — now correctly switches on the `dimension` parameter (was erroneously using `h->dimension`); added `D3D12_SRV_DIMENSION_TEXTURECUBE` and `D3D12_SRV_DIMENSION_TEXTURECUBEARRAY` descriptors
+  - Integration tests: `CreateCubeTextureDirectly`, `CreateCubeArrayTextureDirectly`, `CreateCubeViewFrom2DArray`, `CreateCubeArrayViewFrom2DArray`
+
+- **Linux Vulkan backend** — full headless Vulkan 1.x backend for Linux (`src/vulkan_linux/`)
+  - Copy-and-adapt from the production-ready Android Vulkan backend
+  - All core API implemented: Device, Adapter, Buffer, Texture, ShaderModule, RenderPipeline, ComputePipeline, BindGroup, CommandEncoder, RenderPassEncoder, ComputePassEncoder, QuerySet, Sampler, Fence
+  - Dynamic rendering (`VK_KHR_dynamic_rendering`) for render passes
+  - GPU timing via timestamp queries
+  - Full metrics & observability: resource counters, memory tracking, pass performance stats, memory pressure management
+  - Proper device-local image memory allocation for textures (fixed missing image memory bind from Android backend)
+  - Headless-only in this release: windowed X11/Wayland swapchain support deferred to a future phase
+  - Hardware ray tracing deferred: `AccelerationStructure`, `RayTracingPipeline`, and `RayTracingPassEncoder` compile but return nullptr until RT extensions are wired up
+  - `linux.cmake` updated to build a full `SHARED` library linking `Vulkan::Vulkan`
+  - Integration tests updated to run on Linux (`__linux__` added to all `tryCreateDevice()` helpers)
+
+---
+
 ## [0.9.0] - 2026-04-19
 
 ### Added

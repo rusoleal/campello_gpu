@@ -3,6 +3,8 @@
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/compute_pipeline.hpp>
 #include <campello_gpu/bind_group.hpp>
+#include "bind_group_data.hpp"
+#include "buffer_handle.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -59,7 +61,21 @@ void ComputePassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup>
                                       const std::vector<uint32_t> &dynamicOffsets,
                                       uint64_t dynamicOffsetsStart,
                                       uint64_t dynamicOffsetsLength) {
-    // Metal uses direct buffer/texture binding on the encoder; BindGroup is a no-op placeholder.
+    (void)index; (void)dynamicOffsets; (void)dynamicOffsetsStart; (void)dynamicOffsetsLength;
+    if (!bindGroup || !bindGroup->native) return;
+
+    auto *data = static_cast<MetalComputeEncoderData *>(native);
+    auto *bgData = static_cast<MetalBindGroupData *>(bindGroup->native);
+
+    for (const auto& entry : bgData->entries) {
+        if (const auto* bb = std::get_if<BufferBinding>(&entry.resource)) {
+            if (!bb->buffer) continue;
+            auto *handle = static_cast<MetalBufferHandle *>(bb->buffer->native);
+            data->encoder->setBuffer(handle->buffer,
+                                     static_cast<NS::UInteger>(bb->offset),
+                                     static_cast<NS::UInteger>(entry.binding));
+        }
+    }
 }
 
 void ComputePassEncoder::setPipeline(std::shared_ptr<ComputePipeline> pipeline) {

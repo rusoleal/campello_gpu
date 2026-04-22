@@ -83,4 +83,12 @@ namespace systems::leal::campello_gpu {
         float timestampPeriod = 1.0f;  // From VkPhysicalDeviceLimits, in nanoseconds per tick
     };
 
+    /**
+     * @brief Per-Fence Vulkan state.
+     */
+    struct VulkanFenceData {
+        VkDevice device       = VK_NULL_HANDLE;
+        VkFence  fence        = VK_NULL_HANDLE;
+    };
+
 }

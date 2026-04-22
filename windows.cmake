@@ -10,6 +10,7 @@ add_library(${PROJECT_NAME} SHARED
     src/directx/compute_pipeline.cpp
     src/directx/context.cpp
     src/directx/device.cpp
+    src/directx/fence.cpp
     src/directx/pipeline_layout.cpp
     src/directx/query_set.cpp
     src/directx/render_pass_encoder.cpp

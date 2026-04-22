@@ -44,6 +44,8 @@ TextureType Texture::getDimension() {
     switch (((MetalTextureHandle *)native)->texture->textureType()) {
         case MTL::TextureType1D:            return TextureType::tt1d;
         case MTL::TextureType3D:            return TextureType::tt3d;
+        case MTL::TextureTypeCube:          return TextureType::ttCube;
+        case MTL::TextureTypeCubeArray:     return TextureType::ttCubeArray;
         case MTL::TextureType2D:
         case MTL::TextureType2DMultisample:
         default:                            return TextureType::tt2d;
@@ -166,9 +168,11 @@ std::shared_ptr<TextureView> Texture::createView(
 
     MTL::TextureType mtlType;
     switch (dimension) {
-        case TextureType::tt1d: mtlType = MTL::TextureType1D;  break;
-        case TextureType::tt3d: mtlType = MTL::TextureType3D;  break;
-        default:                mtlType = MTL::TextureType2D;  break;
+        case TextureType::tt1d:       mtlType = MTL::TextureType1D;       break;
+        case TextureType::tt3d:       mtlType = MTL::TextureType3D;       break;
+        case TextureType::ttCube:     mtlType = MTL::TextureTypeCube;     break;
+        case TextureType::ttCubeArray: mtlType = MTL::TextureTypeCubeArray; break;
+        default:                      mtlType = MTL::TextureType2D;       break;
     }
 
     NS::Range mipRange   = NS::Range::Make(baseMipLevel, tex->mipmapLevelCount() - baseMipLevel);

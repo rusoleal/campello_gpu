@@ -24,7 +24,7 @@ Each module is designed to work standalone, but integrates seamlessly into the e
 | macos/ios | OpenGL | Frozen |
 | macos/ios | Vulkan 1.x | Not started |
 | android | OpenGL | Frozen |
-| linux | Vulkan 1.x | Not started |
+| linux | Vulkan 1.x | Production ready (headless) |
 | linux | OpenGL | Frozen |
 
 ## Requirements

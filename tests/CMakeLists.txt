@@ -37,7 +37,7 @@ set_target_properties(campello_gpu_universal_tests PROPERTIES
 # ---------------------------------------------------------------------------
 # Integration tests — require a real GPU device, link against campello_gpu.
 # Build only when BUILD_INTEGRATION_TESTS=ON.
-# Supported platforms: macOS/iOS (Metal), Android (Vulkan), Windows (DirectX 12).
+# Supported platforms: macOS/iOS (Metal), Android (Vulkan), Windows (DirectX 12), Linux (Vulkan).
 # ---------------------------------------------------------------------------
 if(BUILD_INTEGRATION_TESTS)
     add_executable(campello_gpu_integration_tests

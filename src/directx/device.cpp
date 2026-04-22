@@ -1543,6 +1543,46 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     d->commandsSubmitted++;
 }
 
+void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
+                    std::shared_ptr<Fence> signalFence) {
+    auto* h  = static_cast<CommandBufferHandle*>(commandBuffer->native);
+    auto* d  = h->deviceData;
+
+    ID3D12CommandList* lists[] = { h->cmdList };
+    d->queue->ExecuteCommandLists(1, lists);
+
+    if (d->swapChain) {
+        d->swapChain->Present(1, 0);
+        d->frameIndex = d->swapChain->GetCurrentBackBufferIndex();
+    }
+
+    // Signal the per-fence object instead of the global device fence.
+    auto* fenceData = static_cast<DirectXFenceData*>(signalFence->native);
+    ++fenceData->value;
+    d->queue->Signal(fenceData->fence, fenceData->value);
+
+    d->commandsSubmitted++;
+}
+
+std::shared_ptr<Fence> Device::createFence() {
+    auto* d = static_cast<DeviceData*>(native);
+    auto* fenceData = new DirectXFenceData();
+
+    if (FAILED(d->device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                       IID_PPV_ARGS(&fenceData->fence)))) {
+        delete fenceData;
+        return nullptr;
+    }
+
+    fenceData->fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (!fenceData->fenceEvent) {
+        fenceData->fence->Release();
+        delete fenceData;
+        return nullptr;
+    }
+
+    return std::shared_ptr<Fence>(new Fence(fenceData));
+}
 
 void Device::waitForIdle() {
     auto* d = static_cast<DeviceData*>(native);

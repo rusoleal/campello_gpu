@@ -25,6 +25,8 @@ static std::shared_ptr<Device> tryCreateDevice() {
     return Device::createDefaultDevice(nullptr);
 #elif defined(_WIN32)
     return Device::createDefaultDevice(nullptr);
+#elif defined(__linux__)
+    return Device::createDefaultDevice(nullptr);
 #else
     return nullptr;
 #endif
@@ -151,6 +153,76 @@ TEST(Texture, MultipleViewsCanBeCreated) {
     EXPECT_NE(view2, nullptr);
     // Two separate view objects.
     EXPECT_NE(view1.get(), view2.get());
+}
+
+// ---------------------------------------------------------------------------
+// Cubemap creation & views
+// ---------------------------------------------------------------------------
+
+TEST(Texture, CreateCubeTextureDirectly) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto tex = device->createTexture(
+        TextureType::ttCube, PixelFormat::rgba8unorm,
+        64, 64, 1, 1, 1,
+        TextureUsage::textureBinding);
+    ASSERT_NE(tex, nullptr);
+    EXPECT_EQ(tex->getDimension(), TextureType::ttCube);
+    EXPECT_EQ(tex->getWidth(), 64u);
+    EXPECT_EQ(tex->getHeight(), 64u);
+}
+
+TEST(Texture, CreateCubeArrayTextureDirectly) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto tex = device->createTexture(
+        TextureType::ttCubeArray, PixelFormat::rgba8unorm,
+        64, 64, 12, 1, 1,
+        TextureUsage::textureBinding);
+    ASSERT_NE(tex, nullptr);
+    EXPECT_EQ(tex->getDimension(), TextureType::ttCubeArray);
+}
+
+TEST(Texture, CreateCubeViewFrom2DArray) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    // WebGPU-style: create a 2D texture with 6 array layers, then view as cube.
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        64, 64, 6, 1, 1,
+        TextureUsage::textureBinding);
+    ASSERT_NE(tex, nullptr);
+
+    auto view = tex->createView(
+        PixelFormat::rgba8unorm,
+        6,              // arrayLayerCount
+        Aspect::all,
+        0, 0,           // baseArrayLayer, baseMipLevel
+        TextureType::ttCube);
+    EXPECT_NE(view, nullptr);
+}
+
+TEST(Texture, CreateCubeArrayViewFrom2DArray) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    // WebGPU-style: create a 2D texture with 12 array layers, then view as cube-array.
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        64, 64, 12, 1, 1,
+        TextureUsage::textureBinding);
+    ASSERT_NE(tex, nullptr);
+
+    auto view = tex->createView(
+        PixelFormat::rgba8unorm,
+        12,             // arrayLayerCount
+        Aspect::all,
+        0, 0,           // baseArrayLayer, baseMipLevel
+        TextureType::ttCubeArray);
+    EXPECT_NE(view, nullptr);
 }
 
 // ---------------------------------------------------------------------------

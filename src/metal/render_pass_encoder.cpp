@@ -10,6 +10,9 @@
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/sampler.hpp>
 #include <campello_gpu/descriptors/bind_group_descriptor.hpp>
+#include <campello_gpu/constants/shader_stage.hpp>
+#include <unordered_map>
+#include <utility>
 
 using namespace systems::leal::campello_gpu;
 
@@ -19,6 +22,19 @@ struct MetalRenderEncoderData {
     MTL::Buffer               *indexBuffer;
     MTL::IndexType             indexType;
     NS::UInteger               indexOffset;
+
+    // Pipeline state cache — avoids redundant setRenderPipelineState calls.
+    MTL::RenderPipelineState  *currentPipelineState = nullptr;
+    MTL::DepthStencilState    *currentDepthStencilState = nullptr;
+
+    // Resource binding cache — avoids redundant encoder calls that trigger
+    // Metal API Validation asserts.
+    std::unordered_map<uint32_t, MTL::SamplerState*> vertexSamplers;
+    std::unordered_map<uint32_t, MTL::SamplerState*> fragmentSamplers;
+    std::unordered_map<uint32_t, MTL::Texture*>       vertexTextures;
+    std::unordered_map<uint32_t, MTL::Texture*>       fragmentTextures;
+    std::unordered_map<uint32_t, std::pair<MTL::Buffer*, NS::UInteger>> vertexBuffers;
+    std::unordered_map<uint32_t, std::pair<MTL::Buffer*, NS::UInteger>> fragmentBuffers;
 
     MetalRenderEncoderData(MTL::RenderCommandEncoder *enc)
         : encoder(enc), indexBuffer(nullptr),
@@ -112,11 +128,17 @@ void RenderPassEncoder::setIndexBuffer(std::shared_ptr<Buffer> buffer,
 }
 
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
-    auto *enc    = static_cast<MetalRenderEncoderData *>(native)->encoder;
+    auto *data   = static_cast<MetalRenderEncoderData *>(native);
+    auto *enc    = data->encoder;
     auto *handle = static_cast<MetalRenderPipelineData *>(pipeline->native);
-    enc->setRenderPipelineState(handle->pipelineState);
-    if (handle->depthStencilState)
+    if (data->currentPipelineState != handle->pipelineState) {
+        enc->setRenderPipelineState(handle->pipelineState);
+        data->currentPipelineState = handle->pipelineState;
+    }
+    if (handle->depthStencilState && data->currentDepthStencilState != handle->depthStencilState) {
         enc->setDepthStencilState(handle->depthStencilState);
+        data->currentDepthStencilState = handle->depthStencilState;
+    }
 }
 
 void RenderPassEncoder::setScissorRect(float x, float y, float width, float height) {
@@ -155,34 +177,83 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
                                      const std::vector<uint32_t> &dynamicOffsets,
                                      uint64_t dynamicOffsetsStart,
                                      uint64_t dynamicOffsetsLength) {
+    (void)index; (void)dynamicOffsets; (void)dynamicOffsetsStart; (void)dynamicOffsetsLength;
     if (!native) return;
     if (!bindGroup) return;
-    auto *enc    = static_cast<MetalRenderEncoderData *>(native)->encoder;
+    auto *data   = static_cast<MetalRenderEncoderData *>(native);
+    auto *enc    = data->encoder;
     if (!enc) return;
     auto *bgData = static_cast<MetalBindGroupData *>(bindGroup->native);
     if (!bgData) return;
 
     for (const auto &entry : bgData->entries) {
+        auto visIt = bgData->visibility.find(entry.binding);
+        ShaderStage visibility = (visIt != bgData->visibility.end())
+            ? visIt->second
+            : static_cast<ShaderStage>(
+                  static_cast<uint32_t>(ShaderStage::vertex) |
+                  static_cast<uint32_t>(ShaderStage::fragment));
+
+        bool vertexVisible   = static_cast<uint32_t>(visibility) & static_cast<uint32_t>(ShaderStage::vertex);
+        bool fragmentVisible = static_cast<uint32_t>(visibility) & static_cast<uint32_t>(ShaderStage::fragment);
+
         if (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource)) {
             const auto &texPtr = std::get<std::shared_ptr<Texture>>(entry.resource);
             if (!texPtr || !texPtr->native) continue;
             auto *texHandle = static_cast<MetalTextureHandle *>(texPtr->native);
             if (!texHandle->texture) continue;
-            enc->setVertexTexture(texHandle->texture, entry.binding);
-            enc->setFragmentTexture(texHandle->texture, entry.binding);
+            if (vertexVisible) {
+                auto it = data->vertexTextures.find(entry.binding);
+                if (it == data->vertexTextures.end() || it->second != texHandle->texture) {
+                    enc->setVertexTexture(texHandle->texture, entry.binding);
+                    data->vertexTextures[entry.binding] = texHandle->texture;
+                }
+            }
+            if (fragmentVisible) {
+                auto it = data->fragmentTextures.find(entry.binding);
+                if (it == data->fragmentTextures.end() || it->second != texHandle->texture) {
+                    enc->setFragmentTexture(texHandle->texture, entry.binding);
+                    data->fragmentTextures[entry.binding] = texHandle->texture;
+                }
+            }
         } else if (std::holds_alternative<std::shared_ptr<Sampler>>(entry.resource)) {
             const auto &sampPtr = std::get<std::shared_ptr<Sampler>>(entry.resource);
             if (!sampPtr || !sampPtr->native) continue;
             auto *samp = static_cast<MTL::SamplerState *>(sampPtr->native);
-            enc->setVertexSamplerState(samp, entry.binding);
-            enc->setFragmentSamplerState(samp, entry.binding);
+            if (vertexVisible) {
+                auto it = data->vertexSamplers.find(entry.binding);
+                if (it == data->vertexSamplers.end() || it->second != samp) {
+                    enc->setVertexSamplerState(samp, entry.binding);
+                    data->vertexSamplers[entry.binding] = samp;
+                }
+            }
+            if (fragmentVisible) {
+                auto it = data->fragmentSamplers.find(entry.binding);
+                if (it == data->fragmentSamplers.end() || it->second != samp) {
+                    enc->setFragmentSamplerState(samp, entry.binding);
+                    data->fragmentSamplers[entry.binding] = samp;
+                }
+            }
         } else if (std::holds_alternative<BufferBinding>(entry.resource)) {
             const auto &bb  = std::get<BufferBinding>(entry.resource);
             if (!bb.buffer || !bb.buffer->native) continue;
             auto *bufHandle = static_cast<MetalBufferHandle *>(bb.buffer->native);
             if (!bufHandle->buffer) continue;
-            enc->setVertexBuffer(bufHandle->buffer, bb.offset, entry.binding);
-            enc->setFragmentBuffer(bufHandle->buffer, bb.offset, entry.binding);
+            auto key = std::make_pair(bufHandle->buffer, static_cast<NS::UInteger>(bb.offset));
+            if (vertexVisible) {
+                auto it = data->vertexBuffers.find(entry.binding);
+                if (it == data->vertexBuffers.end() || it->second != key) {
+                    enc->setVertexBuffer(bufHandle->buffer, bb.offset, entry.binding);
+                    data->vertexBuffers[entry.binding] = key;
+                }
+            }
+            if (fragmentVisible) {
+                auto it = data->fragmentBuffers.find(entry.binding);
+                if (it == data->fragmentBuffers.end() || it->second != key) {
+                    enc->setFragmentBuffer(bufHandle->buffer, bb.offset, entry.binding);
+                    data->fragmentBuffers[entry.binding] = key;
+                }
+            }
         }
     }
 }

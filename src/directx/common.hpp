@@ -356,6 +356,18 @@ struct CommandBufferHandle {
     double                     timestampFrequency = 0.0;  // Ticks per second
 };
 
+/**
+ * @brief Per-Fence DirectX 12 state.
+ *
+ * Each fence owns its own ID3D12Fence + event handle so that multiple fences
+ * can be waited on independently (required for frame-in-flight rings).
+ */
+struct DirectXFenceData {
+    ID3D12Fence* fence      = nullptr;
+    HANDLE       fenceEvent = nullptr;
+    UINT64       value      = 0;
+};
+
 } // namespace systems::leal::campello_gpu
 
 // -----------------------------------------------------------------------

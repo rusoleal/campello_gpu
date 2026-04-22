@@ -32,6 +32,8 @@ static std::shared_ptr<Device> tryCreateDevice() {
     return Device::createDefaultDevice(nullptr);
 #elif defined(_WIN32)
     return Device::createDefaultDevice(nullptr);
+#elif defined(__linux__)
+    return Device::createDefaultDevice(nullptr);
 #else
     return nullptr;
 #endif

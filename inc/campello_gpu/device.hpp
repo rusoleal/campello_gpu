@@ -33,6 +33,7 @@
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/feature.hpp>
 #include <campello_gpu/metrics.hpp>
+#include <campello_gpu/fence.hpp>
 
 namespace systems::leal::campello_gpu
 {
@@ -455,6 +456,19 @@ namespace systems::leal::campello_gpu
         void submit(std::shared_ptr<CommandBuffer> commandBuffer);
 
         /**
+         * @brief Submit a command buffer and signal a fence when GPU work completes.
+         *
+         * Unlike the single-argument overload, this does NOT block the calling
+         * thread. The CPU can continue immediately. Use @p signalFence->wait()
+         * later to synchronize before reusing frame resources.
+         *
+         * @param commandBuffer The command buffer to execute.
+         * @param signalFence   Fence to signal after GPU completion.
+         */
+        void submit(std::shared_ptr<CommandBuffer> commandBuffer,
+                    std::shared_ptr<Fence> signalFence);
+
+        /**
          * @brief Schedules a platform drawable to be presented after the next
          *        submitted command buffer completes on the GPU.
          *
@@ -491,6 +505,11 @@ namespace systems::leal::campello_gpu
          * event-based synchronization when possible.
          */
         void waitForIdle();
+
+        /**
+         * @brief Create a binary fence in the unsignaled state.
+         */
+        std::shared_ptr<Fence> createFence();
 
         // ------------------------------------------------------------------
         // Static factory methods

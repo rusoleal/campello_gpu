@@ -80,7 +80,7 @@ std::shared_ptr<TextureView> Texture::createView(
                 ? std::max(h->depthOrLayers - baseArrayLayer, 1u)
                 : arrayLayerCount;
 
-            switch (h->dimension) {
+            switch (dimension) {
                 case TextureType::tt1d:
                     srvDesc.ViewDimension              = D3D12_SRV_DIMENSION_TEXTURE1D;
                     srvDesc.Texture1D.MostDetailedMip  = baseMipLevel;
@@ -90,6 +90,20 @@ std::shared_ptr<TextureView> Texture::createView(
                     srvDesc.ViewDimension              = D3D12_SRV_DIMENSION_TEXTURE3D;
                     srvDesc.Texture3D.MostDetailedMip  = baseMipLevel;
                     srvDesc.Texture3D.MipLevels        = h->mipLevels - baseMipLevel;
+                    break;
+                case TextureType::ttCube:
+                    srvDesc.ViewDimension                  = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                    srvDesc.TextureCube.MostDetailedMip    = baseMipLevel;
+                    srvDesc.TextureCube.MipLevels          = h->mipLevels - baseMipLevel;
+                    srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+                    break;
+                case TextureType::ttCubeArray:
+                    srvDesc.ViewDimension                      = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                    srvDesc.TextureCubeArray.MostDetailedMip   = baseMipLevel;
+                    srvDesc.TextureCubeArray.MipLevels         = h->mipLevels - baseMipLevel;
+                    srvDesc.TextureCubeArray.First2DArrayFace  = baseArrayLayer;
+                    srvDesc.TextureCubeArray.NumCubes          = layers / 6;
+                    srvDesc.TextureCubeArray.ResourceMinLODClamp = 0.0f;
                     break;
                 default:
                     if (layers > 1) {

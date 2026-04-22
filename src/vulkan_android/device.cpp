@@ -614,11 +614,21 @@ std::shared_ptr<Texture> Device::createTexture(
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.pNext = nullptr;
-    imageInfo.imageType = (VkImageType)type;
+    VkImageType imageType;
+    uint32_t arrayLayers = 1;
+    uint32_t extDepth = depth;
+    switch (type) {
+        case TextureType::tt1d:       imageType = VK_IMAGE_TYPE_1D; arrayLayers = 1;       extDepth = 1; break;
+        case TextureType::tt3d:       imageType = VK_IMAGE_TYPE_3D; arrayLayers = 1;       break;
+        case TextureType::ttCube:     imageType = VK_IMAGE_TYPE_2D; arrayLayers = 6;       extDepth = 1; break;
+        case TextureType::ttCubeArray: imageType = VK_IMAGE_TYPE_2D; arrayLayers = depth;   extDepth = 1; break;
+        default:                      imageType = VK_IMAGE_TYPE_2D; arrayLayers = depth;   extDepth = 1; break;
+    }
+    imageInfo.imageType = imageType;
     imageInfo.format = pixelFormatToNative(pixelFormat);
-    imageInfo.extent = {width, height, depth};
+    imageInfo.extent = {width, height, extDepth};
     imageInfo.mipLevels = mipLevels;
-    imageInfo.arrayLayers = 1;
+    imageInfo.arrayLayers = arrayLayers;
     imageInfo.samples = (VkSampleCountFlagBits)samples;
     imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.usage = imageUsage;
@@ -626,6 +636,9 @@ std::shared_ptr<Texture> Device::createTexture(
     imageInfo.queueFamilyIndexCount = 0;
     imageInfo.pQueueFamilyIndices = nullptr;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (type == TextureType::ttCube || type == TextureType::ttCubeArray ||
+        (type == TextureType::tt2d && depth >= 6))
+        imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 
     VkImage image;
     if (vkCreateImage(deviceData->device, &imageInfo, nullptr, &image) != VK_SUCCESS)
@@ -655,7 +668,7 @@ std::shared_ptr<Texture> Device::createTexture(
     viewInfo.subresourceRange.baseMipLevel   = 0;
     viewInfo.subresourceRange.levelCount     = mipLevels;
     viewInfo.subresourceRange.baseArrayLayer = 0;
-    viewInfo.subresourceRange.layerCount     = 1;
+    viewInfo.subresourceRange.layerCount     = arrayLayers;
 
     VkImageView defaultView = VK_NULL_HANDLE;
     vkCreateImageView(deviceData->device, &viewInfo, nullptr, &defaultView);
@@ -672,6 +685,7 @@ std::shared_ptr<Texture> Device::createTexture(
     toReturn->width          = width;
     toReturn->height         = height;
     toReturn->depth          = depth;
+    toReturn->arrayLayers    = arrayLayers;
     toReturn->mipLevels      = mipLevels;
     toReturn->samples        = samples;
     toReturn->pixelFormat    = pixelFormat;
@@ -1888,6 +1902,75 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     vkQueueWaitIdle(deviceData->graphicsQueue);
     
     deviceData->commandsSubmitted++;
+}
+
+void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
+                    std::shared_ptr<Fence> signalFence) {
+
+    auto deviceData = (DeviceData *)this->native;
+    auto cbHandle   = (CommandBufferHandle *)commandBuffer->native;
+    auto fenceData  = (VulkanFenceData *)signalFence->native;
+
+    // Reset fence before reuse (required by Vulkan binary fences).
+    vkResetFences(deviceData->device, 1, &fenceData->fence);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers    = &cbHandle->commandBuffer;
+
+    if (cbHandle->hasSwapchain) {
+        VkPipelineStageFlags waitStage  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        submitInfo.waitSemaphoreCount   = 1;
+        submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphore;
+        submitInfo.pWaitDstStageMask    = &waitStage;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
+    }
+
+    if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, fenceData->fence) != VK_SUCCESS) {
+        __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                            "Device::submit(fence): vkQueueSubmit failed");
+        return;
+    }
+
+    if (cbHandle->hasSwapchain) {
+        VkPresentInfoKHR presentInfo{};
+        presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        presentInfo.waitSemaphoreCount = 1;
+        presentInfo.pWaitSemaphores    = &deviceData->renderFinishedSemaphore;
+        presentInfo.swapchainCount     = 1;
+        presentInfo.pSwapchains        = &deviceData->swapchain;
+        presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
+
+        VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+            recreateSwapchain(deviceData);
+        } else if (result != VK_SUCCESS) {
+            __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                                "Device::submit(fence): vkQueuePresentKHR failed (%d)", result);
+        }
+    }
+
+    // NOTE: intentionally NOT calling vkQueueWaitIdle — caller waits on fence.
+    deviceData->commandsSubmitted++;
+}
+
+std::shared_ptr<Fence> Device::createFence() {
+    auto *deviceData = (DeviceData *)this->native;
+    auto *fenceData  = new VulkanFenceData();
+    fenceData->device = deviceData->device;
+
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;  // start signaled so first frame doesn't block
+
+    if (vkCreateFence(deviceData->device, &fenceInfo, nullptr, &fenceData->fence) != VK_SUCCESS) {
+        delete fenceData;
+        return nullptr;
+    }
+
+    return std::shared_ptr<Fence>(new Fence(fenceData));
 }
 
 void Device::waitForIdle() {

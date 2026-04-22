@@ -33,7 +33,7 @@ using namespace systems::leal::campello_gpu;
 // ---------------------------------------------------------------------------
 
 static std::shared_ptr<Device> tryCreateDevice() {
-#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32) || defined(__linux__)
     return Device::createDefaultDevice(nullptr);
 #else
     return nullptr;

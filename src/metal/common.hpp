@@ -15,6 +15,23 @@ namespace MTL {
 namespace systems::leal::campello_gpu {
 
 /**
+ * @brief Metal-specific fence data — pure CPU-side synchronization.
+ *
+ * Metal does not expose lightweight binary fences, so we use a condition
+ * variable signaled from the command buffer's addCompletedHandler.
+ */
+struct MetalFenceData {
+    std::atomic<bool> signaled{true};  // start signaled so first frame doesn't block
+    mutable std::mutex mutex;
+    std::condition_variable cv;
+
+    void signal() {
+        signaled.store(true, std::memory_order_release);
+        cv.notify_all();
+    }
+};
+
+/**
  * @brief Metal-specific device data structure.
  * 
  * This contains all the Metal device state including counters and metrics.

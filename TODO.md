@@ -107,7 +107,7 @@
 ## Build system
 
 - [x] `ios.cmake` — created; mirrors `macos.cmake` (same Metal backend, CMake handles sysroot/arch)
-- [x] `linux.cmake` — created; placeholder stub that builds `src/pi/` only so universal tests can configure and run
+- [x] `linux.cmake` — full Vulkan backend; builds `src/vulkan_linux/` with complete rendering/compute API (headless first, windowed X11/Wayland deferred)
 - [x] Add `src/pi/utils.cpp` to `macos.cmake`
 - [x] Add `src/pi/utils.cpp` to `windows.cmake` once DirectX `createBuffer` is wired up
 
@@ -182,6 +182,12 @@
 
 ## Public API / headers
 
+- [x] **Cubemap texture support** — `TextureType::ttCube` and `TextureType::ttCubeArray` added to public enum
+  - WebGPU-style semantics: storage = 2D texture with `depthOrArrayLayers = 6` (or multiple thereof); cube semantics come from view dimension
+  - `Texture::createView(..., dimension)` supports `ttCube` and `ttCubeArray` on all backends
+  - Metal: `createTexture()` maps cube types to `MTLTextureTypeCube` / `MTLTextureTypeCubeArray`; 2D arrays use `MTLTextureType2DArray`
+  - Vulkan: `createTexture()` sets `arrayLayers` from `depth`, adds `VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT`; `createView()` uses `VK_IMAGE_VIEW_TYPE_CUBE` / `CUBE_ARRAY`
+  - DirectX: `createView()` bug fixed (was switching on storage dimension instead of view dimension); cube SRV descriptors added
 - [x] `RenderPassEncoder::setBindGroup()` — implemented in Vulkan; present in Metal and DirectX
 - [x] `RenderPassEncoder::executeBundles()` — not present in `render_pass_encoder.hpp`; removed from API (render bundles are a WebGPU concept with no Vulkan/Metal equivalent; out of scope)
 - [x] `CommandEncoder::copyTextureToBuffer` — implemented (Vulkan + Metal)

@@ -1,14 +1,35 @@
 
-# Linux / Vulkan backend — not yet implemented.
-# This stub defines a minimal campello_gpu target so that CMake can configure
-# successfully and universal tests (which do not link against the library) can run.
+# Linux / Vulkan backend
+find_package(Vulkan REQUIRED)
+message(STATUS "Vulkan FOUND = ${Vulkan_FOUND}")
 
-message(STATUS "Linux/Vulkan backend not yet implemented — building placeholder library")
-
-add_library(${PROJECT_NAME} STATIC
+add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
+    src/vulkan_linux/device.cpp
+    src/vulkan_linux/adapter.cpp
+    src/vulkan_linux/buffer.cpp
+    src/vulkan_linux/texture.cpp
+    src/vulkan_linux/texture_view.cpp
+    src/vulkan_linux/shader_module.cpp
+    src/vulkan_linux/render_pipeline.cpp
+    src/vulkan_linux/compute_pipeline.cpp
+    src/vulkan_linux/sampler.cpp
+    src/vulkan_linux/query_set.cpp
+    src/vulkan_linux/pipeline_layout.cpp
+    src/vulkan_linux/bind_group.cpp
+    src/vulkan_linux/bind_group_layout.cpp
+    src/vulkan_linux/command_buffer.cpp
+    src/vulkan_linux/command_encoder.cpp
+    src/vulkan_linux/render_pass_encoder.cpp
+    src/vulkan_linux/compute_pass_encoder.cpp
+    src/vulkan_linux/acceleration_structure.cpp
+    src/vulkan_linux/ray_tracing_pipeline.cpp
+    src/vulkan_linux/ray_tracing_pass_encoder.cpp
+    src/vulkan_linux/fence.cpp
 )
+
+target_link_libraries(${PROJECT_NAME} Vulkan::Vulkan)
 
 target_include_directories(${PROJECT_NAME} PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"

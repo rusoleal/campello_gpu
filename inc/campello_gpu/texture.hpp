@@ -59,6 +59,10 @@ namespace systems::leal::campello_gpu
          * @param baseArrayLayer First array layer visible through this view.
          * @param baseMipLevel   Most-detailed mip level visible through this view.
          * @param dimension      Logical dimensionality of the view (default: `tt2d`).
+         *                       Use `ttCube` for cubemaps (requires the underlying 2D texture
+         *                       to have `depthOrArrayLayers == 6` and `width == height`).
+         *                       Use `ttCubeArray` for cubemap arrays (requires `depthOrArrayLayers`
+         *                       to be a multiple of 6).
          * @return A new `TextureView` on success, or `nullptr` on failure.
          */
         std::shared_ptr<TextureView> createView(

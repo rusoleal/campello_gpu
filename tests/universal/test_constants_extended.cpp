@@ -76,15 +76,19 @@ TEST(TextureUsage, FlagsAreUnique) {
 // ---------------------------------------------------------------------------
 
 TEST(TextureType, Values) {
-    EXPECT_EQ(static_cast<int>(TextureType::tt1d), 0);
-    EXPECT_EQ(static_cast<int>(TextureType::tt2d), 1);
-    EXPECT_EQ(static_cast<int>(TextureType::tt3d), 2);
+    EXPECT_EQ(static_cast<int>(TextureType::tt1d),       0);
+    EXPECT_EQ(static_cast<int>(TextureType::tt2d),       1);
+    EXPECT_EQ(static_cast<int>(TextureType::tt3d),       2);
+    EXPECT_EQ(static_cast<int>(TextureType::ttCube),     5);
+    EXPECT_EQ(static_cast<int>(TextureType::ttCubeArray), 6);
 }
 
 TEST(TextureType, ValuesAreDistinct) {
     EXPECT_NE(static_cast<int>(TextureType::tt1d), static_cast<int>(TextureType::tt2d));
     EXPECT_NE(static_cast<int>(TextureType::tt2d), static_cast<int>(TextureType::tt3d));
     EXPECT_NE(static_cast<int>(TextureType::tt1d), static_cast<int>(TextureType::tt3d));
+    EXPECT_NE(static_cast<int>(TextureType::tt2d), static_cast<int>(TextureType::ttCube));
+    EXPECT_NE(static_cast<int>(TextureType::ttCube), static_cast<int>(TextureType::ttCubeArray));
 }
 
 // ---------------------------------------------------------------------------
