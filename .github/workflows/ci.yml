@@ -36,6 +36,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev
+
       - name: Configure
         run: cmake -B build -DBUILD_TESTS=ON
 

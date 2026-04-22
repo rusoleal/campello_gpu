@@ -1,6 +1,20 @@
 
 # Linux / Vulkan backend
-find_package(Vulkan REQUIRED)
+find_package(Vulkan)
+
+if(NOT Vulkan_FOUND)
+    message(WARNING "Vulkan SDK not found — campello_gpu library will not be built on Linux. "
+                    "Universal tests can still be built and run.")
+    # Create a dummy interface target so campello_gpu::campello_gpu alias doesn't break
+    # consumers that reference it unconditionally.
+    add_library(${PROJECT_NAME} INTERFACE)
+    target_include_directories(${PROJECT_NAME} INTERFACE
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"
+        "$<BUILD_INTERFACE:${PROJECT_BINARY_DIR}>"
+    )
+    return()
+endif()
+
 message(STATUS "Vulkan FOUND = ${Vulkan_FOUND}")
 
 add_library(${PROJECT_NAME} SHARED
