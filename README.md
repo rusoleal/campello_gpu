@@ -1,6 +1,6 @@
 # campello_gpu
 
-A cross-platform GPU abstraction library (C++20) with a WebGPU-inspired API. Provides a unified interface over Metal, Vulkan, and DirectX 12 for both rendering and compute workloads.
+A cross-platform GPU abstraction library (C++20) with a WebGPU-inspired API. Provides a unified interface over Metal, Vulkan, and DirectX 12 for rendering, compute and raytracing workloads.
 
 ## 🚀 Part of the Campello Engine
 
