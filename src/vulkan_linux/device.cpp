@@ -1836,7 +1836,7 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
 
 // Rebuilds the swapchain, image views, and extent after a window resize.
 // Called when vkAcquireNextImageKHR or vkQueuePresentKHR returns OUT_OF_DATE / SUBOPTIMAL.
-void recreateSwapchain(DeviceData *deviceData) {
+void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
     if (deviceData->surface == VK_NULL_HANDLE) return;
 
     vkDeviceWaitIdle(deviceData->device);
