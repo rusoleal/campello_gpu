@@ -4,6 +4,18 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-04-23
+
+### Fixed
+
+- **CMake** `target_include_directories` guarded with `INTERFACE_LIBRARY` check to avoid errors on header-only alias targets
+- **Linux Vulkan** `recreateSwapchain` moved into `systems::leal::campello_gpu` namespace so `command_encoder.cpp` can link against it
+- **Linux Vulkan** added missing `#include <cstring>` in `buffer.cpp` and `texture.cpp`
+- **Linux Vulkan** added missing forward declaration for `findMemoryType` in `device.cpp`
+- **Linux Vulkan** added missing `default` cases to `getAddressMode`, `getCompareOp`, and `pixelFormatToNative` switch statements
+- **Public API** `command_buffer.hpp` — added missing `#include <cstdint>`
+- **Universal** `pixel_format.cpp` — added missing `default` cases to `getPixelFormatSize` and `pixelFormatToString` switch statements
+
 ## [0.11.0] - 2026-04-23
 
 ### Added

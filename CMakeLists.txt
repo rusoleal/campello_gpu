@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.11.0)
+project(campello_gpu VERSION 0.11.1)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -31,9 +31,12 @@ endif()
 add_library(campello_gpu::campello_gpu ALIAS ${PROJECT_NAME})
 
 # Expose the installed header path for consumers that use find_package.
-target_include_directories(${PROJECT_NAME} PUBLIC
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-)
+get_target_property(_campello_gpu_type ${PROJECT_NAME} TYPE)
+if(NOT _campello_gpu_type STREQUAL "INTERFACE_LIBRARY")
+    target_include_directories(${PROJECT_NAME} PUBLIC
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Install & export — required for find_package support.
