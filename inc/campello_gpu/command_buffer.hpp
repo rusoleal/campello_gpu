@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace systems::leal::campello_gpu
 {
     class Device;
