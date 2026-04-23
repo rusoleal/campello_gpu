@@ -4,6 +4,51 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-04-23
+
+### Added
+
+- **Linux windowed desktop support** — full X11 and Wayland swapchain integration
+  - New public header `inc/campello_gpu/platform/linux_surface.hpp` with `LinuxSurfaceInfo` and `LinuxWindowApi` enum
+  - `Device::createDevice(pd)` accepts `LinuxSurfaceInfo*` as the `pd` parameter
+  - X11: `vkCreateXlibSurfaceKHR` loaded dynamically via `vkGetInstanceProcAddr`; no X11 link-time dependency
+  - Wayland: `vkCreateWaylandSurfaceKHR` loaded dynamically via `vkGetInstanceProcAddr`; no Wayland link-time dependency
+  - Instance extensions `VK_KHR_xlib_surface` and `VK_KHR_wayland_surface` enabled only when reported by the Vulkan loader (headless Linux remains fully functional)
+  - Surface capabilities and formats queried before queue-family selection; `vkGetPhysicalDeviceSurfaceSupportKHR` used when a surface is present
+  - `Device::getSwapchainTextureView()` now returns a `TextureView::fromNative()` wrapper around the active swapchain image view instead of `nullptr`
+  - Swapchain image index cached in `DeviceData` and updated during `CommandEncoder::beginRenderPass()` after `vkAcquireNextImageKHR`
+
+- **Window resize handling** — swapchain recreation on both reactive and proactive paths
+  - `recreateSwapchain()` (previously `static` in `device.cpp`) now accessible from `command_encoder.cpp` via declaration in `common.hpp`
+  - Reactive: `Device::submit()` already recreated the swapchain when `vkQueuePresentKHR` returned `VK_ERROR_OUT_OF_DATE_KHR` / `VK_SUBOPTIMAL_KHR`
+  - Proactive: `CommandEncoder::beginRenderPass()` now detects `VK_ERROR_OUT_OF_DATE_KHR` from `vkAcquireNextImageKHR`, calls `recreateSwapchain()`, and returns `nullptr` so the next frame starts fresh
+  - `CommandEncoderHandle` gains a `DeviceData* deviceData` back-pointer (forward-declared to avoid header cycles) for shared state updates
+
+- **Acceleration-structure descriptor binding** — `Device::createBindGroup()` now supports `AccelerationStructure` entries
+  - Builds `VkWriteDescriptorSetAccelerationStructureKHR` and chains it through `VkWriteDescriptorSet::pNext`
+  - Uses `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`
+  - Required for ray-tracing descriptor sets that bind TLAS/BLAS resources
+
+- **Linux windowed example** (`examples/linux/`)
+  - Raw X11 example (`main.cpp`) that opens a 640×480 window and clears the swapchain to a rotating color
+  - `examples/linux/CMakeLists.txt` — standalone or in-tree build; links `campello_gpu` + `X11`
+  - `examples/linux/README.md` — build/run instructions and Wayland usage notes
+  - Root `CMakeLists.txt` includes `examples/linux/` when `BUILD_EXAMPLES=ON` on Linux
+
+### CI
+
+- **New `build-linux-vulkan` job** in `.github/workflows/ci.yml`
+  - Runs on `ubuntu-latest`
+  - Installs `libvulkan-dev` and `mesa-vulkan-drivers`
+  - Builds `libcampello_gpu.so` (not just universal tests)
+  - Builds integration tests
+  - Runs universal tests
+  - Attempts to run integration tests via Mesa lavapipe (`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`)
+
+### Fixed
+
+- **Vulkan** `device.cpp`: `chosenFormat` variable shadowing — the inner `VkSurfaceFormatKHR chosenFormat` inside the swapchain `if` block shadowed the outer variable, causing `deviceData->surfaceFormat` to always be initialized to `{}` even when a real surface existed; fixed by assigning to the outer variable
+
 ## [0.10.0] - 2026-04-22
 
 ### Added

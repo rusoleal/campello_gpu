@@ -24,14 +24,14 @@ Each module is designed to work standalone, but integrates seamlessly into the e
 | macos/ios | OpenGL | Frozen |
 | macos/ios | Vulkan 1.x | Not started |
 | android | OpenGL | Frozen |
-| linux | Vulkan 1.x | Production ready (headless) |
+| linux | Vulkan 1.x | Production ready |
 | linux | OpenGL | Frozen |
 
 ## Requirements
 
 - CMake 3.22.1+
 - C++20 compiler
-- Platform SDK: Metal (macOS/iOS), Vulkan (Android), DirectX 12 (Windows)
+- Platform SDK: Metal (macOS/iOS), Vulkan (Android / Linux), DirectX 12 (Windows)
 
 ## Build
 
@@ -40,7 +40,25 @@ cmake -B build
 make -C build
 ```
 
-CMake automatically selects the backend based on the target platform (`android.cmake`, `macos.cmake`, `windows.cmake`, etc.).
+CMake automatically selects the backend based on the target platform (`android.cmake`, `macos.cmake`, `windows.cmake`, `linux.cmake`, etc.).
+
+### Linux
+
+```bash
+# Install dependencies (Ubuntu/Debian)
+sudo apt-get install libvulkan-dev
+
+# Build the library
+cmake -B build
+cmake --build build
+
+# Build with tests and examples
+cmake -B build -DBUILD_TESTS=ON -DBUILD_EXAMPLES=ON
+cmake --build build
+
+# Run tests
+ctest --test-dir build --output-on-failure
+```
 
 ## Integration
 
@@ -90,6 +108,26 @@ auto device = Device::createDevice(adapters[0], pd);
 std::string name = device->getName();
 std::set<Feature> features = device->getFeatures();
 std::string version = Device::getEngineVersion();
+```
+
+#### Linux (X11 / Wayland)
+
+```cpp
+#include <campello_gpu/platform/linux_surface.hpp>
+
+// X11
+LinuxSurfaceInfo surfaceInfo{};
+surfaceInfo.display = (void*)display;   // Display*
+surfaceInfo.window  = (void*)window;    // Window (cast via uintptr_t)
+surfaceInfo.api     = LinuxWindowApi::x11;
+auto device = Device::createDefaultDevice(&surfaceInfo);
+
+// Wayland
+LinuxSurfaceInfo surfaceInfo{};
+surfaceInfo.display = (void*)wl_display;
+surfaceInfo.window  = (void*)wl_surface;
+surfaceInfo.api     = LinuxWindowApi::wayland;
+auto device = Device::createDefaultDevice(&surfaceInfo);
 ```
 
 ### Resource Creation

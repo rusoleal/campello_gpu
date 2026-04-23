@@ -79,6 +79,9 @@ namespace systems::leal::campello_gpu {
         // GPU timestamp query support
         VkQueryPool timestampQueryPool = VK_NULL_HANDLE;
         float timestampPeriod = 1.0f;  // From VkPhysicalDeviceLimits, in nanoseconds per tick
+
+        // Current swapchain image index (valid after beginRenderPass acquires an image).
+        uint32_t currentImageIndex = 0;
     };
 
     /**
@@ -88,5 +91,8 @@ namespace systems::leal::campello_gpu {
         VkDevice device       = VK_NULL_HANDLE;
         VkFence  fence        = VK_NULL_HANDLE;
     };
+
+    // Swapchain recreation helper (defined in device.cpp, used by command_encoder.cpp).
+    void recreateSwapchain(DeviceData *deviceData);
 
 }

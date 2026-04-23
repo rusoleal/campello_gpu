@@ -194,3 +194,36 @@
 - [x] `CommandEncoder::copyTextureToTexture` — implemented (Vulkan + Metal)
 - [x] `CommandEncoder::copyBufferToTexture()` — implemented (Vulkan + Metal); public header updated with proper 6-parameter signature
 - [x] `State` class (`state.hpp`) — intentional empty placeholder per docstring; reserved for future pipeline/device state tracking; no implementation required now
+
+## Windowed Linux Desktop (X11 / Wayland)
+
+> The Vulkan/Linux backend now supports both headless and windowed operation via `LinuxSurfaceInfo`.
+
+### Surface & Swapchain
+
+- [x] **X11 surface creation** — `Device::createDevice()` interprets `pd` as `LinuxSurfaceInfo*` and creates the surface via `vkCreateXlibSurfaceKHR` loaded through `vkGetInstanceProcAddr`
+  - `VK_KHR_xlib_surface` enabled in instance extensions (`device.cpp`)
+  - Queue family selection checks `vkGetPhysicalDeviceSurfaceSupportKHR` when a surface is present
+- [x] **Wayland surface creation** — same path, uses `vkCreateWaylandSurfaceKHR`
+  - `VK_KHR_wayland_surface` enabled in instance extensions
+- [x] **Surface-selection priority** — `LinuxSurfaceInfo::api` field (`LinuxWindowApi::x11` or `LinuxWindowApi::wayland`) controls which surface path is taken
+- [x] **Window resize handling** — `recreateSwapchain()` now called proactively from `CommandEncoder::beginRenderPass()` when `vkAcquireNextImageKHR` returns `VK_ERROR_OUT_OF_DATE_KHR`. Example tracks `ConfigureNotify` for informational purposes; backend handles recreation automatically.
+
+### Descriptor Sets
+
+- [x] **Acceleration-structure descriptor binding** — `Device::createBindGroup()` now builds `VkWriteDescriptorSetAccelerationStructureKHR` and chains it through `pNext` for `VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR`
+
+### Presentation Helpers
+
+- [x] **`Device::getSwapchainTextureView()`** — now caches the current swapchain image index in `DeviceData` and returns a `TextureView::fromNative()` wrapper around the active swapchain image view
+- [x] **`Device::scheduleNextPresent()`** — documented as no-op; presentation is implicit inside `submit()`
+
+### Build & CI
+
+- [x] **Add Linux desktop build check to CI** — `build-linux-vulkan` job added to `.github/workflows/ci.yml` (compiles `libcampello_gpu.so` + integration tests on Ubuntu)
+- [x] **Add Linux integration tests** — CI installs `mesa-vulkan-drivers` and attempts to run integration tests via lavapipe (`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`)
+- [x] **Linux windowed example** — `examples/linux/` added with raw-X11 clear-screen demo
+
+### Input / Event Loop (out of scope for campello_gpu, but needed by examples)
+
+- [x] Documented raw X11 usage in `examples/linux/README.md`; GLFW3 mentioned as alternative

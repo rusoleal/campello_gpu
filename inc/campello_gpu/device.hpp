@@ -60,8 +60,10 @@ namespace systems::leal::campello_gpu
      *
      * The `void* pd` parameter accepted by factory methods is an optional
      * platform-specific window/surface handle used by some backends during device
-     * creation (e.g. `ANativeWindow*` on Android). Pass `nullptr` when no surface
-     * is needed at device creation time.
+     * creation:
+     *   - Android: `ANativeWindow*`
+     *   - Linux (X11 / Wayland): `LinuxSurfaceInfo*` (`campello_gpu/platform/linux_surface.hpp`)
+     * Pass `nullptr` when no surface is needed at device creation time.
      */
     class Device
     {

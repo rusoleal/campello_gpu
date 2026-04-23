@@ -10,6 +10,7 @@
 #include <campello_gpu/ray_tracing_pass_encoder.hpp>
 #include <campello_gpu/descriptors/bottom_level_acceleration_structure_descriptor.hpp>
 #include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
+#include "common.hpp"
 #include "command_encoder_handle.hpp"
 #include "command_buffer_handle.hpp"
 #include "render_pass_encoder_handle.hpp"
@@ -119,11 +120,20 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             data->device, data->swapchain, UINT64_MAX,
             data->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
 
+        if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+            if (data->deviceData) {
+                recreateSwapchain(data->deviceData);
+            }
+            return nullptr;
+        }
         if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
             
             return nullptr;
         }
         data->currentImageIndex = imageIndex;
+        if (data->deviceData) {
+            data->deviceData->currentImageIndex = imageIndex;
+        }
         firstImage   = data->swapchainImages[imageIndex];
         renderExtent = data->imageExtent;
 
