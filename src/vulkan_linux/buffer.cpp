@@ -1,4 +1,5 @@
 #include <memory>
+#include <cstring>
 #include <campello_gpu/buffer.hpp>
 #include "buffer_handle.hpp"
 #include "common.hpp"
