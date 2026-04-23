@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstring>
 #include <vector>
 #include <vulkan/vulkan.h>
 #include <campello_gpu/texture.hpp>
