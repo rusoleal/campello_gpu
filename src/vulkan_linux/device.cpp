@@ -77,6 +77,7 @@ static void loadRayTracingFunctions(VkDevice device) {
 
 VkFormat pixelFormatToNative(PixelFormat format);
 PixelFormat nativeToPixelFormat(VkFormat format);
+uint32_t findMemoryType(uint32_t typeFilter, VkPhysicalDeviceMemoryProperties &memProperties, VkMemoryPropertyFlags properties);
 
 std::string queueFlagsToString(VkQueueFlags flags)
 {
@@ -1573,6 +1574,7 @@ VkSamplerAddressMode getAddressMode(WrapMode mode) {
         case WrapMode::repeat: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
         case WrapMode::clampToEdge: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         case WrapMode::mirrorRepeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        default: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
     }
 }
 
@@ -1586,6 +1588,7 @@ VkCompareOp getCompareOp(CompareOp op) {
         case CompareOp::notEqual: return VK_COMPARE_OP_NOT_EQUAL;
         case CompareOp::greaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
         case CompareOp::always: return VK_COMPARE_OP_ALWAYS;
+        default: return VK_COMPARE_OP_NEVER;
     }
 }
 
@@ -2263,6 +2266,8 @@ VkFormat pixelFormatToNative(PixelFormat format)
     // astc_12x12_unorm,
     case PixelFormat::astc_12x12_unorm_srgb:
         return VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
+    default:
+        return VK_FORMAT_UNDEFINED;
     }
 }
 

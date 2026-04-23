@@ -129,6 +129,8 @@ uint32_t systems::leal::campello_gpu::getPixelFormatSize(PixelFormat format) {
         case PixelFormat::astc_12x10_unorm_srgb:
         case PixelFormat::astc_12x12_unorm_srgb:
             return 0;
+        default:
+            return 0;
     }
 }
 
@@ -228,5 +230,6 @@ std::string systems::leal::campello_gpu::pixelFormatToString(PixelFormat format)
         case PixelFormat::astc_10x10_unorm_srgb:return "astc_10x10_unorm_srgb";
         case PixelFormat::astc_12x10_unorm_srgb:return "astc_12x10_unorm_srgb";
         case PixelFormat::astc_12x12_unorm_srgb:return "astc_12x12_unorm_srgb";
+        default: return "unknown";
     }
 }
