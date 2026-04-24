@@ -240,13 +240,76 @@ void CommandEncoder::copyTextureToBuffer(
 }
 
 void CommandEncoder::copyTextureToTexture(
-    std::shared_ptr<Texture> /*source*/,
-    const Offset3D& /*sourceOffset*/,
-    std::shared_ptr<Texture> /*destination*/,
-    const Offset3D& /*destinationOffset*/,
-    const Extent3D& /*extent*/)
+    std::shared_ptr<Texture> source,
+    uint32_t srcMipLevel,
+    const Offset3D& sourceOffset,
+    std::shared_ptr<Texture> destination,
+    uint32_t dstMipLevel,
+    const Offset3D& destinationOffset,
+    const Extent3D& extent)
 {
-    // TODO: Implement using ID3D12GraphicsCommandList::CopyTextureRegion
+    if (!native || !source || !destination || !source->native || !destination->native) return;
+    auto* h   = static_cast<CommandEncoderHandle*>(native);
+    auto* src = static_cast<TextureHandle*>(source->native);
+    auto* dst = static_cast<TextureHandle*>(destination->native);
+
+    D3D12_RESOURCE_DESC srcDesc = src->resource->GetDesc();
+    D3D12_RESOURCE_DESC dstDesc = dst->resource->GetDesc();
+
+    UINT srcSubresource = CalcSubresource(srcMipLevel, 0, 0, srcDesc.MipLevels, srcDesc.DepthOrArraySize);
+    UINT dstSubresource = CalcSubresource(dstMipLevel, 0, 0, dstDesc.MipLevels, dstDesc.DepthOrArraySize);
+
+    // Transition source → COPY_SOURCE
+    D3D12_RESOURCE_BARRIER barriers[2] = {};
+    barriers[0].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[0].Transition.pResource   = src->resource;
+    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barriers[0].Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barriers[0].Transition.Subresource = srcSubresource;
+
+    barriers[1].Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[1].Transition.pResource   = dst->resource;
+    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barriers[1].Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[1].Transition.Subresource = dstSubresource;
+
+    h->cmdList->ResourceBarrier(2, barriers);
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource        = src->resource;
+    srcLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.SubresourceIndex = srcSubresource;
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource        = dst->resource;
+    dstLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLoc.SubresourceIndex = dstSubresource;
+
+    D3D12_BOX srcBox = {};
+    srcBox.left   = sourceOffset.x;
+    srcBox.top    = sourceOffset.y;
+    srcBox.front  = sourceOffset.z;
+    srcBox.right  = sourceOffset.x + extent.width;
+    srcBox.bottom = sourceOffset.y + extent.height;
+    srcBox.back   = sourceOffset.z + extent.depth;
+
+    h->cmdList->CopyTextureRegion(&dstLoc,
+                                  destinationOffset.x,
+                                  destinationOffset.y,
+                                  destinationOffset.z,
+                                  &srcLoc, &srcBox);
+
+    // Transition back to COMMON
+    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    barriers[0].Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[1].Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    h->cmdList->ResourceBarrier(2, barriers);
+}
+
+void CommandEncoder::generateMipmaps(std::shared_ptr<Texture> /*texture*/) {
+    // Not implemented on D3D12. Users must generate mipmaps manually
+    // using copyTextureToTexture or a custom render/compute pass.
 }
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {

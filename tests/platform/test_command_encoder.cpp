@@ -251,7 +251,7 @@ TEST(CommandEncoder, CopyTextureToTextureDoesNotCrash) {
 
     auto encoder = device->createCommandEncoder();
     ASSERT_NE(encoder, nullptr);
-    encoder->copyTextureToTexture(src, {}, dst, {}, Extent3D(W, H, 1));
+    encoder->copyTextureToTexture(src, 0, {}, dst, 0, {}, Extent3D(W, H, 1));
 
     auto cmdBuf = encoder->finish();
     EXPECT_NE(cmdBuf, nullptr);
@@ -281,8 +281,8 @@ TEST(CommandEncoder, CopyTextureToTextureWithOffsets) {
     ASSERT_NE(encoder, nullptr);
     // Copy 32x32 region from src[16, 16] to dst[32, 32]
     encoder->copyTextureToTexture(
-        src, Offset3D(16, 16, 0),
-        dst, Offset3D(32, 32, 0),
+        src, 0, Offset3D(16, 16, 0),
+        dst, 0, Offset3D(32, 32, 0),
         Extent3D(32, 32, 1));
 
     auto cmdBuf = encoder->finish();
@@ -313,10 +313,83 @@ TEST(CommandEncoder, CopyTextureToTexturePartialRegion) {
     ASSERT_NE(encoder, nullptr);
     // Copy entire source to middle of destination
     encoder->copyTextureToTexture(
-        src, Offset3D(0, 0, 0),
-        dst, Offset3D(48, 48, 0),
+        src, 0, Offset3D(0, 0, 0),
+        dst, 0, Offset3D(48, 48, 0),
         Extent3D(32, 32, 1));
 
     auto cmdBuf = encoder->finish();
     EXPECT_NE(cmdBuf, nullptr);
+}
+
+
+TEST(CommandEncoder, CopyTextureToTextureMipLevels) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 64, H = 64;
+    auto src = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 2, 1,
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) |
+            static_cast<int>(TextureUsage::copySrc)));
+    auto dst = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 2, 1,
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) |
+            static_cast<int>(TextureUsage::copySrc) |
+            static_cast<int>(TextureUsage::copyDst)));
+    ASSERT_NE(src, nullptr);
+    ASSERT_NE(dst, nullptr);
+
+    // Upload distinct pattern to src mip 0
+    std::vector<uint8_t> mip0Data(W * H * 4, 0xAB);
+    EXPECT_TRUE(src->upload(0, mip0Data.size(), mip0Data.data()));
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    // Copy src mip 0 → dst mip 1
+    encoder->copyTextureToTexture(
+        src, 0, Offset3D(0, 0, 0),
+        dst, 1, Offset3D(0, 0, 0),
+        Extent3D(W, H, 1));
+
+    auto cmdBuf = encoder->finish();
+    EXPECT_NE(cmdBuf, nullptr);
+
+    auto fence = device->createFence();
+    device->submit(cmdBuf, fence);
+    fence->wait();
+
+    // Download dst mip 1 and verify
+    std::vector<uint8_t> readback(mip0Data.size(), 0);
+    EXPECT_TRUE(dst->download(1, 0, readback.data(), readback.size()));
+
+    EXPECT_EQ(readback[0], 0xAB);
+    EXPECT_EQ(readback[1], 0xAB);
+    EXPECT_EQ(readback[2], 0xAB);
+    EXPECT_EQ(readback[3], 0xAB);
+}
+
+TEST(CommandEncoder, GenerateMipmapsDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        64, 64, 1, 4, 1,
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) |
+            static_cast<int>(TextureUsage::copySrc) |
+            static_cast<int>(TextureUsage::copyDst)));
+    ASSERT_NE(tex, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    encoder->generateMipmaps(tex);
+
+    auto cmdBuf = encoder->finish();
+    EXPECT_NE(cmdBuf, nullptr);
+    device->submit(cmdBuf);
 }

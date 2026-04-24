@@ -435,8 +435,10 @@ void CommandEncoder::copyTextureToBuffer(
 
 void CommandEncoder::copyTextureToTexture(
     std::shared_ptr<Texture> source,
+    uint32_t srcMipLevel,
     const Offset3D& sourceOffset,
     std::shared_ptr<Texture> destination,
+    uint32_t dstMipLevel,
     const Offset3D& destinationOffset,
     const Extent3D& extent)
 {
@@ -454,7 +456,7 @@ void CommandEncoder::copyTextureToTexture(
     barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[0].image               = srcH->image;
-    barriers[0].subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
+    barriers[0].subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, srcMipLevel, 1, 0, VK_REMAINING_ARRAY_LAYERS };
     barriers[0].srcAccessMask       = VK_ACCESS_MEMORY_WRITE_BIT;
     barriers[0].dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
 
@@ -464,7 +466,7 @@ void CommandEncoder::copyTextureToTexture(
     barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[1].image               = dstH->image;
-    barriers[1].subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
+    barriers[1].subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, dstMipLevel, 1, 0, VK_REMAINING_ARRAY_LAYERS };
     barriers[1].srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT;
     barriers[1].dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
 
@@ -474,9 +476,9 @@ void CommandEncoder::copyTextureToTexture(
                          0, 0, nullptr, 0, nullptr, 2, barriers);
 
     VkImageCopy copyRegion{};
-    copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    copyRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, srcMipLevel, 0, 1 };
     copyRegion.srcOffset      = { sourceOffset.x, sourceOffset.y, sourceOffset.z };
-    copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+    copyRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, dstMipLevel, 0, 1 };
     copyRegion.dstOffset      = { destinationOffset.x, destinationOffset.y, destinationOffset.z };
     copyRegion.extent         = { extent.width, extent.height, extent.depth };
 
@@ -495,11 +497,13 @@ void CommandEncoder::copyTextureToTexture(
     barriers[0].newLayout     = srcRestore;
     barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     barriers[0].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    barriers[0].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, srcMipLevel, 1, 0, VK_REMAINING_ARRAY_LAYERS };
 
     barriers[1].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barriers[1].newLayout     = VK_IMAGE_LAYOUT_GENERAL;
     barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barriers[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    barriers[1].subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, dstMipLevel, 1, 0, VK_REMAINING_ARRAY_LAYERS };
 
     vkCmdPipelineBarrier(data->commandBuffer,
                          VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -508,6 +512,92 @@ void CommandEncoder::copyTextureToTexture(
 
     srcH->currentLayout = srcRestore;
     dstH->currentLayout = VK_IMAGE_LAYOUT_GENERAL;
+}
+
+void CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
+    if (!texture || !texture->native) return;
+    auto data = (CommandEncoderHandle *)this->native;
+    auto texH = (TextureHandle *)texture->native;
+
+    uint32_t mipLevels = texH->mipLevels;
+    if (mipLevels <= 1) return;
+
+    for (uint32_t mip = 1; mip < mipLevels; ++mip) {
+        uint32_t srcWidth  = std::max(1u, texH->width  >> (mip - 1));
+        uint32_t srcHeight = std::max(1u, texH->height >> (mip - 1));
+        uint32_t dstWidth  = std::max(1u, texH->width  >> mip);
+        uint32_t dstHeight = std::max(1u, texH->height >> mip);
+
+        // Transition source mip to TRANSFER_SRC_OPTIMAL
+        VkImageMemoryBarrier srcBarrier{};
+        srcBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        srcBarrier.oldLayout           = texH->currentLayout;
+        srcBarrier.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        srcBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        srcBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        srcBarrier.image               = texH->image;
+        srcBarrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, VK_REMAINING_ARRAY_LAYERS };
+        srcBarrier.srcAccessMask       = VK_ACCESS_MEMORY_WRITE_BIT;
+        srcBarrier.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(data->commandBuffer,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
+
+        // Transition destination mip to TRANSFER_DST_OPTIMAL
+        VkImageMemoryBarrier dstBarrier{};
+        dstBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        dstBarrier.oldLayout           = texH->currentLayout;
+        dstBarrier.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        dstBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        dstBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        dstBarrier.image               = texH->image;
+        dstBarrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, VK_REMAINING_ARRAY_LAYERS };
+        dstBarrier.srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT;
+        dstBarrier.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(data->commandBuffer,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &dstBarrier);
+
+        VkImageBlit blitRegion{};
+        blitRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 0, 1 };
+        blitRegion.srcOffsets[0]  = { 0, 0, 0 };
+        blitRegion.srcOffsets[1]  = { (int32_t)srcWidth, (int32_t)srcHeight, 1 };
+        blitRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1 };
+        blitRegion.dstOffsets[0]  = { 0, 0, 0 };
+        blitRegion.dstOffsets[1]  = { (int32_t)dstWidth, (int32_t)dstHeight, 1 };
+
+        vkCmdBlitImage(data->commandBuffer,
+                       texH->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       texH->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &blitRegion, VK_FILTER_LINEAR);
+
+        // Restore source mip layout
+        VkImageLayout srcRestore = (texH->currentLayout == VK_IMAGE_LAYOUT_UNDEFINED)
+                                   ? VK_IMAGE_LAYOUT_GENERAL
+                                   : texH->currentLayout;
+        srcBarrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        srcBarrier.newLayout     = srcRestore;
+        srcBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        srcBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        vkCmdPipelineBarrier(data->commandBuffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
+
+        // Restore destination mip layout
+        dstBarrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        dstBarrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+        dstBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        dstBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        vkCmdPipelineBarrier(data->commandBuffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &dstBarrier);
+    }
+
+    texH->currentLayout = VK_IMAGE_LAYOUT_GENERAL;
 }
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {

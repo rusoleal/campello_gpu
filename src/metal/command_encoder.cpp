@@ -201,8 +201,10 @@ void CommandEncoder::copyTextureToBuffer(
 
 void CommandEncoder::copyTextureToTexture(
     std::shared_ptr<Texture> source,
+    uint32_t srcMipLevel,
     const Offset3D& sourceOffset,
     std::shared_ptr<Texture> destination,
+    uint32_t dstMipLevel,
     const Offset3D& destinationOffset,
     const Extent3D& extent)
 {
@@ -218,12 +220,22 @@ void CommandEncoder::copyTextureToTexture(
     if (!blit) return;
 
     blit->copyFromTexture(
-        srcTex, 0, 0,
+        srcTex, 0, srcMipLevel,
         MTL::Origin::Make(sourceOffset.x, sourceOffset.y, sourceOffset.z),
         MTL::Size::Make(extent.width, extent.height, extent.depth),
-        dstTex, 0, 0,
+        dstTex, 0, dstMipLevel,
         MTL::Origin::Make(destinationOffset.x, destinationOffset.y, destinationOffset.z));
 
+    blit->endEncoding();
+}
+
+void CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
+    if (!native || !texture || !texture->native) return;
+    auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
+    auto *texHandle  = static_cast<MetalTextureHandle *>(texture->native);
+    auto *blit       = cmdBuffer->blitCommandEncoder();
+    if (!blit) return;
+    blit->generateMipmaps(texHandle->texture);
     blit->endEncoding();
 }
 

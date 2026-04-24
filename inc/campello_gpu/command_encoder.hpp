@@ -153,17 +153,36 @@ namespace systems::leal::campello_gpu
          * `TextureUsage::copyDst`.
          *
          * @param source             Source texture.
+         * @param srcMipLevel        Mip level of the source to copy from.
          * @param sourceOffset       Offset within the source texture (in pixels).
          * @param destination        Destination texture.
+         * @param dstMipLevel        Mip level of the destination to copy into.
          * @param destinationOffset  Offset within the destination texture (in pixels).
          * @param extent             Size of the region to copy (in pixels).
          */
         void copyTextureToTexture(
             std::shared_ptr<Texture> source,
+            uint32_t srcMipLevel,
             const Offset3D& sourceOffset,
             std::shared_ptr<Texture> destination,
+            uint32_t dstMipLevel,
             const Offset3D& destinationOffset,
             const Extent3D& extent);
+
+        /**
+         * @brief Generates mipmaps for a texture starting from mip level 0.
+         *
+         * Computes the full mip chain by downsampling from mip 0 into all
+         * subsequent mip levels. The texture must have been created with
+         * mipLevels > 1.
+         *
+         * On Metal this uses the native blit encoder. On Vulkan this uses
+         * vkCmdBlitImage with linear filtering. On D3D12 this is currently
+         * not implemented and returns without action.
+         *
+         * @param texture The texture to generate mipmaps for.
+         */
+        void generateMipmaps(std::shared_ptr<Texture> texture);
 
         /**
          * @brief Finalizes command recording and returns the completed command buffer.

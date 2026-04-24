@@ -4,6 +4,24 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-23
+
+### Added
+
+- **Mipmap generation** — `CommandEncoder::generateMipmaps(texture)`
+  - **Metal** — uses native `MTL::BlitCommandEncoder::generateMipmaps()`
+  - **Vulkan (Linux & Android)** — iterative `vkCmdBlitImage` with `VK_FILTER_LINEAR` from mip N-1 into mip N
+  - **DirectX 12** — documented no-op; requires a shader-based fallback not yet implemented
+- **`CommandEncoder::copyTextureToTexture` per-mip support** — added `srcMipLevel` and `dstMipLevel` parameters to the public API
+  - **DirectX 12** — previously a stub; now fully implemented via `CopyTextureRegion` with subresource indices
+  - **Metal** — passes mip levels through to `MTL::BlitCommandEncoder::copyFromTexture`
+  - **Vulkan (Linux & Android)** — `vkCmdCopyImage` now targets specific mip levels with per-level layout barriers
+
+### Tests
+
+- `CopyTextureToTextureMipLevels` — integration test that uploads to mip 0, copies mip 0 → mip 1, and verifies the result
+- `GenerateMipmapsDoesNotCrash` — smoke test covering the new mipmap generation API
+
 ## [0.11.1] - 2026-04-23
 
 ### Fixed
