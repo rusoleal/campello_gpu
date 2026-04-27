@@ -368,7 +368,6 @@ void CommandEncoder::copyBufferToTexture(
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
     texH->currentLayout = VK_IMAGE_LAYOUT_GENERAL;
-    return true;
 }
 
 void CommandEncoder::copyTextureToBuffer(
