@@ -99,24 +99,13 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(const BeginRe
         desc.occlusionQuerySet = static_cast<QuerySetHandle*>(descriptor.occlusionQuerySet->native)->querySet;
     }
 
-    std::vector<WGPURenderPassTimestampWrite> timestampWrites;
+    WGPURenderPassTimestampWrites timestampWrites{};
     if (!descriptor.timestampWrites.empty()) {
-        timestampWrites.reserve(descriptor.timestampWrites.size() * 2);
-        for (const auto& tw : descriptor.timestampWrites) {
-            WGPURenderPassTimestampWrite beginTw{};
-            beginTw.querySet = static_cast<QuerySetHandle*>(tw.querySet->native)->querySet;
-            beginTw.queryIndex = tw.beginningOfPassWriteIndex;
-            beginTw.location = WGPURenderPassTimestampLocation_Beginning;
-            timestampWrites.push_back(beginTw);
-
-            WGPURenderPassTimestampWrite endTw{};
-            endTw.querySet = static_cast<QuerySetHandle*>(tw.querySet->native)->querySet;
-            endTw.queryIndex = tw.endOfPassWriteIndex;
-            endTw.location = WGPURenderPassTimestampLocation_End;
-            timestampWrites.push_back(endTw);
-        }
-        desc.timestampWriteCount = timestampWrites.size();
-        desc.timestampWrites = timestampWrites.data();
+        const auto& tw = descriptor.timestampWrites[0];
+        timestampWrites.querySet = static_cast<QuerySetHandle*>(tw.querySet->native)->querySet;
+        timestampWrites.beginningOfPassWriteIndex = tw.beginningOfPassWriteIndex;
+        timestampWrites.endOfPassWriteIndex = tw.endOfPassWriteIndex;
+        desc.timestampWrites = &timestampWrites;
     }
 
     WGPURenderPassEncoder encoder = wgpuCommandEncoderBeginRenderPass(handle->encoder, &desc);
