@@ -7,6 +7,7 @@
 #include "acceleration_structure_helpers.hpp"
 #include "bind_group_data.hpp"
 #include "bind_group_layout_data.hpp"
+#include "pipeline_layout_data.hpp"
 #include "buffer_handle.hpp"
 #include "texture_handle.hpp"
 #include "campello_gpu_config.h"
@@ -222,6 +223,19 @@ std::set<Feature> Device::getFeatures() {
         toReturn.insert(Feature::msaa32bit);
     if (dev->supportsBCTextureCompression())
         toReturn.insert(Feature::bcTextureCompression);
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+    // ASTC and ETC2 are universally supported on Apple GPUs (iOS/tvOS).
+    toReturn.insert(Feature::astcTextureCompression);
+    toReturn.insert(Feature::etc2TextureCompression);
+#elif defined(TARGET_OS_MAC) && TARGET_OS_MAC
+    // macOS: ASTC is supported on Apple Silicon (which also reports BC support).
+    // Intel/AMD Macs only support BC.
+    if (dev->supportsBCTextureCompression()) {
+        // Apple Silicon Macs report BC support; Intel/AMD do not.
+        // On Apple Silicon, ASTC is also available.
+        toReturn.insert(Feature::astcTextureCompression);
+    }
+#endif
     if (__builtin_available(macOS 10.11, *)) {
         if (dev->depth24Stencil8PixelFormatSupported())
             toReturn.insert(Feature::depth24Stencil8PixelFormat);
@@ -621,6 +635,11 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
     return std::shared_ptr<ShaderModule>(new ShaderModule(data));
 }
 
+std::shared_ptr<ShaderModule> Device::createShaderModule(const char *wgslSource) {
+    (void)wgslSource;
+    return nullptr; // WGSL not supported on Metal backend
+}
+
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     auto *pipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
@@ -794,8 +813,10 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
 std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayoutDescriptor &descriptor) {
     // Metal uses implicit pipeline layout; no separate object is required.
     auto *deviceData = static_cast<MetalDeviceData *>(native);
+    auto *data = new MetalPipelineLayoutData();
+    data->bindGroupLayouts = descriptor.bindGroupLayouts;
     deviceData->pipelineLayoutCount++;
-    return std::shared_ptr<PipelineLayout>(new PipelineLayout(nullptr));
+    return std::shared_ptr<PipelineLayout>(new PipelineLayout(data));
 }
 
 std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor &descriptor) {

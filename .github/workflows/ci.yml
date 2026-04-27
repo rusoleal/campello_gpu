@@ -177,3 +177,28 @@ jobs:
 
       - name: Build
         run: cmake --build build --config Release
+
+  # ---------------------------------------------------------------------------
+  # WASM / WebGPU build check — compile with Emscripten.
+  # No tests are executed: integration tests need a browser/GPU, and gtest
+  # under Emscripten requires additional runner setup. This job ensures the
+  # WebGPU backend compiles cleanly and the async ASYNCIFY paths are valid.
+  # ---------------------------------------------------------------------------
+  build-wasm:
+    name: Build check (WASM / WebGPU)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+          actions-cache-folder: 'emsdk-cache'
+
+      - name: Configure (emcmake)
+        run: emcmake cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build library
+        run: cmake --build build --config Release

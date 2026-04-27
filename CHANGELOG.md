@@ -4,6 +4,50 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-04-27
+
+### Added
+
+- **ASTC and ETC2 feature detection** — `Feature::astcTextureCompression` and `Feature::etc2TextureCompression` added to public API
+  - **WebGPU** — queries `WGPUFeatureName_TextureCompressionETC2` / `ASTC` via `wgpuDeviceHasFeature`
+  - **Metal** — reports ASTC+ETC2 on iOS; reports ASTC on Apple Silicon Macs (via `supportsBCTextureCompression` proxy)
+  - **Vulkan (Linux & Android)** — queries `VkPhysicalDeviceFeatures::textureCompressionETC2` / `textureCompressionASTC_LDR`
+  - **DirectX 12** — ETC2/ASTC unsupported on native DX12 (no change)
+- **Compressed texture block helpers** — `isCompressedFormat()`, `getPixelFormatBlockDimensions()`, `getPixelFormatBlockBytes()` in `pixel_format.hpp`
+  - All BC, ETC2, and ASTC variants correctly report block dimensions and byte sizes
+- **WASM CI** — GitHub Actions job (`build-wasm`) compiles the WebGPU backend with Emscripten on every push/PR
+- **Async callback APIs** for non-blocking GPU readback on WebGPU/WASM
+  - `Buffer::downloadAsync(offset, length, data, callback)` — chains `wgpuQueueOnSubmittedWorkDone` → `wgpuBufferMapAsync` → user callback without `emscripten_sleep`
+  - `Texture::downloadAsync(mipLevel, arrayLayer, data, length, callback)` — same async chain for texture-to-buffer readback
+  - `CommandBuffer::getGPUExecutionTimeAsync(callback)` — async timestamp query readback
+  - Non-WebGPU backends implement these as immediate callbacks (synchronous behavior, same-thread)
+
+### Fixed
+
+- **WebGPU `Device::waitForIdle()`** — now actually blocks until GPU work completes using `emscripten_sleep` polling (previously returned immediately, breaking synchronization)
+- **WebGPU `copyBufferToTexture` / `copyTextureToBuffer`** — extent now uses mip-level dimensions instead of full texture dimensions (previously copied wrong size for `mipLevel > 0`)
+- **WebGPU mipmap generation resource leak** — `initMipmapGenResources` now rolls back partial allocations on failure (previously leaked `vsModule` if `fsModule` failed, causing permanent mipmap generation failure)
+- **WebGPU `calculateTextureSize`** — now uses block-based math for compressed formats (`ceil(w/blockW) * ceil(h/blockH) * blockBytes`) instead of `w * h * bpp`, fixing severe over/under-allocation for BC/ETC2/ASTC textures
+- **WebGPU `Texture::upload` / `download` / `downloadAsync`** — now compute row lengths and image sizes in block rows for compressed formats; previously passed bit counts as byte counts, causing incorrect data transfers for all formats
+
+### Changed
+
+- **`CommandEncoder::generateMipmaps` returns `bool`** instead of `void`
+  - Returns `true` when mip generation commands were successfully recorded
+  - Returns `false` for error conditions: null texture, wrong type, wrong usage, unsupported format, resource creation failure, or no mip levels to generate
+  - Updated in all backends: WebGPU, Metal, Vulkan (Linux & Android), DirectX 12
+
+### Tests
+
+- `GenerateMipmapsProducesCorrectContent` — pixel-correctness test: uploads solid red to an 8×8 RGBA8 texture, generates 4 mip levels, downloads each level and verifies they all remain red
+- Fixed `GetPixelFormatSize.ETC2CompressedFormats` universal test — `etc2_rgb8a1unorm` is 4 bits/texel (was incorrectly expecting 8)
+
+### Tests
+
+- `Buffer.AsyncDownloadRoundtrip` — verifies async buffer download produces correct data
+- `Texture.AsyncDownloadRoundtrip` — verifies async texture download produces correct data
+- `CommandBuffer.GetGPUExecutionTimeAsyncWorksAfterSubmission` — verifies async timing callback fires without crash
+
 ## [0.12.0] - 2026-04-23
 
 ### Added
@@ -11,7 +55,7 @@ All notable changes to campello_gpu are documented here.
 - **Mipmap generation** — `CommandEncoder::generateMipmaps(texture)`
   - **Metal** — uses native `MTL::BlitCommandEncoder::generateMipmaps()`
   - **Vulkan (Linux & Android)** — iterative `vkCmdBlitImage` with `VK_FILTER_LINEAR` from mip N-1 into mip N
-  - **DirectX 12** — documented no-op; requires a shader-based fallback not yet implemented
+  - **DirectX 12** — shader-based render pass using `D3DCompile`-time HLSL, fullscreen triangle pixel shader with bilinear sampling, per-format PSO caching on `DeviceData`
 - **`CommandEncoder::copyTextureToTexture` per-mip support** — added `srcMipLevel` and `dstMipLevel` parameters to the public API
   - **DirectX 12** — previously a stub; now fully implemented via `CopyTextureRegion` with subresource indices
   - **Metal** — passes mip levels through to `MTL::BlitCommandEncoder::copyFromTexture`

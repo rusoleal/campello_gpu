@@ -25,3 +25,7 @@ uint64_t CommandBuffer::getGPUExecutionTime() {
     }
     return 0;
 }
+
+void CommandBuffer::getGPUExecutionTimeAsync(std::function<void(uint64_t)> callback) {
+    callback(getGPUExecutionTime());
+}

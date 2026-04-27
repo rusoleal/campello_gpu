@@ -315,6 +315,17 @@ namespace systems::leal::campello_gpu
         std::shared_ptr<ShaderModule> createShaderModule(const uint8_t *buffer, uint64_t size);
 
         /**
+         * @brief Creates a shader module from WGSL source text.
+         *
+         * This overload is intended for the WebGPU backend where shaders are
+         * authored in WGSL. Other backends return `nullptr`.
+         *
+         * @param wgslSource Null-terminated WGSL shader source string.
+         * @return A new `ShaderModule`, or `nullptr` on failure.
+         */
+        std::shared_ptr<ShaderModule> createShaderModule(const char *wgslSource);
+
+        /**
          * @brief Creates a render pipeline state object.
          *
          * Compiles and links the vertex and fragment shaders together with their

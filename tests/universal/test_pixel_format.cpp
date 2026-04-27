@@ -94,8 +94,8 @@ TEST(GetPixelFormatSize, BCCompressedFormats) {
 TEST(GetPixelFormatSize, ETC2CompressedFormats) {
     EXPECT_EQ(getPixelFormatSize(PixelFormat::etc2_rgb8unorm),      4u);
     EXPECT_EQ(getPixelFormatSize(PixelFormat::etc2_rgb8unorm_srgb), 4u);
-    EXPECT_EQ(getPixelFormatSize(PixelFormat::etc2_rgb8a1unorm),    8u);
-    EXPECT_EQ(getPixelFormatSize(PixelFormat::etc2_rgb8a1unorm_srgb),8u);
+    EXPECT_EQ(getPixelFormatSize(PixelFormat::etc2_rgb8a1unorm),    4u);
+    EXPECT_EQ(getPixelFormatSize(PixelFormat::etc2_rgb8a1unorm_srgb),4u);
 }
 
 // ---------------------------------------------------------------------------

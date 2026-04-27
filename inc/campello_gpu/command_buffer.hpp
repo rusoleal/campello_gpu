@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 
 namespace systems::leal::campello_gpu
 {
@@ -36,13 +37,25 @@ namespace systems::leal::campello_gpu
         
         /**
          * @brief Returns the GPU execution time in nanoseconds.
-         * 
+         *
          * This is only valid after the command buffer has completed execution
          * on the GPU. Returns 0 if timing is not available.
-         * 
+         *
          * @return GPU execution time in nanoseconds.
          */
         uint64_t getGPUExecutionTime();
+
+        /**
+         * @brief Asynchronously returns the GPU execution time in nanoseconds.
+         *
+         * Non-blocking. The callback is invoked on the main thread when the
+         * timing data is available. On WebGPU/WASM, this avoids `emscripten_sleep`
+         * polling and is safe to call from the browser main thread.
+         *
+         * @param callback Invoked with the GPU execution time in nanoseconds.
+         *                 A value of 0 means timing is not available.
+         */
+        void getGPUExecutionTimeAsync(std::function<void(uint64_t)> callback);
     };
 
 }

@@ -282,6 +282,48 @@ TEST(Texture, UploadDownloadRoundtripRandomData) {
     EXPECT_EQ(uploadData, downloadData);
 }
 
+// ---------------------------------------------------------------------------
+// Async download
+// ---------------------------------------------------------------------------
+
+TEST(Texture, AsyncDownloadRoundtrip) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 8, H = 8;
+    constexpr uint64_t byteSize = W * H * 4; // RGBA8
+
+    std::vector<uint8_t> uploadData(byteSize);
+    std::srand(88);
+    for (auto& byte : uploadData) {
+        byte = static_cast<uint8_t>(std::rand() % 256);
+    }
+
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 1, 1,
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::textureBinding) |
+            static_cast<int>(TextureUsage::copySrc)));
+    ASSERT_NE(tex, nullptr);
+
+    EXPECT_TRUE(tex->upload(0, byteSize, uploadData.data()));
+
+    std::vector<uint8_t> downloadData(byteSize);
+    bool callbackOk = false;
+    bool callbackResult = false;
+
+    tex->downloadAsync(0, 0, downloadData.data(), byteSize,
+        [&](bool success) {
+            callbackOk = true;
+            callbackResult = success;
+        });
+
+    EXPECT_TRUE(callbackOk);
+    EXPECT_TRUE(callbackResult);
+    EXPECT_EQ(uploadData, downloadData);
+}
+
 TEST(Texture, UploadDownloadSmallTexture) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device on this platform";

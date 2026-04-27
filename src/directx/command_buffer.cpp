@@ -48,3 +48,7 @@ uint64_t CommandBuffer::getGPUExecutionTime() {
     uint64_t tickDelta = endTick - startTick;
     return static_cast<uint64_t>(static_cast<double>(tickDelta) / h->timestampFrequency * 1e9);
 }
+
+void CommandBuffer::getGPUExecutionTimeAsync(std::function<void(uint64_t)> callback) {
+    callback(getGPUExecutionTime());
+}

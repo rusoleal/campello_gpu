@@ -307,9 +307,240 @@ void CommandEncoder::copyTextureToTexture(
     h->cmdList->ResourceBarrier(2, barriers);
 }
 
-void CommandEncoder::generateMipmaps(std::shared_ptr<Texture> /*texture*/) {
-    // Not implemented on D3D12. Users must generate mipmaps manually
-    // using copyTextureToTexture or a custom render/compute pass.
+static bool initMipmapGenResources(DeviceData* d) {
+    if (d->mipmapRootSig) return true;
+
+    // Compile HLSL shaders at runtime
+    const char* vsCode = R"(
+        float4 VSMain(uint vertexId : SV_VertexID) : SV_Position {
+            float2 pos = float2(
+                vertexId == 1 ? 3.0 : -1.0,
+                vertexId == 2 ? 3.0 : -1.0
+            );
+            return float4(pos, 0.0, 1.0);
+        }
+    )";
+
+    const char* psCode = R"(
+        Texture2D srcTexture : register(t0);
+        SamplerState srcSampler : register(s0);
+
+        float4 PSMain(float4 pos : SV_Position) : SV_Target0 {
+            uint2 srcSize;
+            srcTexture.GetDimensions(srcSize.x, srcSize.y);
+            float2 uv = pos.xy / (srcSize * 0.5);
+            return srcTexture.Sample(srcSampler, uv);
+        }
+    )";
+
+    ID3DBlob* vsBlob = nullptr;
+    ID3DBlob* psBlob = nullptr;
+    ID3DBlob* errorBlob = nullptr;
+
+    if (FAILED(D3DCompile(vsCode, strlen(vsCode), "vs_main", nullptr, nullptr,
+                          "VSMain", "vs_5_0", D3DCOMPILE_ENABLE_STRICTNESS, 0,
+                          &vsBlob, &errorBlob))) {
+        if (errorBlob) errorBlob->Release();
+        return false;
+    }
+    if (errorBlob) { errorBlob->Release(); errorBlob = nullptr; }
+
+    if (FAILED(D3DCompile(psCode, strlen(psCode), "ps_main", nullptr, nullptr,
+                          "PSMain", "ps_5_0", D3DCOMPILE_ENABLE_STRICTNESS, 0,
+                          &psBlob, &errorBlob))) {
+        if (errorBlob) errorBlob->Release();
+        vsBlob->Release();
+        return false;
+    }
+    if (errorBlob) { errorBlob->Release(); }
+
+    d->mipmapVS = vsBlob;
+    d->mipmapPS = psBlob;
+
+    // Create root signature: one descriptor table for SRV, one for sampler
+    D3D12_ROOT_PARAMETER1 params[2] = {};
+    D3D12_DESCRIPTOR_RANGE1 srvRange = {};
+    srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRange.NumDescriptors = 1;
+    srvRange.BaseShaderRegister = 0;
+    srvRange.RegisterSpace = 0;
+    srvRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    srvRange.OffsetInDescriptorsFromTableStart = 0;
+
+    params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[0].DescriptorTable.NumDescriptorRanges = 1;
+    params[0].DescriptorTable.pDescriptorRanges = &srvRange;
+    params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_DESCRIPTOR_RANGE1 sampRange = {};
+    sampRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+    sampRange.NumDescriptors = 1;
+    sampRange.BaseShaderRegister = 0;
+    sampRange.RegisterSpace = 0;
+    sampRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    sampRange.OffsetInDescriptorsFromTableStart = 0;
+
+    params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[1].DescriptorTable.NumDescriptorRanges = 1;
+    params[1].DescriptorTable.pDescriptorRanges = &sampRange;
+    params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc = {};
+    rsDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    rsDesc.Desc_1_1.NumParameters = 2;
+    rsDesc.Desc_1_1.pParameters = params;
+    rsDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ID3DBlob* rsBlob = nullptr;
+    ID3DBlob* rsError = nullptr;
+    if (FAILED(D3D12SerializeVersionedRootSignature(&rsDesc, &rsBlob, &rsError))) {
+        if (rsError) rsError->Release();
+        return false;
+    }
+    if (rsError) rsError->Release();
+
+    bool ok = SUCCEEDED(d->device->CreateRootSignature(0, rsBlob->GetBufferPointer(),
+                                                        rsBlob->GetBufferSize(),
+                                                        IID_PPV_ARGS(&d->mipmapRootSig)));
+    rsBlob->Release();
+    return ok;
+}
+
+bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
+    if (!native || !texture || !texture->native) return false;
+    auto* h   = static_cast<CommandEncoderHandle*>(native);
+    auto* tex = static_cast<TextureHandle*>(texture->native);
+    auto* d   = h->deviceData;
+    if (!d || !d->device) return false;
+
+    if (tex->mipLevels <= 1) return false;
+    if (tex->dimension != TextureType::tt2d) return false;
+
+    DXGI_FORMAT fmt = toDXGIFormat(tex->format);
+    if (fmt == DXGI_FORMAT_UNKNOWN) return false;
+
+    if (!initMipmapGenResources(d)) return false;
+
+    // Create PSO for this format if not cached
+    ID3D12PipelineState* pso = nullptr;
+    auto it = d->mipmapPSOs.find(fmt);
+    if (it != d->mipmapPSOs.end()) {
+        pso = it->second;
+    } else {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC psd = {};
+        psd.pRootSignature = d->mipmapRootSig;
+        psd.VS.pShaderBytecode = d->mipmapVS->GetBufferPointer();
+        psd.VS.BytecodeLength = d->mipmapVS->GetBufferSize();
+        psd.PS.pShaderBytecode = d->mipmapPS->GetBufferPointer();
+        psd.PS.BytecodeLength = d->mipmapPS->GetBufferSize();
+        psd.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        psd.SampleMask = UINT_MAX;
+        psd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        psd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        psd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        psd.NumRenderTargets = 1;
+        psd.RTVFormats[0] = fmt;
+        psd.SampleDesc.Count = 1;
+
+        if (FAILED(d->device->CreateGraphicsPipelineState(&psd, IID_PPV_ARGS(&pso)))) {
+            return false;
+        }
+        d->mipmapPSOs[fmt] = pso;
+        d->renderPipelineCount++;
+    }
+
+    // Create a temporary linear sampler
+    D3D12_CPU_DESCRIPTOR_HANDLE samplerCpu = d->allocSamplerCpu();
+    D3D12_GPU_DESCRIPTOR_HANDLE samplerGpu = d->samplerGpuAt(d->samplerOffset - 1);
+    D3D12_SAMPLER_DESC sampDesc = {};
+    sampDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    sampDesc.MinLOD = 0;
+    sampDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    d->device->CreateSampler(&sampDesc, samplerCpu);
+
+    ID3D12DescriptorHeap* heaps[] = { d->srvHeap, d->samplerHeap };
+
+    for (uint32_t mip = 1; mip < tex->mipLevels; mip++) {
+        uint32_t srcMip = mip - 1;
+        uint32_t dstW = std::max(1u, tex->width >> mip);
+        uint32_t dstH = std::max(1u, tex->height >> mip);
+
+        UINT srcSubresource = CalcSubresource(srcMip, 0, 0, tex->mipLevels, tex->depthOrLayers);
+        UINT dstSubresource = CalcSubresource(mip, 0, 0, tex->mipLevels, tex->depthOrLayers);
+
+        // Barriers: COMMON -> required states
+        D3D12_RESOURCE_BARRIER barriers[2] = {};
+        barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[0].Transition.pResource = tex->resource;
+        barriers[0].Transition.Subresource = srcSubresource;
+        barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+        barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[1].Transition.pResource = tex->resource;
+        barriers[1].Transition.Subresource = dstSubresource;
+        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        h->cmdList->ResourceBarrier(2, barriers);
+
+        // Allocate temporary descriptors
+        D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = d->allocSrvCpu();
+        D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = d->srvGpuAt(d->srvOffset - 1);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = d->allocRtvExtra();
+
+        // Create SRV for source mip
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = fmt;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Texture2D.MipLevels = 1;
+        srvDesc.Texture2D.MostDetailedMip = srcMip;
+        d->device->CreateShaderResourceView(tex->resource, &srvDesc, srvCpu);
+
+        // Create RTV for destination mip
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+        rtvDesc.Format = fmt;
+        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        rtvDesc.Texture2D.MipSlice = mip;
+        d->device->CreateRenderTargetView(tex->resource, &rtvDesc, rtvCpu);
+
+        // Set pipeline and render state
+        h->cmdList->SetPipelineState(pso);
+        h->cmdList->SetGraphicsRootSignature(d->mipmapRootSig);
+        h->cmdList->SetDescriptorHeaps(2, heaps);
+        h->cmdList->SetGraphicsRootDescriptorTable(0, srvGpu);
+        h->cmdList->SetGraphicsRootDescriptorTable(1, samplerGpu);
+
+        D3D12_VIEWPORT vp = {};
+        vp.Width = static_cast<float>(dstW);
+        vp.Height = static_cast<float>(dstH);
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        vp.TopLeftX = 0.0f;
+        vp.TopLeftY = 0.0f;
+        h->cmdList->RSSetViewports(1, &vp);
+
+        D3D12_RECT scissor = {};
+        scissor.right = static_cast<LONG>(dstW);
+        scissor.bottom = static_cast<LONG>(dstH);
+        h->cmdList->RSSetScissorRects(1, &scissor);
+
+        h->cmdList->OMSetRenderTargets(1, &rtvCpu, FALSE, nullptr);
+        h->cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        h->cmdList->DrawInstanced(3, 1, 0, 0);
+
+        // Barriers: restore to COMMON
+        barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+        h->cmdList->ResourceBarrier(2, barriers);
+    }
+    return true;
 }
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {

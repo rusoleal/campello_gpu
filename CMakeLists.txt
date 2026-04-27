@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.12.0)
+project(campello_gpu VERSION 0.13.0)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -22,6 +22,8 @@ elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
     include(windows.cmake)
 elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     include(linux.cmake)
+elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten")
+    include(wasm.cmake)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -114,4 +116,8 @@ endif()
 
 if(BUILD_EXAMPLES AND ${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
     add_subdirectory(examples/linux)
+endif()
+
+if(BUILD_EXAMPLES AND ${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten")
+    add_subdirectory(examples/wasm)
 endif()

@@ -70,3 +70,36 @@ TEST(CommandBuffer, GetGPUExecutionTimeWorksAfterSubmission) {
     (void)gpuTime;
     SUCCEED();
 }
+
+TEST(CommandBuffer, GetGPUExecutionTimeAsyncWorksAfterSubmission) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "Device not available";
+    }
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+
+    auto buffer = device->createBuffer(1024, BufferUsage::storage);
+    if (buffer) {
+        encoder->clearBuffer(buffer, 0, 1024);
+    }
+
+    auto cmdBuffer = encoder->finish();
+    ASSERT_NE(cmdBuffer, nullptr);
+
+    device->submit(cmdBuffer);
+
+    bool callbackOk = false;
+    uint64_t callbackTime = 0;
+
+    cmdBuffer->getGPUExecutionTimeAsync([&](uint64_t nanoseconds) {
+        callbackOk = true;
+        callbackTime = nanoseconds;
+    });
+
+    EXPECT_TRUE(callbackOk);
+    // Either 0 (not implemented) or positive (timing available)
+    (void)callbackTime;
+    SUCCEED();
+}

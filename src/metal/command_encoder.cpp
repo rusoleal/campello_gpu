@@ -229,14 +229,15 @@ void CommandEncoder::copyTextureToTexture(
     blit->endEncoding();
 }
 
-void CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
-    if (!native || !texture || !texture->native) return;
+bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
+    if (!native || !texture || !texture->native) return false;
     auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
     auto *texHandle  = static_cast<MetalTextureHandle *>(texture->native);
     auto *blit       = cmdBuffer->blitCommandEncoder();
-    if (!blit) return;
+    if (!blit) return false;
     blit->generateMipmaps(texHandle->texture);
     blit->endEncoding();
+    return true;
 }
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {

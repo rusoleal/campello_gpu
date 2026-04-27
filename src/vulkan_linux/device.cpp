@@ -898,6 +898,16 @@ std::set<Feature> Device::getFeatures()
         toReturn.insert(Feature::bcTextureCompression);
     }
 
+    if (deviceFeatures.textureCompressionETC2)
+    {
+        toReturn.insert(Feature::etc2TextureCompression);
+    }
+
+    if (deviceFeatures.textureCompressionASTC_LDR)
+    {
+        toReturn.insert(Feature::astcTextureCompression);
+    }
+
     if (deviceFeatures.geometryShader)
     {
         toReturn.insert(Feature::geometryShader);
@@ -1171,6 +1181,11 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
             
             return nullptr;
     }
+}
+
+std::shared_ptr<ShaderModule> Device::createShaderModule(const char *wgslSource) {
+    (void)wgslSource;
+    return nullptr; // WGSL not supported on Vulkan backend
 }
 
 static VkBlendFactor toVkBlendFactor(BlendFactor f) {
@@ -1728,16 +1743,26 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
 
     auto deviceData = (DeviceData *)this->native;
 
+    std::vector<VkDescriptorSetLayout> layouts;
+    layouts.reserve(descriptor.bindGroupLayouts.size());
+    for (const auto& layout : descriptor.bindGroupLayouts) {
+        if (layout) {
+            auto* h = (BindGroupLayoutHandle *)layout->native;
+            layouts.push_back(h->layout);
+        } else {
+            layouts.push_back(VK_NULL_HANDLE);
+        }
+    }
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0; // Optional
-    pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
-    pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
-    pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
+    pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(layouts.size());
+    pipelineLayoutInfo.pSetLayouts = layouts.empty() ? nullptr : layouts.data();
+    pipelineLayoutInfo.pushConstantRangeCount = 0;
+    pipelineLayoutInfo.pPushConstantRanges = nullptr;
 
     VkPipelineLayout pipelineLayout;
     if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-        
         return nullptr;
     }
 

@@ -368,6 +368,7 @@ void CommandEncoder::copyBufferToTexture(
                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &barrier);
     texH->currentLayout = VK_IMAGE_LAYOUT_GENERAL;
+    return true;
 }
 
 void CommandEncoder::copyTextureToBuffer(
@@ -514,13 +515,13 @@ void CommandEncoder::copyTextureToTexture(
     dstH->currentLayout = VK_IMAGE_LAYOUT_GENERAL;
 }
 
-void CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
-    if (!texture || !texture->native) return;
+bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
+    if (!texture || !texture->native) return false;
     auto data = (CommandEncoderHandle *)this->native;
     auto texH = (TextureHandle *)texture->native;
 
     uint32_t mipLevels = texH->mipLevels;
-    if (mipLevels <= 1) return;
+    if (mipLevels <= 1) return false;
 
     for (uint32_t mip = 1; mip < mipLevels; ++mip) {
         uint32_t srcWidth  = std::max(1u, texH->width  >> (mip - 1));

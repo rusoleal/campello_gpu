@@ -349,6 +349,14 @@ Device::~Device() {
     if (d->drawIndexedCmdSig) d->drawIndexedCmdSig->Release();
     if (d->dispatchCmdSig)    d->dispatchCmdSig->Release();
 
+    for (auto& kv : d->mipmapPSOs) {
+        if (kv.second) kv.second->Release();
+    }
+    d->mipmapPSOs.clear();
+    if (d->mipmapRootSig) d->mipmapRootSig->Release();
+    if (d->mipmapVS)      d->mipmapVS->Release();
+    if (d->mipmapPS)      d->mipmapPS->Release();
+
     if (d->srvHeap)      d->srvHeap->Release();
     if (d->samplerHeap)  d->samplerHeap->Release();
     if (d->rtvExtraHeap) d->rtvExtraHeap->Release();
@@ -971,6 +979,11 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(
     return std::shared_ptr<ShaderModule>(new ShaderModule(h));
 }
 
+std::shared_ptr<ShaderModule> Device::createShaderModule(const char *wgslSource) {
+    (void)wgslSource;
+    return nullptr; // WGSL not supported on DirectX backend
+}
+
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
     const RenderPipelineDescriptor& descriptor) {
 
@@ -1348,8 +1361,17 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
 
-    // PipelineLayoutDescriptor is currently a placeholder with no bind group layouts.
-    auto* rs = createUniversalRootSignature(dev, {});
+    std::vector<BindGroupLayoutHandle*> layouts;
+    layouts.reserve(descriptor.bindGroupLayouts.size());
+    for (const auto& layout : descriptor.bindGroupLayouts) {
+        if (layout) {
+            layouts.push_back(static_cast<BindGroupLayoutHandle*>(layout->native));
+        } else {
+            layouts.push_back(nullptr);
+        }
+    }
+
+    auto* rs = createUniversalRootSignature(dev, layouts);
     if (!rs) return nullptr;
 
     auto* h         = new PipelineLayoutHandle();

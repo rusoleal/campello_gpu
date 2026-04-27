@@ -33,6 +33,8 @@ static std::shared_ptr<Device> tryCreateDevice() {
     return Device::createDefaultDevice(nullptr);
 #elif defined(__linux__)
     return Device::createDefaultDevice(nullptr);
+#elif defined(__EMSCRIPTEN__)
+    return Device::createDefaultDevice("#canvas");
 #else
     return nullptr;
 #endif

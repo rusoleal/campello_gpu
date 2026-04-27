@@ -155,6 +155,11 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
     return true;
 }
 
+void Texture::downloadAsync(uint32_t mipLevel, uint32_t arrayLayer, void* data, uint64_t length,
+                            std::function<void(bool)> callback) {
+    callback(download(mipLevel, arrayLayer, data, length));
+}
+
 std::shared_ptr<TextureView> Texture::createView(
     PixelFormat format,
     uint32_t arrayLayerCount,

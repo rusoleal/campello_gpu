@@ -211,3 +211,43 @@ TEST(Buffer, MinimumSizeBuffer) {
         EXPECT_GE(buffer->getLength(), 1u);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Async download
+// ---------------------------------------------------------------------------
+
+TEST(Buffer, AsyncDownloadRoundtrip) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+
+    constexpr uint64_t byteSize = 256;
+    std::vector<uint8_t> uploadData(byteSize);
+    std::srand(77);
+    for (auto& byte : uploadData) {
+        byte = static_cast<uint8_t>(std::rand() % 256);
+    }
+
+    auto buffer = device->createBuffer(
+        byteSize,
+        static_cast<BufferUsage>(
+            static_cast<int>(BufferUsage::copyDst) |
+            static_cast<int>(BufferUsage::mapRead)),
+        uploadData.data());
+    ASSERT_NE(buffer, nullptr);
+
+    std::vector<uint8_t> downloadData(byteSize);
+    bool callbackOk = false;
+    bool callbackResult = false;
+
+    buffer->downloadAsync(0, byteSize, downloadData.data(),
+        [&](bool success) {
+            callbackOk = true;
+            callbackResult = success;
+        });
+
+    EXPECT_TRUE(callbackOk);
+    EXPECT_TRUE(callbackResult);
+    EXPECT_EQ(uploadData, downloadData);
+}

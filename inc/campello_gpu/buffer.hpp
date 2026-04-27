@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <functional>
 
 namespace systems::leal::campello_gpu
 {
@@ -74,6 +75,21 @@ namespace systems::leal::campello_gpu
          * @return `true` on success, `false` if the read could not be completed.
          */
         bool download(uint64_t offset, uint64_t length, void *data);
+
+        /**
+         * @brief Asynchronously downloads GPU buffer data to CPU memory.
+         *
+         * Non-blocking. The callback is invoked on the main thread when the
+         * download completes. On WebGPU/WASM, this avoids `emscripten_sleep`
+         * polling and is safe to call from the browser main thread.
+         *
+         * @param offset   Byte offset within the buffer at which to begin reading.
+         * @param length   Number of bytes to read.
+         * @param data     Pointer to the destination CPU memory (must be at least `length` bytes).
+         * @param callback Invoked with `true` on success, `false` on failure.
+         */
+        void downloadAsync(uint64_t offset, uint64_t length, void *data,
+                           std::function<void(bool)> callback);
 
         ~Buffer();
     };

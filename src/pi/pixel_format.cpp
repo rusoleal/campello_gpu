@@ -107,14 +107,18 @@ uint32_t systems::leal::campello_gpu::getPixelFormatSize(PixelFormat format) {
             return 4;
         case PixelFormat::etc2_rgb8a1unorm:
         case PixelFormat::etc2_rgb8a1unorm_srgb:
-            return 8;
+            return 4;
         case PixelFormat::eac_r11unorm:
         case PixelFormat::eac_r11snorm:
+            return 4;
         case PixelFormat::eac_rg11unorm:
         case PixelFormat::eac_rg11snorm:
+            return 8;
 
         // ASTC compressed formats
         case PixelFormat::astc_4x4_unorm_srgb:
+            return 8;
+        // Other ASTC block sizes have fractional bits-per-pixel; use block helpers.
         case PixelFormat::astc_5x4_unorm_srgb:
         case PixelFormat::astc_5x5_unorm_srgb:
         case PixelFormat::astc_6x5_unorm_srgb:
@@ -131,6 +135,157 @@ uint32_t systems::leal::campello_gpu::getPixelFormatSize(PixelFormat format) {
             return 0;
         default:
             return 0;
+    }
+}
+
+bool systems::leal::campello_gpu::isCompressedFormat(PixelFormat format) {
+    switch (format) {
+        case PixelFormat::bc1_rgba_unorm:
+        case PixelFormat::bc1_rgba_unorm_srgb:
+        case PixelFormat::bc2_rgba_unorm:
+        case PixelFormat::bc2_rgba_unorm_srgb:
+        case PixelFormat::bc3_rgba_unorm:
+        case PixelFormat::bc3_rgba_unorm_srgb:
+        case PixelFormat::bc4_r_unorm:
+        case PixelFormat::bc4_r_snorm:
+        case PixelFormat::bc5_rg_unorm:
+        case PixelFormat::bc5_rg_snorm:
+        case PixelFormat::bc6h_rgb_ufloat:
+        case PixelFormat::bc6h_rgb_float:
+        case PixelFormat::bc7_rgba_unorm:
+        case PixelFormat::bc7_rgba_unorm_srgb:
+        case PixelFormat::etc2_rgb8unorm:
+        case PixelFormat::etc2_rgb8unorm_srgb:
+        case PixelFormat::etc2_rgb8a1unorm:
+        case PixelFormat::etc2_rgb8a1unorm_srgb:
+        case PixelFormat::eac_r11unorm:
+        case PixelFormat::eac_r11snorm:
+        case PixelFormat::eac_rg11unorm:
+        case PixelFormat::eac_rg11snorm:
+        case PixelFormat::astc_4x4_unorm_srgb:
+        case PixelFormat::astc_5x4_unorm_srgb:
+        case PixelFormat::astc_5x5_unorm_srgb:
+        case PixelFormat::astc_6x5_unorm_srgb:
+        case PixelFormat::astc_6x6_unorm_srgb:
+        case PixelFormat::astc_8x5_unorm_srgb:
+        case PixelFormat::astc_8x6_unorm_srgb:
+        case PixelFormat::astc_8x8_unorm_srgb:
+        case PixelFormat::astc_10x5_unorm_srgb:
+        case PixelFormat::astc_10x6_unorm_srgb:
+        case PixelFormat::astc_10x8_unorm_srgb:
+        case PixelFormat::astc_10x10_unorm_srgb:
+        case PixelFormat::astc_12x10_unorm_srgb:
+        case PixelFormat::astc_12x12_unorm_srgb:
+            return true;
+        default:
+            return false;
+    }
+}
+
+systems::leal::campello_gpu::PixelFormatBlockDimensions systems::leal::campello_gpu::getPixelFormatBlockDimensions(PixelFormat format) {
+    switch (format) {
+        // BC and ETC2: all use 4x4 blocks
+        case PixelFormat::bc1_rgba_unorm:
+        case PixelFormat::bc1_rgba_unorm_srgb:
+        case PixelFormat::bc2_rgba_unorm:
+        case PixelFormat::bc2_rgba_unorm_srgb:
+        case PixelFormat::bc3_rgba_unorm:
+        case PixelFormat::bc3_rgba_unorm_srgb:
+        case PixelFormat::bc4_r_unorm:
+        case PixelFormat::bc4_r_snorm:
+        case PixelFormat::bc5_rg_unorm:
+        case PixelFormat::bc5_rg_snorm:
+        case PixelFormat::bc6h_rgb_ufloat:
+        case PixelFormat::bc6h_rgb_float:
+        case PixelFormat::bc7_rgba_unorm:
+        case PixelFormat::bc7_rgba_unorm_srgb:
+        case PixelFormat::etc2_rgb8unorm:
+        case PixelFormat::etc2_rgb8unorm_srgb:
+        case PixelFormat::etc2_rgb8a1unorm:
+        case PixelFormat::etc2_rgb8a1unorm_srgb:
+        case PixelFormat::eac_r11unorm:
+        case PixelFormat::eac_r11snorm:
+        case PixelFormat::eac_rg11unorm:
+        case PixelFormat::eac_rg11snorm:
+            return {4, 4};
+
+        // ASTC: block dimensions encoded in format name
+        case PixelFormat::astc_4x4_unorm_srgb:   return {4, 4};
+        case PixelFormat::astc_5x4_unorm_srgb:   return {5, 4};
+        case PixelFormat::astc_5x5_unorm_srgb:   return {5, 5};
+        case PixelFormat::astc_6x5_unorm_srgb:   return {6, 5};
+        case PixelFormat::astc_6x6_unorm_srgb:   return {6, 6};
+        case PixelFormat::astc_8x5_unorm_srgb:   return {8, 5};
+        case PixelFormat::astc_8x6_unorm_srgb:   return {8, 6};
+        case PixelFormat::astc_8x8_unorm_srgb:   return {8, 8};
+        case PixelFormat::astc_10x5_unorm_srgb:  return {10, 5};
+        case PixelFormat::astc_10x6_unorm_srgb:  return {10, 6};
+        case PixelFormat::astc_10x8_unorm_srgb:  return {10, 8};
+        case PixelFormat::astc_10x10_unorm_srgb: return {10, 10};
+        case PixelFormat::astc_12x10_unorm_srgb: return {12, 10};
+        case PixelFormat::astc_12x12_unorm_srgb: return {12, 12};
+
+        default:
+            return {1, 1};
+    }
+}
+
+uint32_t systems::leal::campello_gpu::getPixelFormatBlockBytes(PixelFormat format) {
+    switch (format) {
+        // BC1, BC4: 8 bytes per 4x4 block
+        case PixelFormat::bc1_rgba_unorm:
+        case PixelFormat::bc1_rgba_unorm_srgb:
+        case PixelFormat::bc4_r_unorm:
+        case PixelFormat::bc4_r_snorm:
+            return 8;
+
+        // BC2, BC3, BC5, BC6H, BC7: 16 bytes per 4x4 block
+        case PixelFormat::bc2_rgba_unorm:
+        case PixelFormat::bc2_rgba_unorm_srgb:
+        case PixelFormat::bc3_rgba_unorm:
+        case PixelFormat::bc3_rgba_unorm_srgb:
+        case PixelFormat::bc5_rg_unorm:
+        case PixelFormat::bc5_rg_snorm:
+        case PixelFormat::bc6h_rgb_ufloat:
+        case PixelFormat::bc6h_rgb_float:
+        case PixelFormat::bc7_rgba_unorm:
+        case PixelFormat::bc7_rgba_unorm_srgb:
+            return 16;
+
+        // ETC2_RGB8, ETC2_RGB8A1, EAC_R11: 8 bytes per 4x4 block
+        case PixelFormat::etc2_rgb8unorm:
+        case PixelFormat::etc2_rgb8unorm_srgb:
+        case PixelFormat::etc2_rgb8a1unorm:
+        case PixelFormat::etc2_rgb8a1unorm_srgb:
+        case PixelFormat::eac_r11unorm:
+        case PixelFormat::eac_r11snorm:
+            return 8;
+
+        // EAC_RG11: 16 bytes per 4x4 block
+        case PixelFormat::eac_rg11unorm:
+        case PixelFormat::eac_rg11snorm:
+            return 16;
+
+        // ASTC: all variants use 16 bytes per block
+        case PixelFormat::astc_4x4_unorm_srgb:
+        case PixelFormat::astc_5x4_unorm_srgb:
+        case PixelFormat::astc_5x5_unorm_srgb:
+        case PixelFormat::astc_6x5_unorm_srgb:
+        case PixelFormat::astc_6x6_unorm_srgb:
+        case PixelFormat::astc_8x5_unorm_srgb:
+        case PixelFormat::astc_8x6_unorm_srgb:
+        case PixelFormat::astc_8x8_unorm_srgb:
+        case PixelFormat::astc_10x5_unorm_srgb:
+        case PixelFormat::astc_10x6_unorm_srgb:
+        case PixelFormat::astc_10x8_unorm_srgb:
+        case PixelFormat::astc_10x10_unorm_srgb:
+        case PixelFormat::astc_12x10_unorm_srgb:
+        case PixelFormat::astc_12x12_unorm_srgb:
+            return 16;
+
+        default:
+            // Uncompressed: bytes per pixel
+            return getPixelFormatSize(format) / 8;
     }
 }
 

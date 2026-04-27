@@ -849,6 +849,16 @@ std::set<Feature> Device::getFeatures()
         toReturn.insert(Feature::bcTextureCompression);
     }
 
+    if (deviceFeatures.textureCompressionETC2)
+    {
+        toReturn.insert(Feature::etc2TextureCompression);
+    }
+
+    if (deviceFeatures.textureCompressionASTC_LDR)
+    {
+        toReturn.insert(Feature::astcTextureCompression);
+    }
+
     if (deviceFeatures.geometryShader)
     {
         toReturn.insert(Feature::geometryShader);
@@ -1122,6 +1132,11 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
             __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "vkCreateShaderModule() unknown error");
             return nullptr;
     }
+}
+
+std::shared_ptr<ShaderModule> Device::createShaderModule(const char *wgslSource) {
+    (void)wgslSource;
+    return nullptr; // WGSL not supported on Vulkan backend
 }
 
 static VkBlendFactor toVkBlendFactor(BlendFactor f) {
@@ -1678,12 +1693,23 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
 
     auto deviceData = (DeviceData *)this->native;
 
+    std::vector<VkDescriptorSetLayout> layouts;
+    layouts.reserve(descriptor.bindGroupLayouts.size());
+    for (const auto& layout : descriptor.bindGroupLayouts) {
+        if (layout) {
+            auto* h = (BindGroupLayoutHandle *)layout->native;
+            layouts.push_back(h->layout);
+        } else {
+            layouts.push_back(VK_NULL_HANDLE);
+        }
+    }
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 0; // Optional
-    pipelineLayoutInfo.pSetLayouts = nullptr; // Optional
-    pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
-    pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
+    pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(layouts.size());
+    pipelineLayoutInfo.pSetLayouts = layouts.empty() ? nullptr : layouts.data();
+    pipelineLayoutInfo.pushConstantRangeCount = 0;
+    pipelineLayoutInfo.pPushConstantRanges = nullptr;
 
     VkPipelineLayout pipelineLayout;
     if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
@@ -1721,6 +1747,7 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
     std::vector<VkWriteDescriptorSet>  writes;
     std::vector<VkDescriptorBufferInfo> bufferInfos(descriptor.entries.size());
     std::vector<VkDescriptorImageInfo>  imageInfos(descriptor.entries.size());
+    std::vector<VkWriteDescriptorSetAccelerationStructureKHR> asInfos(descriptor.entries.size());
 
     for (int a = 0; a < (int)descriptor.entries.size(); a++) {
         const auto &entry = descriptor.entries[a];
@@ -1759,7 +1786,15 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
             write.pImageInfo          = &imageInfos[a];
             writes.push_back(write);
         } else if (std::holds_alternative<std::shared_ptr<AccelerationStructure>>(entry.resource)) {
-            // TODO: implement when Vulkan AS handle is ready (VkWriteDescriptorSetAccelerationStructureKHR via pNext).
+            const auto &as   = std::get<std::shared_ptr<AccelerationStructure>>(entry.resource);
+            auto asHandle    = (AccelerationStructureHandle *)as->native;
+            asInfos[a].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+            asInfos[a].pNext = nullptr;
+            asInfos[a].accelerationStructureCount = 1;
+            asInfos[a].pAccelerationStructures    = &asHandle->accelerationStructure;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            write.pNext          = &asInfos[a];
+            writes.push_back(write);
         }
     }
 

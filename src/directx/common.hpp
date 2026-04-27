@@ -3,9 +3,11 @@
 #define NOMINMAX
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <d3dcompiler.h>
 #include <vector>
 #include <atomic>
 #include <cstdint>
+#include <unordered_map>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/texture_type.hpp>
 #include <campello_gpu/constants/texture_usage.hpp>
@@ -100,6 +102,12 @@ struct DeviceData {
     ID3D12CommandSignature* drawCmdSig        = nullptr;
     ID3D12CommandSignature* drawIndexedCmdSig = nullptr;
     ID3D12CommandSignature* dispatchCmdSig    = nullptr;
+
+    // Cached mipmap generation resources (created on first use).
+    ID3D12RootSignature*    mipmapRootSig     = nullptr;
+    ID3DBlob*               mipmapVS          = nullptr;
+    ID3DBlob*               mipmapPS          = nullptr;
+    std::unordered_map<DXGI_FORMAT, ID3D12PipelineState*> mipmapPSOs;
     
     // Resource counters for metrics
     std::atomic<uint32_t> bufferCount{0};

@@ -14,6 +14,8 @@ namespace systems::leal::campello_gpu
         raytracing,             ///< Hardware-accelerated ray tracing (DXR / Metal RT / Vulkan KHR RT).
         msaa32bit,              ///< 32-bit MSAA resolve support.
         bcTextureCompression,   ///< BC1–BC7 block-compressed texture formats.
+        etc2TextureCompression, ///< ETC2/EAC block-compressed texture formats.
+        astcTextureCompression, ///< ASTC block-compressed texture formats.
         depth24Stencil8PixelFormat, ///< Combined 24-bit depth + 8-bit stencil pixel format.
         geometryShader          ///< Programmable geometry shader stage (not available on Metal).
     };

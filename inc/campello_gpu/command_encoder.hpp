@@ -182,7 +182,7 @@ namespace systems::leal::campello_gpu
          *
          * @param texture The texture to generate mipmaps for.
          */
-        void generateMipmaps(std::shared_ptr<Texture> texture);
+        bool generateMipmaps(std::shared_ptr<Texture> texture);
 
         /**
          * @brief Finalizes command recording and returns the completed command buffer.

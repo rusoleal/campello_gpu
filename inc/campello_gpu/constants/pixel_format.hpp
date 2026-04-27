@@ -25,7 +25,8 @@ namespace systems::leal::campello_gpu
      *   - `srgb`   — sRGB gamma-encoded variant
      *
      * Helper functions:
-     * - `getPixelFormatSize(format)` — returns bytes-per-pixel.
+     * - `getPixelFormatSize(format)` — returns bits-per-pixel for uncompressed formats;
+     *   for compressed formats returns the average bits-per-texel (use @ref getPixelFormatBlockBytes for exact block sizes).
      * - `pixelFormatToString(format)` — returns a human-readable name.
      */
     enum class PixelFormat
@@ -159,5 +160,37 @@ namespace systems::leal::campello_gpu
 
     uint32_t getPixelFormatSize(PixelFormat format);
     std::string pixelFormatToString(PixelFormat format);
+
+    /**
+     * @brief Returns true if the format is a block-compressed format (BC, ETC2, or ASTC).
+     *
+     * Compressed formats use fixed-size blocks rather than per-pixel storage.
+     * Use @ref getPixelFormatBlockDimensions and @ref getPixelFormatBlockBytes
+     * to compute memory requirements for compressed textures.
+     */
+    bool isCompressedFormat(PixelFormat format);
+
+    /**
+     * @brief Returns the dimensions of a single compression block in texels.
+     *
+     * For uncompressed formats returns {1, 1}.
+     * For BC and ETC2 returns {4, 4}.
+     * For ASTC returns the block size encoded in the format name.
+     *
+     * @return Pair of {blockWidth, blockHeight}.
+     */
+    struct PixelFormatBlockDimensions {
+        uint32_t width;
+        uint32_t height;
+    };
+    PixelFormatBlockDimensions getPixelFormatBlockDimensions(PixelFormat format);
+
+    /**
+     * @brief Returns the number of bytes in a single compression block.
+     *
+     * For uncompressed formats returns bytes-per-pixel (getPixelFormatSize / 8).
+     * For compressed formats returns the fixed block byte size.
+     */
+    uint32_t getPixelFormatBlockBytes(PixelFormat format);
 
 }

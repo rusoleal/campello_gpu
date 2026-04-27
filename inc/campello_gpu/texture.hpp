@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <functional>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/texture_usage.hpp>
 #include <campello_gpu/constants/texture_type.hpp>
@@ -105,6 +106,22 @@ namespace systems::leal::campello_gpu
          * @return `true` on success, `false` otherwise.
          */
         bool download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint64_t length);
+
+        /**
+         * @brief Asynchronously downloads texture pixel data to CPU memory.
+         *
+         * Non-blocking. The callback is invoked on the main thread when the
+         * download completes. On WebGPU/WASM, this avoids `emscripten_sleep`
+         * polling and is safe to call from the browser main thread.
+         *
+         * @param mipLevel   Mip level to download.
+         * @param arrayLayer Array layer (for array textures) or depth slice (for 3D) to download.
+         * @param data       Pointer to the destination CPU memory.
+         * @param length     Number of bytes to read.
+         * @param callback   Invoked with `true` on success, `false` on failure.
+         */
+        void downloadAsync(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint64_t length,
+                           std::function<void(bool)> callback);
 
         /** @brief Returns the number of depth slices or array layers. */
         uint32_t    getDepthOrarrayLayers();

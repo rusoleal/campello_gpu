@@ -7,6 +7,7 @@ build-android
 build_windows
 build_dx
 build_linux
+build_wasm
 examples/android/app/src/main/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so
 examples/android/app/src/main/jniLibs/armeabi-v7a/libVkLayer_khronos_validation.so
 examples/android/app/src/main/jniLibs/x86/libVkLayer_khronos_validation.so

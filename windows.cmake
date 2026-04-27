@@ -33,6 +33,7 @@ target_link_libraries(${PROJECT_NAME}
     D3d12
     dxgi
     dxguid
+    d3dcompiler
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

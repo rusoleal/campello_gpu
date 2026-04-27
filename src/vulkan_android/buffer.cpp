@@ -77,3 +77,8 @@ bool Buffer::download(uint64_t offset, uint64_t length, void *data) {
     vkUnmapMemory(handle->device, handle->memory);
     return true;
 }
+
+void Buffer::downloadAsync(uint64_t offset, uint64_t length, void *data,
+                           std::function<void(bool)> callback) {
+    callback(download(offset, length, data));
+}
