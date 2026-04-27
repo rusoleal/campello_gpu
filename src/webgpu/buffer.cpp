@@ -72,7 +72,7 @@ bool Buffer::download(uint64_t offset, uint64_t length, void* data) {
     wgpuCommandBufferRelease(cmdBuffer);
 
     MapContext idleCtx;
-    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue, 0,
+    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue,
         [](WGPUQueueWorkDoneStatus status, void* userdata) {
             (void)status;
             auto* ctx = static_cast<MapContext*>(userdata);
@@ -153,7 +153,7 @@ void Buffer::downloadAsync(uint64_t offset, uint64_t length, void* data,
     // 4. Chain async: queue done -> map buffer -> copy -> callback
     auto* asyncData = new BufferDownloadAsyncData{readback, data, length, std::move(callback)};
 
-    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue, 0,
+    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue,
         [](WGPUQueueWorkDoneStatus, void* userdata) {
             auto* d = static_cast<BufferDownloadAsyncData*>(userdata);
             wgpuBufferMapAsync(d->readback, WGPUMapMode_Read, 0, d->length,

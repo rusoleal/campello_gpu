@@ -29,7 +29,7 @@ uint64_t CommandBuffer::getGPUExecutionTime() {
     // Wait for GPU work to complete
     struct DoneCtx { bool done; };
     DoneCtx waitCtx{false};
-    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue, 0,
+    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue,
         [](WGPUQueueWorkDoneStatus, void* userdata) {
             static_cast<DoneCtx*>(userdata)->done = true;
         }, &waitCtx);
@@ -91,7 +91,7 @@ void CommandBuffer::getGPUExecutionTimeAsync(std::function<void(uint64_t)> callb
         std::move(callback)
     };
 
-    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue, 0,
+    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue,
         [](WGPUQueueWorkDoneStatus, void* userdata) {
             auto* d = static_cast<TimingAsyncData*>(userdata);
             wgpuBufferMapAsync(d->timestampReadbackBuffer, WGPUMapMode_Read, 0,

@@ -876,7 +876,7 @@ void Device::waitForIdle() {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
     struct DoneCtx { bool done = false; };
     DoneCtx ctx;
-    wgpuQueueOnSubmittedWorkDone(deviceData->queue, 0,
+    wgpuQueueOnSubmittedWorkDone(deviceData->queue,
         [](WGPUQueueWorkDoneStatus, void* userdata) {
             static_cast<DoneCtx*>(userdata)->done = true;
         }, &ctx);

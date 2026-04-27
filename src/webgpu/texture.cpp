@@ -189,7 +189,7 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void* data, uint6
 
     // Wait for GPU completion
     MapContext idleCtx;
-    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue, 0,
+    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue,
         [](WGPUQueueWorkDoneStatus status, void* userdata) {
             (void)status;
             auto* ctx = static_cast<MapContext*>(userdata);
@@ -314,7 +314,7 @@ void Texture::downloadAsync(uint32_t mipLevel, uint32_t arrayLayer, void* data, 
         readback, data, blocksY, unpaddedBytesPerRow, paddedBytesPerRow, bufferSize, std::move(callback)
     };
 
-    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue, 0,
+    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue,
         [](WGPUQueueWorkDoneStatus, void* userdata) {
             auto* d = static_cast<TextureDownloadAsyncData*>(userdata);
             wgpuBufferMapAsync(d->readback, WGPUMapMode_Read, 0, d->bufferSize,
