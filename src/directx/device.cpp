@@ -1579,9 +1579,11 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     }
 
     // Signal the per-fence object instead of the global device fence.
-    auto* fenceData = static_cast<DirectXFenceData*>(signalFence->native);
-    ++fenceData->value;
-    d->queue->Signal(fenceData->fence, fenceData->value);
+    if (signalFence && signalFence->native) {
+        auto* fenceData = static_cast<DirectXFenceData*>(signalFence->native);
+        ++fenceData->value;
+        d->queue->Signal(fenceData->fence, fenceData->value);
+    }
 
     d->commandsSubmitted++;
 }

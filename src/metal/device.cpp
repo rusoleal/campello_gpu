@@ -898,8 +898,9 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
 
     // Capture shared_ptr so the fence stays alive until the GPU finishes.
     cmdBuf->addCompletedHandler([signalFence](MTL::CommandBuffer*) {
+        if (!signalFence) return;
         auto *fenceData = static_cast<MetalFenceData *>(signalFence->native);
-        fenceData->signal();
+        if (fenceData) fenceData->signal();
     });
 
     cmdBuf->commit();

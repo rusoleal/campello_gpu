@@ -1944,10 +1944,12 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
 
     auto deviceData = (DeviceData *)this->native;
     auto cbHandle   = (CommandBufferHandle *)commandBuffer->native;
-    auto fenceData  = (VulkanFenceData *)signalFence->native;
+    auto fenceData  = signalFence ? (VulkanFenceData *)signalFence->native : nullptr;
 
     // Reset fence before reuse (required by Vulkan binary fences).
-    vkResetFences(deviceData->device, 1, &fenceData->fence);
+    if (fenceData) {
+        vkResetFences(deviceData->device, 1, &fenceData->fence);
+    }
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1963,7 +1965,8 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
     }
 
-    if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, fenceData->fence) != VK_SUCCESS) {
+    VkFence submitFence = fenceData ? fenceData->fence : VK_NULL_HANDLE;
+    if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
         __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
                             "Device::submit(fence): vkQueueSubmit failed");
         return;

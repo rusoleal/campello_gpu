@@ -4,6 +4,15 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-04-28
+
+### Fixed
+
+- **`Device::submit()` null `signalFence` crash** — all backends except WebGPU dereferenced `signalFence` without a null check when the caller passed `nullptr` (a legal optional parameter)
+  - **Metal** — `addCompletedHandler` lambda now early-returns if `signalFence` is null or its `native` handle is null; prevents `EXC_BAD_ACCESS` when the completion handler fires on a background dispatch queue
+  - **DirectX 12** — `queue->Signal()` is now skipped when `signalFence` is null
+  - **Vulkan (Linux & Android)** — `vkResetFences` is guarded and `vkQueueSubmit` receives `VK_NULL_HANDLE` instead of dereferencing a null fence handle
+
 ## [0.13.0] - 2026-04-27
 
 ### Added
