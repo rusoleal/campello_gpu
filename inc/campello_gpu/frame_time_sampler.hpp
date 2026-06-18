@@ -7,11 +7,20 @@ namespace systems::leal::campello_gpu
 {
 
 /**
- * @brief Circular-buffer frame-time sampler.
+ * @brief Circular-buffer sample recorder for millisecond timings.
  *
- * Records the wall-clock delta between successive calls to `record()` and
- * exposes them as a fixed-capacity circular buffer for UI overlays and
- * profiling tools.
+ * Supports two distinct recording modes — use only one per instance:
+ *  - `record()`: records the wall-clock delta between successive calls.
+ *    Useful for measuring call/event cadence.
+ *  - `recordDuration()`: records an explicitly-measured duration directly
+ *    (e.g. the wall-clock cost of a specific phase of work, bracketed by the
+ *    caller with its own start/end timestamps). Useful for measuring actual
+ *    work cost per frame, independent of how often that work is requested —
+ *    this is what Flutter's PerformanceOverlay does for its UI/raster thread
+ *    graphs (see `Renderer::renderFrame()` for the bracketing).
+ *
+ * Both modes share the same fixed-capacity circular buffer for UI overlays
+ * and profiling tools.
  *
  * Thread-safety: not thread-safe. Call only from the render thread.
  */
@@ -39,6 +48,23 @@ public:
             if (count_ < kCapacity) ++count_;
         }
         last_ms_ = now_ms;
+    }
+
+    /**
+     * @brief Record an explicitly-measured duration (milliseconds) directly.
+     *
+     * Unlike `record()`, this does not compute anything from a stored
+     * baseline — the caller has already measured the duration of the work
+     * it cares about (e.g. `end_time - start_time` bracketing a build or
+     * raster phase) and just wants it stored in the rolling window.
+     *
+     * @param ms  Duration in milliseconds.
+     */
+    void recordDuration(float ms) noexcept
+    {
+        samples_[head_] = ms;
+        head_           = (head_ + 1) % kCapacity;
+        if (count_ < kCapacity) ++count_;
     }
 
     /// Number of valid samples stored (0 … kCapacity).

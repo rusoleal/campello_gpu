@@ -4,6 +4,10 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`FrameTimeSampler::recordDuration()`** — records an explicitly-measured duration directly into the circular buffer, alongside the existing `record()` (which computes a delta between successive calls). Lets consumers track actual phase-work cost (e.g. build/layout/paint duration, GPU encode/submit duration) instead of only call-to-call cadence — used by `campello_widgets::Renderer`'s Flutter-style two-lane performance overlay.
+
 ## [0.13.1] - 2026-04-28
 
 ### Fixed
