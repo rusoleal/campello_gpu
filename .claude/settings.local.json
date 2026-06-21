@@ -18,7 +18,15 @@
       "Bash(./tests/campello_gpu_integration_tests --gtest_filter=\"ShaderModule.*\" 2>&1)",
       "Bash(ctest --output-on-failure)",
       "Bash(wc -l /Users/rubenleal/Projects/campello_gpu/src/directx/*.cpp)",
-      "Bash(./gradlew assembleDebug)"
+      "Bash(./gradlew assembleDebug)",
+      "Bash(find . -iname \"*directx*\" -not -path \"./src/directx/*\")",
+      "Bash(ls *.cmake)",
+      "PowerShell(where cmake; where cl; where msbuild 2>$null; \\(Get-ChildItem \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\\" -Recurse -Filter \"vcvars64.bat\" -ErrorAction SilentlyContinue | Select-Object -First 1\\).FullName)",
+      "PowerShell(cd \"C:\\\\Users\\\\rusol\\\\source\\\\repos\\\\campello_gpu\"; $cmake = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\Common7\\\\IDE\\\\CommonExtensions\\\\Microsoft\\\\CMake\\\\CMake\\\\bin\\\\cmake.exe\"; & $cmake -B build_dx -G \"Visual Studio 18 2026\" -A x64 2>&1 | Select-Object -Last 60)",
+      "PowerShell(cd \"C:\\\\Users\\\\rusol\\\\source\\\\repos\\\\campello_gpu\"; $cmake = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\Common7\\\\IDE\\\\CommonExtensions\\\\Microsoft\\\\CMake\\\\CMake\\\\bin\\\\cmake.exe\"; & $cmake --build build_dx --config Release 2>&1 | Select-Object -Last 150)",
+      "PowerShell(cd \"C:\\\\Users\\\\rusol\\\\source\\\\repos\\\\campello_gpu\"; $cmake = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\Common7\\\\IDE\\\\CommonExtensions\\\\Microsoft\\\\CMake\\\\CMake\\\\bin\\\\cmake.exe\"; & $cmake --build build_dx --config Release --target campello_example 2>&1 | Select-Object -Last 100)",
+      "PowerShell(cd \"C:\\\\Users\\\\rusol\\\\source\\\\repos\\\\campello_gpu\"; $cmake = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\Common7\\\\IDE\\\\CommonExtensions\\\\Microsoft\\\\CMake\\\\CMake\\\\bin\\\\cmake.exe\"; & $cmake -B build_dx -DBUILD_EXAMPLES=ON 2>&1 | Select-Object -Last 20; & $cmake --build build_dx --config Release --target campello_example 2>&1 | Select-Object -Last 100)",
+      "PowerShell(Stop-Process *)"
     ]
   }
 }
