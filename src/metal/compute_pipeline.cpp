@@ -10,3 +10,10 @@ ComputePipeline::~ComputePipeline() {
         static_cast<MTL::ComputePipelineState *>(native)->release();
     }
 }
+
+WorkgroupSize ComputePipeline::getWorkgroupSize() const {
+    if (native == nullptr)
+        return {1, 1, 1};
+    auto *pso = static_cast<MTL::ComputePipelineState *>(native);
+    return {static_cast<uint32_t>(pso->threadExecutionWidth()), 1u, 1u};
+}

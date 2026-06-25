@@ -17,3 +17,7 @@ ComputePipeline::~ComputePipeline() {
     }
     delete handle;
 }
+
+WorkgroupSize ComputePipeline::getWorkgroupSize() const {
+    return {1, 1, 1};
+}

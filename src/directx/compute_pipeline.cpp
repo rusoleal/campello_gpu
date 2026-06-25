@@ -12,3 +12,9 @@ ComputePipeline::~ComputePipeline() {
     if (h->rootSignature) h->rootSignature->Release();
     delete h;
 }
+
+WorkgroupSize ComputePipeline::getWorkgroupSize() const {
+    // DirectX 12 respects the [numthreads(x,y,z)] declared in HLSL.
+    // campello_nn's shaders currently declare [numthreads(1,1,1)].
+    return {1, 1, 1};
+}

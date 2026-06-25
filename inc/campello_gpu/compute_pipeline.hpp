@@ -4,6 +4,21 @@ namespace systems::leal::campello_gpu
 {
 
     /**
+     * @brief Size of a single compute threadgroup for a compiled pipeline.
+     *
+     * On most backends this reflects the shader's declared local workgroup size.
+     * On Metal it reflects the thread execution width the backend will use when
+     * dispatching, because the Metal encoder currently ignores the shader-declared
+     * threadgroup size.
+     */
+    struct WorkgroupSize
+    {
+        uint32_t x = 1;
+        uint32_t y = 1;
+        uint32_t z = 1;
+    };
+
+    /**
      * @brief A compiled, immutable compute pipeline state object.
      *
      * A `ComputePipeline` bundles a single compute shader entry point and its pipeline
@@ -30,6 +45,11 @@ namespace systems::leal::campello_gpu
 
     public:
         ~ComputePipeline();
+
+        /**
+         * @brief Returns the workgroup size this pipeline will use at dispatch time.
+         */
+        WorkgroupSize getWorkgroupSize() const;
     };
 
 }

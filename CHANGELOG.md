@@ -4,6 +4,14 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`ComputePipeline::getWorkgroupSize()`** — returns the threadgroup size a compute pipeline will
+  use at dispatch time. On Metal this is the pipeline's `threadExecutionWidth()`; on Vulkan,
+  DirectX 12, and WebGPU it currently returns `{1, 1, 1}` (those backends already respect the
+  shader-declared local size, and callers can use this query to align their host-side dispatch
+  math). No dispatch behavior changed.
+
 ## [0.13.3] - 2026-06-25
 
 ### Fixed

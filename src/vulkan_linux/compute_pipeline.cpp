@@ -19,3 +19,9 @@ ComputePipeline::~ComputePipeline() {
     
 
 }
+
+WorkgroupSize ComputePipeline::getWorkgroupSize() const {
+    // Vulkan respects the SPIR-V local_size declaration; campello_nn's shaders
+    // currently declare local_size_x = 1 for correctness-first dispatches.
+    return {1, 1, 1};
+}

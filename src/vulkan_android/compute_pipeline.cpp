@@ -20,3 +20,7 @@ ComputePipeline::~ComputePipeline() {
     __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","ComputePipeline::~ComputePipeline()");
 
 }
+
+WorkgroupSize ComputePipeline::getWorkgroupSize() const {
+    return {1, 1, 1};
+}
