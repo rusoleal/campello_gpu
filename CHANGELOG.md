@@ -4,6 +4,13 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-06-25
+
+### Fixed
+
+- **[Metal] `Fence::wait()` returning immediately on a fresh fence** — `MetalFenceData::signaled` defaulted to `true`, so a freshly created fence's `wait()` never blocked on the submission it was passed to via `Device::submit(cmdBuffer, fence)`. `Device::submit()` now resets the fence to unsignaled right before `commit()`, mirroring the Vulkan backend's `vkResetFences()` call before each `vkQueueSubmit` — fixes the one-shot create→submit→wait usage documented as "typical usage" in `fence.hpp`, while staying safe for ring-buffer fence reuse.
+- **[Metal] `Buffer::download()` reading stale data from `Managed` buffers** — the raw `memcpy` from `buffer->contents()` had no `synchronizeResource:` call first, which Apple's docs require before a CPU read can see a prior GPU write on a `MTLResourceStorageModeManaged` buffer (any GPU-written compute/storage buffer not created with `mapRead`/`mapWrite`). `download()` now encodes and waits on a blit-encoder `synchronizeResource:` before the `memcpy`, gated on the buffer's storage mode being `Managed` (no-op for `Shared` buffers/iOS, which are always coherent).
+
 ## [0.13.2] - 2026-06-20
 
 ### Added

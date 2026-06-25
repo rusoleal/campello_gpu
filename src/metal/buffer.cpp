@@ -41,14 +41,34 @@ bool Buffer::download(uint64_t offset, uint64_t length, void *data) {
     if (!native || !data) return false;
     auto handle = (MetalBufferHandle *)native;
     auto *buf = handle->buffer;
-    
+
+    // Check bounds
+    if (offset + length > buf->length()) return false;
+
+    // MTLResourceStorageModeManaged buffers keep a separate CPU-visible copy
+    // that Metal does not update automatically after a GPU write; an explicit
+    // blit-encoder synchronizeResource: + wait is required before contents()
+    // reflects the GPU side. Shared-mode buffers (mapRead/mapWrite, or any
+    // buffer on iOS) are always coherent, so this is skipped there.
+    if (buf->storageMode() == MTL::StorageModeManaged && handle->deviceData) {
+        auto *commandQueue = handle->deviceData->commandQueue;
+        auto *cmdBuffer = commandQueue->commandBuffer();
+        if (!cmdBuffer) return false;
+
+        auto *blitEncoder = cmdBuffer->blitCommandEncoder();
+        if (!blitEncoder) return false;
+
+        blitEncoder->synchronizeResource(buf);
+        blitEncoder->endEncoding();
+
+        cmdBuffer->commit();
+        cmdBuffer->waitUntilCompleted();
+    }
+
     // Get buffer contents
     uint8_t *src = static_cast<uint8_t *>(buf->contents());
     if (!src) return false;
-    
-    // Check bounds
-    if (offset + length > buf->length()) return false;
-    
+
     // Copy data
     memcpy(data, src + offset, length);
     return true;

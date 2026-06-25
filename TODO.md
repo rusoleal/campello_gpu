@@ -26,6 +26,22 @@
 - [x] **[Vulkan]** `Device::createRenderPipeline()` — `depthStencil` now zero-initialized and fully populated from `descriptor.depthStencil`; wired to `pipelineInfo.pDepthStencilState`
 - [x] **[Vulkan]** Swapchain format/color-space selection always picks `surfaceFormats[0]` — now prefers `VK_FORMAT_B8G8R8A8_SRGB` / `VK_FORMAT_R8G8B8A8_SRGB` with `VK_COLOR_SPACE_SRGB_NONLINEAR_KHR`, falls back to first available
 - [x] **[Vulkan]** Debug log strings `"pepe1"`, `"pepe2"`, `"pepe3"` removed from `device.cpp`
+- [x] **[Metal]** `Device::createFence()` — `MetalFenceData::signaled` defaulted to `true`, so
+      `Fence::wait()` on a freshly created fence returned immediately without waiting for the
+      submission it was passed to. Fixed to match the Vulkan backend's behavior: Vulkan creates
+      fences pre-signaled too (`VK_FENCE_CREATE_SIGNALED_BIT`) but `vkResetFences()` them right
+      before each `vkQueueSubmit`, so the create-time default never matters in practice. Metal's
+      `Device::submit(cmdBuffer, fence)` was missing that equivalent reset; now resets
+      `fenceData->signaled` to `false` before `commit()`, so `wait()` correctly blocks until the
+      completion handler signals it — fixes the one-shot create→submit→wait path while staying
+      safe for ring-buffer fence reuse.
+- [x] **[Metal]** `Buffer::download()` did a raw `memcpy` from `buffer->contents()` with no
+      `synchronizeResource:` call first, which is invalid for `MTLResourceStorageModeManaged`
+      buffers (any GPU-written compute/storage buffer not created with `mapRead`/`mapWrite`).
+      Fixed by encoding a blit-encoder `synchronizeResource:` and waiting on it before the
+      `memcpy`, gated on `buf->storageMode() == MTL::StorageModeManaged` (no-op for `Shared`
+      buffers/iOS, which are always coherent) — mirrors the existing readback pattern in
+      `texture.cpp`'s `download()`.
 
 ## Missing implementations — Vulkan/Android
 

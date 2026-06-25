@@ -896,6 +896,16 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         deviceData->pendingPresentDrawable = nullptr;
     }
 
+    // Reset the fence before submitting so wait() blocks until *this*
+    // submission completes, mirroring the Vulkan backend's vkResetFences
+    // call. Without this, a freshly created (or previously-signaled,
+    // reused) fence's wait() would return immediately instead of tracking
+    // the new submission.
+    if (signalFence && signalFence->native) {
+        auto *fenceData = static_cast<MetalFenceData *>(signalFence->native);
+        fenceData->signaled.store(false, std::memory_order_release);
+    }
+
     // Capture shared_ptr so the fence stays alive until the GPU finishes.
     cmdBuf->addCompletedHandler([signalFence](MTL::CommandBuffer*) {
         if (!signalFence) return;
