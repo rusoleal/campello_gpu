@@ -16,16 +16,16 @@ Each module is designed to work standalone, but integrates seamlessly into the e
 | OS | Engine | Status |
 |----|--------|--------|
 | android | Vulkan 1.x | Production ready |
+| android | OpenGL | Frozen |
+| linux | Vulkan 1.x | Production ready |
+| linux | OpenGL | Frozen |
 | macos/ios | Metal | Production ready |
+| macos/ios | OpenGL | Frozen |
+| macos/ios | Vulkan 1.x | Not started |
 | windows | DirectX 12 | Production ready |
 | windows | DirectX 11 | Frozen |
 | windows | OpenGL | Frozen |
 | windows | Vulkan 1.x | Not started |
-| macos/ios | OpenGL | Frozen |
-| macos/ios | Vulkan 1.x | Not started |
-| android | OpenGL | Frozen |
-| linux | Vulkan 1.x | Production ready |
-| linux | OpenGL | Frozen |
 
 ## Requirements
 
