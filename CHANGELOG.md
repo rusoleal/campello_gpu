@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-26
+
 ### Added
 
 - **`ComputePipeline::getWorkgroupSize()`** — returns the threadgroup size a compute pipeline will
