@@ -9,5 +9,6 @@ namespace systems::leal::campello_gpu
         VkDevice         device;
         VkPipeline       pipeline;
         VkPipelineLayout pipelineLayout;
+        bool             ownsPipelineLayout = false;
     };
 }

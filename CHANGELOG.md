@@ -4,6 +4,44 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-26
+
+### Added
+
+- **Linux/Vulkan CI & runtime robustness**
+  - Vulkan 1.3 core dynamic-rendering entry points are now loaded when available, with
+    `VK_KHR_dynamic_rendering` as a fallback.
+  - `VK_KHR_surface` is no longer required at instance creation, enabling headless
+    Linux/Vulkan contexts.
+  - `VK_KHR_portability_enumeration` + `VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`
+    are enabled when available, improving compatibility with portability ICDs such as
+    Mesa lavapipe and MoltenVK.
+  - Compute pipelines now create an internal empty pipeline layout when the caller passes
+    `nullptr`, matching the existing render-pipeline behavior.
+
+### Fixed
+
+- **[Linux] Example build** — `examples/linux/main.cpp` included non-existent
+  `campello_gpu/constants/load_op.hpp` and `campello_gpu/constants/store_op.hpp`.
+  Those includes were removed; the enums are already available via
+  `begin_render_pass_descriptor.hpp`.
+- **[Linux] `CommandEncoder::generateMipmaps()` missing return** — returned an
+  indeterminate value on success; now returns `true`.
+- **[Linux] `Device::createComputePipeline()` null-deref** — crashed when the compute
+  shader module or pipeline layout was `nullptr`; now returns `nullptr` safely and
+  cleans up any internally created layout.
+- **[Linux] `RenderPassEncoder::beginRenderPass()` with no attachments** — segfaulted
+  when no color attachment was provided; now creates a valid no-attachment pass.
+- **[Linux] Draw/dispatch without a bound pipeline** — `draw`, `drawIndexed`,
+  `drawIndirect`, `drawIndexedIndirect`, `dispatchWorkgroups`, and
+  `dispatchWorkgroupsIndirect` now no-op instead of crashing the driver when no
+  pipeline is bound.
+- **[Linux] Offscreen render-target layout-transition crash** — a pipeline barrier after
+  a no-draw dynamic-rendering pass crashed some Mesa Intel drivers; the barrier is
+  skipped when no pipeline/draws were bound.
+- **[Linux] Depth/stencil usage on color render targets** — `renderTarget` usage no
+  longer adds `VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT` for color formats.
+
 ## [0.14.0] - 2026-06-26
 
 ### Added

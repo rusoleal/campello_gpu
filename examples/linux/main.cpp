@@ -18,8 +18,6 @@
 #include <campello_gpu/platform/linux_surface.hpp>
 #include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
 #include <campello_gpu/constants/pixel_format.hpp>
-#include <campello_gpu/constants/load_op.hpp>
-#include <campello_gpu/constants/store_op.hpp>
 
 #include <X11/Xlib.h>
 #include <cstdio>

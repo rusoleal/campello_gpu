@@ -60,6 +60,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+Linux/Vulkan supports both windowed (X11/Wayland) and headless contexts. The surface
+extension is optional; passing `nullptr` to `createDefaultDevice()` creates a headless
+device. Verified on Mesa Intel Vulkan drivers.
+
 ## Integration
 
 ### find_package (installed library)

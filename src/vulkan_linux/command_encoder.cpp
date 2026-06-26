@@ -152,7 +152,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
-    } else {
+    } else if (hasExplicitView) {
         // ── Offscreen path ────────────────────────────────────────────────────
         auto *vh = (TextureViewHandle *)descriptor.colorAttachments[0].view->native;
         firstImage   = vh->image;
@@ -161,7 +161,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
         // Transition offscreen image → COLOR_ATTACHMENT_OPTIMAL.
         VkImageMemoryBarrier barrier{};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL; // conservative; image may be in GENERAL
+        barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED; // valid for first use / render targets
         barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -173,6 +173,9 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
+    } else {
+        // ── No-attachment path ────────────────────────────────────────────────
+        renderExtent = { 1, 1 };
     }
 
     // Build color attachment infos.
@@ -606,6 +609,7 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
     }
 
     texH->currentLayout = VK_IMAGE_LAYOUT_GENERAL;
+    return true;
 }
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {

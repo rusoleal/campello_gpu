@@ -42,6 +42,24 @@
       `memcpy`, gated on `buf->storageMode() == MTL::StorageModeManaged` (no-op for `Shared`
       buffers/iOS, which are always coherent) — mirrors the existing readback pattern in
       `texture.cpp`'s `download()`.
+- [x] **[Linux/Vulkan]** `examples/linux/main.cpp` build failure — removed stale includes for
+      non-existent `campello_gpu/constants/load_op.hpp` and `store_op.hpp`.
+- [x] **[Linux/Vulkan]** `CommandEncoder::generateMipmaps()` missing return — returned an
+      indeterminate value on success; now returns `true`.
+- [x] **[Linux/Vulkan]** `Device::createComputePipeline()` null-deref — crashed with null compute
+      module or layout; now returns `nullptr` safely and creates an empty layout when needed.
+- [x] **[Linux/Vulkan]** `CommandEncoder::beginRenderPass()` with no attachments — segfaulted
+      when `colorAttachments` was empty; now supports no-attachment render passes.
+- [x] **[Linux/Vulkan]** Draw/dispatch without a bound pipeline — `draw*`, `drawIndexed*`,
+      `drawIndirect*`, `dispatchWorkgroups*` now no-op instead of crashing the driver.
+- [x] **[Linux/Vulkan]** Offscreen layout-transition crash after empty render passes — barrier is
+      skipped when no pipeline/draws were bound to avoid a Mesa Intel driver crash.
+- [x] **[Linux/Vulkan]** Dynamic-rendering entry points — now load Vulkan 1.3 core
+      `vkCmdBeginRendering`/`vkCmdEndRendering`, with `KHR` fallback.
+- [x] **[Linux/Vulkan]** `VK_KHR_surface` unconditionally required — made optional so headless
+      contexts work; `VK_KHR_portability_enumeration` is now enabled when available.
+- [x] **[Linux/Vulkan]** `renderTarget` usage added `DEPTH_STENCIL_ATTACHMENT` to color formats —
+      now only adds depth/stencil usage for depth/stencil formats.
 
 ## Missing implementations — Vulkan/Android
 

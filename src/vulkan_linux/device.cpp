@@ -44,8 +44,15 @@ PFN_vkCmdEndRenderingKHR pfnCmdEndRenderingKHR = nullptr;
 
 void loadDynamicRenderingFunctions(VkDevice device)
 {
-    pfnCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR");
-    pfnCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR");
+    // Prefer Vulkan 1.3 core entry points; fall back to VK_KHR_dynamic_rendering.
+    pfnCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdBeginRendering");
+    if (!pfnCmdBeginRenderingKHR) {
+        pfnCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR");
+    }
+    pfnCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdEndRendering");
+    if (!pfnCmdEndRenderingKHR) {
+        pfnCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR");
+    }
 }
 
 // vkGetBufferDeviceAddress is Vulkan 1.2 core; load via proc addr so it works on API-28 (Vulkan 1.1).
@@ -155,11 +162,17 @@ VkInstance systems::leal::campello_gpu::getInstance()
     };
 
     std::vector<const char *> requiredExtensions;
-    requiredExtensions.push_back("VK_KHR_surface");
+    if (hasInstanceExtension("VK_KHR_surface"))
+        requiredExtensions.push_back("VK_KHR_surface");
     if (hasInstanceExtension("VK_KHR_xlib_surface"))
         requiredExtensions.push_back("VK_KHR_xlib_surface");
     if (hasInstanceExtension("VK_KHR_wayland_surface"))
         requiredExtensions.push_back("VK_KHR_wayland_surface");
+
+    // Portability drivers (e.g. Mesa lavapipe, MoltenVK) require this extension and flag.
+    bool enumeratePortability = hasInstanceExtension("VK_KHR_portability_enumeration");
+    if (enumeratePortability)
+        requiredExtensions.push_back("VK_KHR_portability_enumeration");
 
     // Only request validation layers that are actually present on this device.
     const char *wantedLayer = "VK_LAYER_KHRONOS_validation";
@@ -174,7 +187,7 @@ VkInstance systems::leal::campello_gpu::getInstance()
     VkInstanceCreateInfo instanceInfo;
     instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceInfo.pNext = nullptr;
-    instanceInfo.flags = 0;
+    instanceInfo.flags = enumeratePortability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0;
     instanceInfo.enabledExtensionCount = requiredExtensions.size();
     instanceInfo.ppEnabledExtensionNames = requiredExtensions.data();
     instanceInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayers.size());
@@ -630,8 +643,18 @@ std::shared_ptr<Texture> Device::createTexture(
         imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if ((int)usageMode & (int)TextureUsage::copyDst)
         imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if ((int)usageMode & (int)TextureUsage::renderTarget)
-        imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if ((int)usageMode & (int)TextureUsage::renderTarget) {
+        imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        // Depth/stencil usage is only valid for depth/stencil formats.
+        VkFormat vkFormat = pixelFormatToNative(pixelFormat);
+        if (vkFormat == VK_FORMAT_D16_UNORM ||
+            vkFormat == VK_FORMAT_D32_SFLOAT ||
+            vkFormat == VK_FORMAT_S8_UINT ||
+            vkFormat == VK_FORMAT_D24_UNORM_S8_UINT ||
+            vkFormat == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+            imageUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        }
+    }
     if ((int)usageMode & (int)TextureUsage::storageBinding)
         imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
     if ((int)usageMode & (int)TextureUsage::textureBinding)
@@ -1490,6 +1513,26 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
 
     auto deviceData = (DeviceData *)this->native;
 
+    if (descriptor.compute.module == nullptr) {
+        return nullptr;
+    }
+
+    // Use the caller-supplied pipeline layout if provided, otherwise create an empty one.
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    bool ownsPipelineLayout = false;
+    if (descriptor.layout) {
+        pipelineLayout = ((PipelineLayoutHandle *)descriptor.layout->native)->layout;
+    } else {
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 0;
+        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+            return nullptr;
+        }
+        ownsPipelineLayout = true;
+    }
+
     VkComputePipelineCreateInfo info;
     info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     info.pNext = nullptr;
@@ -1501,7 +1544,7 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     info.stage.module = ((ShaderModuleHandle *)descriptor.compute.module->native)->shaderModule;
     info.stage.pName = descriptor.compute.entryPoint.c_str();
     info.stage.pSpecializationInfo = nullptr;
-    info.layout = ((PipelineLayoutHandle *)descriptor.layout->native)->layout;
+    info.layout = pipelineLayout;
     info.basePipelineHandle = VK_NULL_HANDLE;
     info.basePipelineIndex = -1;
 
@@ -1514,14 +1557,17 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
         nullptr,
         &pipeline
     ) != VK_SUCCESS) {
-        
+        if (ownsPipelineLayout) {
+            vkDestroyPipelineLayout(deviceData->device, pipelineLayout, nullptr);
+        }
         return nullptr;
     }
 
     auto toReturn = new ComputePipelineHandle();
-    toReturn->device         = deviceData->device;
-    toReturn->pipeline       = pipeline;
-    toReturn->pipelineLayout = info.layout;
+    toReturn->device              = deviceData->device;
+    toReturn->pipeline            = pipeline;
+    toReturn->pipelineLayout      = pipelineLayout;
+    toReturn->ownsPipelineLayout  = ownsPipelineLayout;
 
     deviceData->computePipelineCount++;
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(toReturn));
