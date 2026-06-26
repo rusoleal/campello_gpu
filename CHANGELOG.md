@@ -14,6 +14,12 @@ All notable changes to campello_gpu are documented here.
   shader-declared local size, and callers can use this query to align their host-side dispatch
   math). No dispatch behavior changed.
 
+### Fixed
+
+- **Missing `<cstdint>` include in `compute_pipeline.hpp`** — `WorkgroupSize` uses `uint32_t` but
+  the header did not include `<cstdint>`, causing a build failure on toolchains that do not pull
+  it in transitively (e.g. Ubuntu 24.04 / GCC 13 in CI).
+
 ## [0.13.3] - 2026-06-25
 
 ### Fixed
