@@ -1,4 +1,3 @@
-#include <android/log.h>
 #include <vulkan/vulkan.h>
 #include <campello_gpu/acceleration_structure.hpp>
 #include "acceleration_structure_handle.hpp"
@@ -20,7 +19,6 @@ AccelerationStructure::~AccelerationStructure() {
     if (h->buffer != VK_NULL_HANDLE)
         vkDestroyBuffer(h->device, h->buffer, nullptr);
     delete h;
-    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", "AccelerationStructure::~AccelerationStructure()");
 }
 
 uint64_t AccelerationStructure::getBuildScratchSize() const {

@@ -3,6 +3,27 @@
 #include <functional>
 #include <vector>
 #include <vulkan/vulkan.h>
+#ifdef __ANDROID__
+#include <vulkan/vulkan_android.h>
+#else
+#include <campello_gpu/platform/linux_surface.hpp>
+#if __has_include(<X11/Xlib.h>)
+#include <X11/Xlib.h>
+#include <vulkan/vulkan_xlib.h>
+#define CAMPELLO_GPU_X11 1
+#else
+#define CAMPELLO_GPU_X11 0
+#endif
+#if __has_include(<wayland-client.h>)
+#include <wayland-client.h>
+#include <vulkan/vulkan_wayland.h>
+#define CAMPELLO_GPU_WAYLAND 1
+#else
+#define CAMPELLO_GPU_WAYLAND 0
+struct wl_display;
+struct wl_surface;
+#endif
+#endif
 #include "campello_gpu_config.h"
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/adapter.hpp>
@@ -32,7 +53,6 @@
 #include "command_buffer_handle.hpp"
 #include "command_encoder_handle.hpp"
 #include "common.hpp"
-#include <campello_gpu/platform/linux_surface.hpp>
 
 using namespace systems::leal::campello_gpu;
 
@@ -42,17 +62,65 @@ VkInstance instance = nullptr;
 PFN_vkCmdBeginRenderingKHR pfnCmdBeginRenderingKHR = nullptr;
 PFN_vkCmdEndRenderingKHR pfnCmdEndRenderingKHR = nullptr;
 
+// ---------------------------------------------------------------------------
+// Validation layer support
+// ---------------------------------------------------------------------------
+#ifdef CAMPELLO_GPU_VALIDATION
+
+static VkDebugUtilsMessengerEXT g_debugMessenger = VK_NULL_HANDLE;
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT /*type*/,
+    const VkDebugUtilsMessengerCallbackDataEXT *data,
+    void * /*userData*/)
+{
+    const char *tag = "VERBOSE";
+    if      (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)   tag = "ERROR";
+    else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) tag = "WARNING";
+    else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)    tag = "INFO";
+
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu_validation",
+                        "[Vulkan %s] %s", tag, data->pMessage);
+#else
+    fprintf(stderr, "[Vulkan %s] %s\n", tag, data->pMessage);
+#endif
+    return VK_FALSE;
+}
+
+static void setupDebugMessenger(VkInstance inst)
+{
+    auto pfn = (PFN_vkCreateDebugUtilsMessengerEXT)
+        vkGetInstanceProcAddr(inst, "vkCreateDebugUtilsMessengerEXT");
+    if (!pfn) return;
+
+    VkDebugUtilsMessengerCreateInfoEXT ci{};
+    ci.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    ci.messageSeverity =
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT   |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT;
+    ci.messageType =
+        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT    |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    ci.pfnUserCallback = validationCallback;
+    pfn(inst, &ci, nullptr, &g_debugMessenger);
+}
+
+#endif // CAMPELLO_GPU_VALIDATION
+
 void loadDynamicRenderingFunctions(VkDevice device)
 {
     // Prefer Vulkan 1.3 core entry points; fall back to VK_KHR_dynamic_rendering.
     pfnCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdBeginRendering");
-    if (!pfnCmdBeginRenderingKHR) {
+    if (!pfnCmdBeginRenderingKHR)
         pfnCmdBeginRenderingKHR = (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR");
-    }
     pfnCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdEndRendering");
-    if (!pfnCmdEndRenderingKHR) {
+    if (!pfnCmdEndRenderingKHR)
         pfnCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR");
-    }
+
 }
 
 // vkGetBufferDeviceAddress is Vulkan 1.2 core; load via proc addr so it works on API-28 (Vulkan 1.1).
@@ -84,7 +152,6 @@ static void loadRayTracingFunctions(VkDevice device) {
 
 VkFormat pixelFormatToNative(PixelFormat format);
 PixelFormat nativeToPixelFormat(VkFormat format);
-uint32_t findMemoryType(uint32_t typeFilter, VkPhysicalDeviceMemoryProperties &memProperties, VkMemoryPropertyFlags properties);
 
 std::string queueFlagsToString(VkQueueFlags flags)
 {
@@ -136,7 +203,6 @@ VkInstance systems::leal::campello_gpu::getInstance()
     uint32_t extensionCount = 0;
     std::vector<VkExtensionProperties> extensions;
     vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
-    
 
     if (extensionCount > 0)
     {
@@ -153,7 +219,6 @@ VkInstance systems::leal::campello_gpu::getInstance()
     appInfo.apiVersion = VK_API_VERSION_1_3;
     appInfo.pNext = nullptr;
 
-    
     auto hasInstanceExtension = [&](const char *name) -> bool {
         for (const auto &ext : extensions) {
             if (strcmp(ext.extensionName, name) == 0) return true;
@@ -162,6 +227,10 @@ VkInstance systems::leal::campello_gpu::getInstance()
     };
 
     std::vector<const char *> requiredExtensions;
+#ifdef __ANDROID__
+    requiredExtensions.push_back("VK_KHR_surface");
+    requiredExtensions.push_back("VK_KHR_android_surface");
+#else
     if (hasInstanceExtension("VK_KHR_surface"))
         requiredExtensions.push_back("VK_KHR_surface");
     if (hasInstanceExtension("VK_KHR_xlib_surface"))
@@ -173,44 +242,65 @@ VkInstance systems::leal::campello_gpu::getInstance()
     bool enumeratePortability = hasInstanceExtension("VK_KHR_portability_enumeration");
     if (enumeratePortability)
         requiredExtensions.push_back("VK_KHR_portability_enumeration");
+#endif
 
-    // Only request validation layers that are actually present on this device.
-    const char *wantedLayer = "VK_LAYER_KHRONOS_validation";
     std::vector<const char *> enabledLayers;
+
+#ifdef CAMPELLO_GPU_VALIDATION
+    // Request the Khronos validation layer if it is available.
+    const char *wantedLayer = "VK_LAYER_KHRONOS_validation";
+    bool validationLayerFound = false;
     for (uint32_t i = 0; i < propertyCount; ++i) {
         if (strcmp(properties[i].layerName, wantedLayer) == 0) {
             enabledLayers.push_back(wantedLayer);
+            validationLayerFound = true;
             break;
         }
     }
+    if (hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+        requiredExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu",
+                        "Validation layers: %s", validationLayerFound ? "ENABLED" : "NOT FOUND");
+#else
+    fprintf(stderr, "[campello_gpu] Validation layer %s: %s\n",
+            wantedLayer, validationLayerFound ? "ENABLED" : "NOT FOUND — install vulkan-validationlayers");
+#endif
+#endif // CAMPELLO_GPU_VALIDATION
 
     VkInstanceCreateInfo instanceInfo;
     instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceInfo.pNext = nullptr;
+#ifdef __ANDROID__
+    instanceInfo.flags = 0;
+#else
     instanceInfo.flags = enumeratePortability ? VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR : 0;
+#endif
     instanceInfo.enabledExtensionCount = requiredExtensions.size();
     instanceInfo.ppEnabledExtensionNames = requiredExtensions.data();
     instanceInfo.enabledLayerCount = static_cast<uint32_t>(enabledLayers.size());
     instanceInfo.ppEnabledLayerNames = enabledLayers.empty() ? nullptr : enabledLayers.data();
     instanceInfo.pApplicationInfo = &appInfo;
 
-    
     VkInstance ins;
     auto res = vkCreateInstance(&instanceInfo, nullptr, &ins);
     if (res != VK_SUCCESS)
     {
-        
+        LOG_DEBUG("vkCreateInstance failed with error: %d", res);
         return nullptr;
     }
     instance = ins;
-    
+
+#ifdef CAMPELLO_GPU_VALIDATION
+    setupDebugMessenger(ins);
+#endif
+
     return ins;
 }
 
 Device::Device(void *pd)
 {
     native = pd;
-    
 }
 
 Device::~Device()
@@ -242,7 +332,6 @@ Device::~Device()
         vkDestroyCommandPool(deviceData->device, deviceData->commandPool, nullptr);
         vkDestroyDevice(deviceData->device, nullptr);
         delete deviceData;
-        
     }
 }
 
@@ -273,8 +362,6 @@ std::vector<std::shared_ptr<Adapter>> Device::getAdapters()
     uint32_t gpuCount = 0;
     vkEnumeratePhysicalDevices(inst, &gpuCount, nullptr);
 
-    
-
     // Allocate memory for the GPU handles
     std::vector<VkPhysicalDevice> gpus(gpuCount);
 
@@ -291,18 +378,6 @@ std::vector<std::shared_ptr<Adapter>> Device::getAdapters()
 
         std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
         vkGetPhysicalDeviceQueueFamilyProperties(gpu, &queueFamilyCount, queueFamilies.data());
-
-        
-
-        for (int b = 0; b < queueFamilyCount; b++)
-        {
-            auto flags = queueFlagsToString(queueFamilies[b].queueFlags);
-            
-            
-            
-            
-            
-        }
 
         auto deviceDef = std::shared_ptr<Adapter>(new Adapter());
         deviceDef->native = (void *)gpu; // VkPhysicalDevice handle
@@ -323,77 +398,67 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     auto gpu = (VkPhysicalDevice)deviceDef->native;
     if (!gpu) return nullptr;
 
-    // Create platform surface when a LinuxSurfaceInfo is provided.
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
-    if (pd != nullptr)
-    {
-        auto surfaceInfo = static_cast<LinuxSurfaceInfo*>(pd);
-        if (surfaceInfo->api == LinuxWindowApi::x11)
-        {
-            using PFN_vkCreateXlibSurfaceKHR = VkResult(*)(VkInstance, const void*, const VkAllocationCallbacks*, VkSurfaceKHR*);
-            auto pfn = (PFN_vkCreateXlibSurfaceKHR)vkGetInstanceProcAddr(getInstance(), "vkCreateXlibSurfaceKHR");
-            if (pfn)
-            {
-                struct XlibCreateInfo {
-                    VkStructureType sType;
-                    const void* pNext;
-                    VkFlags flags;
-                    void* dpy;
-                    uintptr_t window;
-                };
-                XlibCreateInfo info{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR, nullptr, 0,
-                                    surfaceInfo->display, reinterpret_cast<uintptr_t>(surfaceInfo->window)};
-                if (pfn(getInstance(), &info, nullptr, &surface) != VK_SUCCESS)
-                    surface = VK_NULL_HANDLE;
-            }
-        }
-        else if (surfaceInfo->api == LinuxWindowApi::wayland)
-        {
-            using PFN_vkCreateWaylandSurfaceKHR = VkResult(*)(VkInstance, const void*, const VkAllocationCallbacks*, VkSurfaceKHR*);
-            auto pfn = (PFN_vkCreateWaylandSurfaceKHR)vkGetInstanceProcAddr(getInstance(), "vkCreateWaylandSurfaceKHR");
-            if (pfn)
-            {
-                struct WaylandCreateInfo {
-                    VkStructureType sType;
-                    const void* pNext;
-                    VkFlags flags;
-                    void* display;
-                    void* surface;
-                };
-                WaylandCreateInfo info{VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR, nullptr, 0,
-                                       surfaceInfo->display, surfaceInfo->window};
-                if (pfn(getInstance(), &info, nullptr, &surface) != VK_SUCCESS)
-                    surface = VK_NULL_HANDLE;
-            }
-        }
-
-        if (surface == VK_NULL_HANDLE)
-        {
-            // User requested a windowed device but surface creation failed.
-            return nullptr;
-        }
-    }
-
     uint32_t extensionCount;
     vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extensionCount, nullptr);
 
     std::vector<VkExtensionProperties> availableExtensions(extensionCount);
     vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extensionCount, availableExtensions.data());
 
+    // Surface and swapchain creation are only possible with a real surface handle.
+    // When pd == nullptr (headless / test mode) we skip them entirely.
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
     std::vector<VkSurfaceFormatKHR> surfaceFormats;
     VkSurfaceFormatKHR chosenFormat = {};
 
-    if (surface != VK_NULL_HANDLE)
+    if (pd != nullptr)
     {
-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &surfaceCapabilities);
-        uint32_t surfaceFormatCount = 0;
-        vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, nullptr);
-        if (surfaceFormatCount > 0)
+#ifdef __ANDROID__
+        VkAndroidSurfaceCreateInfoKHR create_info{};
+        create_info.sType  = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+        create_info.window = (ANativeWindow *)pd;
+        if (vkCreateAndroidSurfaceKHR(getInstance(), &create_info, nullptr, &surface) != VK_SUCCESS)
+            return nullptr;
+#else
+        auto surfInfo = (LinuxSurfaceInfo *)pd;
+#if CAMPELLO_GPU_X11
+        if (surfInfo->api == LinuxWindowApi::x11) {
+            VkXlibSurfaceCreateInfoKHR xinfo{};
+            xinfo.sType  = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+            xinfo.dpy    = (Display *)surfInfo->display;
+            xinfo.window = (Window)(uintptr_t)surfInfo->window;
+            if (vkCreateXlibSurfaceKHR(getInstance(), &xinfo, nullptr, &surface) != VK_SUCCESS)
+                return nullptr;
+        } else
+#endif
+#if CAMPELLO_GPU_WAYLAND
+        if (surfInfo->api == LinuxWindowApi::wayland) {
+            VkWaylandSurfaceCreateInfoKHR winfo{};
+            winfo.sType   = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+            winfo.display = (wl_display *)surfInfo->display;
+            winfo.surface = (wl_surface *)surfInfo->window;
+            if (vkCreateWaylandSurfaceKHR(getInstance(), &winfo, nullptr, &surface) != VK_SUCCESS)
+                return nullptr;
+        } else
+#endif
         {
-            surfaceFormats.resize(surfaceFormatCount);
-            vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, surfaceFormats.data());
+            // No matching surface API compiled in for this platform.
+            return nullptr;
         }
+#endif
+
+        if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &surfaceCapabilities) != VK_SUCCESS)
+        {
+            return nullptr;
+        }
+
+        uint32_t surfaceFormatCount;
+        if (vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, nullptr) != VK_SUCCESS)
+        {
+            return nullptr;
+        }
+        surfaceFormats.resize(surfaceFormatCount);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, surfaceFormats.data());
     }
 
     VkPhysicalDeviceFeatures deviceFeatures;
@@ -424,23 +489,30 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     }
     if (queueFamilyIndex == -1)
     {
-        
         return nullptr;
     }
-    
 
-    // Detect ray tracing extension availability.
-    bool hasAS  = false, hasRTP = false, hasDHO = false;
+    // Query the device's supported Vulkan API version.
+    VkPhysicalDeviceProperties deviceProps{};
+    vkGetPhysicalDeviceProperties(gpu, &deviceProps);
+    const bool isVulkan13 = VK_VERSION_MINOR(deviceProps.apiVersion) >= 3;
+
+    // Detect extension availability.
+    bool hasAS  = false, hasRTP = false, hasDHO = false, hasDynRender = false;
     for (const auto &e : availableExtensions) {
-        if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)   == 0) hasAS  = true;
-        if (strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)     == 0) hasRTP = true;
-        if (strcmp(e.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) hasDHO = true;
+        if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)   == 0) hasAS       = true;
+        if (strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)     == 0) hasRTP      = true;
+        if (strcmp(e.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) hasDHO      = true;
+        if (strcmp(e.extensionName, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)        == 0) hasDynRender = true;
     }
     const bool rtSupported = hasAS && hasRTP && hasDHO;
 
     std::vector<const char *> deviceExtensions;
     if (surface != VK_NULL_HANDLE)
         deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    // Dynamic rendering is core in Vulkan 1.3; on older devices we need the extension.
+    if (!isVulkan13 && hasDynRender)
+        deviceExtensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     if (rtSupported) {
         deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         deviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
@@ -453,6 +525,12 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
     queueCreateInfo.queueCount = 1;
     queueCreateInfo.pQueuePriorities = &priority;
+
+    // Build the pNext feature chain.
+    // Dynamic rendering must always be explicitly enabled (core or extension).
+    VkPhysicalDeviceDynamicRenderingFeaturesKHR dynRenderFeatures{};
+    dynRenderFeatures.sType             = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR;
+    dynRenderFeatures.dynamicRendering  = VK_TRUE;
 
     // RT feature chain — only attached when RT extensions are available.
     VkPhysicalDeviceBufferDeviceAddressFeatures bdaFeatures{};
@@ -469,19 +547,21 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     rtpFeatures.rayTracingPipeline = VK_TRUE;
     rtpFeatures.pNext              = &asFeatures;
 
+    // Chain: dynRender → [rt chain if supported]
+    dynRenderFeatures.pNext = rtSupported ? (void *)&rtpFeatures : nullptr;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    createInfo.pNext = &dynRenderFeatures;
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.queueCreateInfoCount = 1;
     createInfo.pEnabledFeatures = &deviceFeatures;
     createInfo.enabledExtensionCount = (uint32_t)deviceExtensions.size();
     createInfo.ppEnabledExtensionNames = deviceExtensions.empty() ? nullptr : deviceExtensions.data();
-    if (rtSupported) createInfo.pNext = &rtpFeatures;
 
     VkDevice toReturn;
     if (vkCreateDevice(gpu, &createInfo, nullptr, &toReturn) != VK_SUCCESS)
     {
-        
         return nullptr;
     }
 
@@ -504,9 +584,15 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         swapchainData.pNext = nullptr;
         swapchainData.flags = 0;
         swapchainData.surface = surface;
-        swapchainData.minImageCount = std::min(std::max((int)surfaceCapabilities.minImageCount, 3), (int)surfaceCapabilities.maxImageCount);
+        {
+            // maxImageCount == 0 means "no maximum" per the Vulkan spec.
+            uint32_t count = std::max(surfaceCapabilities.minImageCount, 3u);
+            if (surfaceCapabilities.maxImageCount > 0)
+                count = std::min(count, surfaceCapabilities.maxImageCount);
+            swapchainData.minImageCount = count;
+        }
         // Prefer sRGB formats for correct gamma presentation; fall back to first available.
-        chosenFormat = surfaceFormats[0];
+        VkSurfaceFormatKHR chosenFormat = surfaceFormats[0];
         for (const auto &sf : surfaceFormats) {
             if ((sf.format == VK_FORMAT_B8G8R8A8_SRGB || sf.format == VK_FORMAT_R8G8B8A8_SRGB)
                 && sf.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
@@ -521,7 +607,22 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         swapchainData.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         swapchainData.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         swapchainData.preTransform = surfaceCapabilities.currentTransform;
-        swapchainData.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+        // Pick the first composite alpha mode that the surface actually supports.
+        {
+            const VkCompositeAlphaFlagBitsKHR preferred[] = {
+                VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+                VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+                VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+                VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+            };
+            swapchainData.compositeAlpha = preferred[0];
+            for (auto flag : preferred) {
+                if (surfaceCapabilities.supportedCompositeAlpha & flag) {
+                    swapchainData.compositeAlpha = flag;
+                    break;
+                }
+            }
+        }
         swapchainData.presentMode = VK_PRESENT_MODE_FIFO_KHR;
         swapchainData.clipped = true;
         swapchainData.oldSwapchain = 0;
@@ -529,14 +630,12 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
 
         if (vkCreateSwapchainKHR(toReturn, &swapchainData, nullptr, &swapchain) != VK_SUCCESS)
         {
-            
             return nullptr;
         }
 
         uint32_t swapchainImageCount;
         if (vkGetSwapchainImagesKHR(toReturn, swapchain, &swapchainImageCount, nullptr) != VK_SUCCESS)
         {
-            
             return nullptr;
         }
         swapchainImages.resize(swapchainImageCount);
@@ -606,9 +705,15 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->imageAvailableSemaphore  = imageAvailableSemaphore;
     deviceData->renderFinishedSemaphore  = renderFinishedSemaphore;
     deviceData->queueFamilyIndex         = static_cast<uint32_t>(queueFamilyIndex);
+    deviceData->currentImageIndex        = 0;
+#ifdef __ANDROID__
+    deviceData->window                   = pd ? (ANativeWindow *)pd : nullptr;
+#endif
 
     return std::shared_ptr<Device>(new Device(deviceData));
 }
+
+uint32_t findMemoryType(uint32_t typeFilter, VkPhysicalDeviceMemoryProperties &memProperties, VkMemoryPropertyFlags properties);
 
 std::shared_ptr<Texture> Device::createTexture(
     TextureType type,
@@ -643,18 +748,8 @@ std::shared_ptr<Texture> Device::createTexture(
         imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if ((int)usageMode & (int)TextureUsage::copyDst)
         imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if ((int)usageMode & (int)TextureUsage::renderTarget) {
-        imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        // Depth/stencil usage is only valid for depth/stencil formats.
-        VkFormat vkFormat = pixelFormatToNative(pixelFormat);
-        if (vkFormat == VK_FORMAT_D16_UNORM ||
-            vkFormat == VK_FORMAT_D32_SFLOAT ||
-            vkFormat == VK_FORMAT_S8_UINT ||
-            vkFormat == VK_FORMAT_D24_UNORM_S8_UINT ||
-            vkFormat == VK_FORMAT_D32_SFLOAT_S8_UINT) {
-            imageUsage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        }
-    }
+    if ((int)usageMode & (int)TextureUsage::renderTarget)
+        imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     if ((int)usageMode & (int)TextureUsage::storageBinding)
         imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
     if ((int)usageMode & (int)TextureUsage::textureBinding)
@@ -696,22 +791,17 @@ std::shared_ptr<Texture> Device::createTexture(
         return nullptr;
     }
 
-    // Allocate device-local memory for the image.
-    VkMemoryRequirements imageMemReq;
-    vkGetImageMemoryRequirements(deviceData->device, image, &imageMemReq);
-
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(deviceData->physicalDevice, &memProps);
-
-    uint32_t imageMemType = findMemoryType(imageMemReq.memoryTypeBits, memProps, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-    VkMemoryAllocateInfo imageAllocInfo{};
-    imageAllocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    imageAllocInfo.allocationSize  = imageMemReq.size;
-    imageAllocInfo.memoryTypeIndex = imageMemType;
-
+    // Allocate and bind device-local memory for the image.
+    VkPhysicalDeviceMemoryProperties imgMemProps;
+    vkGetPhysicalDeviceMemoryProperties(deviceData->physicalDevice, &imgMemProps);
+    VkMemoryRequirements imgMemReqs;
+    vkGetImageMemoryRequirements(deviceData->device, image, &imgMemReqs);
+    VkMemoryAllocateInfo imgAllocInfo{};
+    imgAllocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    imgAllocInfo.allocationSize  = imgMemReqs.size;
+    imgAllocInfo.memoryTypeIndex = findMemoryType(imgMemReqs.memoryTypeBits, imgMemProps, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VkDeviceMemory imageMemory = VK_NULL_HANDLE;
-    if (vkAllocateMemory(deviceData->device, &imageAllocInfo, nullptr, &imageMemory) != VK_SUCCESS)
+    if (vkAllocateMemory(deviceData->device, &imgAllocInfo, nullptr, &imageMemory) != VK_SUCCESS)
     {
         vkDestroyImage(deviceData->device, image, nullptr);
         return nullptr;
@@ -766,8 +856,9 @@ std::shared_ptr<Texture> Device::createTexture(
     toReturn->textureType    = type;
     toReturn->deviceData     = deviceData;
     
-    // Track actual GPU memory allocated for this texture (image memory)
-    toReturn->allocatedSize = imageMemReq.size;
+    // Get the buffer's allocated size for memory tracking
+    auto bufferHandle = (BufferHandle *)buffer->native;
+    toReturn->allocatedSize = bufferHandle->allocatedSize;
 
     deviceData->textureCount++;
     
@@ -1184,13 +1275,8 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
     auto result = vkCreateShaderModule(deviceData->device, &info, nullptr, &shaderModule);
     switch (result) {
         case VK_ERROR_OUT_OF_HOST_MEMORY:
-            
-            return nullptr;
         case VK_ERROR_OUT_OF_DEVICE_MEMORY:
-            
-            return nullptr;
         case VK_ERROR_INVALID_SHADER_NV:
-            
             return nullptr;
         case VK_SUCCESS: {
             auto toReturn = new ShaderModuleHandle();
@@ -1201,7 +1287,6 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
             return std::shared_ptr<ShaderModule>(new ShaderModule(toReturn));
         }
         default:
-            
             return nullptr;
     }
 }
@@ -1232,7 +1317,6 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     auto deviceData = (DeviceData *)this->native;
 
     if (descriptor.vertex.module == nullptr) {
-        
         return nullptr;
     }
 
@@ -1439,7 +1523,6 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         pipelineLayoutInfo.setLayoutCount = 0;
         pipelineLayoutInfo.pushConstantRangeCount = 0;
         if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-            
             return nullptr;
         }
         ownsPipelineLayout = true;
@@ -1495,7 +1578,6 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         nullptr,
         &pipeline
     ) != VK_SUCCESS) {
-        
         return nullptr;
     }
 
@@ -1513,26 +1595,6 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
 
     auto deviceData = (DeviceData *)this->native;
 
-    if (descriptor.compute.module == nullptr) {
-        return nullptr;
-    }
-
-    // Use the caller-supplied pipeline layout if provided, otherwise create an empty one.
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    bool ownsPipelineLayout = false;
-    if (descriptor.layout) {
-        pipelineLayout = ((PipelineLayoutHandle *)descriptor.layout->native)->layout;
-    } else {
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 0;
-        pipelineLayoutInfo.pushConstantRangeCount = 0;
-        if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
-            return nullptr;
-        }
-        ownsPipelineLayout = true;
-    }
-
     VkComputePipelineCreateInfo info;
     info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     info.pNext = nullptr;
@@ -1544,7 +1606,7 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     info.stage.module = ((ShaderModuleHandle *)descriptor.compute.module->native)->shaderModule;
     info.stage.pName = descriptor.compute.entryPoint.c_str();
     info.stage.pSpecializationInfo = nullptr;
-    info.layout = pipelineLayout;
+    info.layout = ((PipelineLayoutHandle *)descriptor.layout->native)->layout;
     info.basePipelineHandle = VK_NULL_HANDLE;
     info.basePipelineIndex = -1;
 
@@ -1557,17 +1619,13 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
         nullptr,
         &pipeline
     ) != VK_SUCCESS) {
-        if (ownsPipelineLayout) {
-            vkDestroyPipelineLayout(deviceData->device, pipelineLayout, nullptr);
-        }
         return nullptr;
     }
 
     auto toReturn = new ComputePipelineHandle();
-    toReturn->device              = deviceData->device;
-    toReturn->pipeline            = pipeline;
-    toReturn->pipelineLayout      = pipelineLayout;
-    toReturn->ownsPipelineLayout  = ownsPipelineLayout;
+    toReturn->device         = deviceData->device;
+    toReturn->pipeline       = pipeline;
+    toReturn->pipelineLayout = info.layout;
 
     deviceData->computePipelineCount++;
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(toReturn));
@@ -1585,7 +1643,6 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     info.commandBufferCount = 1;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     if (vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer) != VK_SUCCESS) {
-        
         return nullptr;
     }
 
@@ -1608,6 +1665,7 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
 
     return std::shared_ptr<CommandEncoder>(new CommandEncoder(toReturn));
 }
+
 
 VkFilter filterModeToVkFilter(FilterMode filter) {
     switch (filter) {
@@ -1635,7 +1693,6 @@ VkSamplerAddressMode getAddressMode(WrapMode mode) {
         case WrapMode::repeat: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
         case WrapMode::clampToEdge: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         case WrapMode::mirrorRepeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
-        default: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
     }
 }
 
@@ -1649,7 +1706,6 @@ VkCompareOp getCompareOp(CompareOp op) {
         case CompareOp::notEqual: return VK_COMPARE_OP_NOT_EQUAL;
         case CompareOp::greaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
         case CompareOp::always: return VK_COMPARE_OP_ALWAYS;
-        default: return VK_COMPARE_OP_NEVER;
     }
 }
 
@@ -1682,7 +1738,6 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor &descript
 
     VkSampler sampler;
     if (vkCreateSampler(deviceData->device, &info, nullptr, &sampler) != VK_SUCCESS) {
-        
         return nullptr;
     }
 
@@ -1708,7 +1763,6 @@ std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor &descr
 
     VkQueryPool queryPool;
     if (vkCreateQueryPool(deviceData->device, &info, nullptr, &queryPool) != VK_SUCCESS) {
-        
         return nullptr;
     }
 
@@ -1774,7 +1828,6 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
 
     VkDescriptorSetLayout layout;
     if (vkCreateDescriptorSetLayout(deviceData->device, &info, nullptr, &layout) != VK_SUCCESS) {
-        
         return nullptr;
     }
 
@@ -1835,7 +1888,6 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
 
     VkDescriptorSet descriptorSet;
     if (vkAllocateDescriptorSets(deviceData->device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        
         return nullptr;
     }
 
@@ -1921,7 +1973,6 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
     VkSurfaceCapabilitiesKHR caps{};
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(deviceData->physicalDevice,
                                                    deviceData->surface, &caps) != VK_SUCCESS) {
-        
         return;
     }
 
@@ -1930,7 +1981,11 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
     VkSwapchainCreateInfoKHR sci{};
     sci.sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
     sci.surface          = deviceData->surface;
-    sci.minImageCount    = std::min(std::max((int)caps.minImageCount, 3), (int)caps.maxImageCount);
+    {
+        uint32_t count = std::max(caps.minImageCount, 3u);
+        if (caps.maxImageCount > 0) count = std::min(count, caps.maxImageCount);
+        sci.minImageCount = count;
+    }
     sci.imageFormat      = deviceData->surfaceFormat.format;
     sci.imageColorSpace  = deviceData->surfaceFormat.colorSpace;
     sci.imageExtent      = newExtent;
@@ -1938,14 +1993,24 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
     sci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     sci.preTransform     = caps.currentTransform;
-    sci.compositeAlpha   = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
+    {
+        const VkCompositeAlphaFlagBitsKHR preferred[] = {
+            VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+            VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+            VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+            VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+        };
+        sci.compositeAlpha = preferred[0];
+        for (auto flag : preferred) {
+            if (caps.supportedCompositeAlpha & flag) { sci.compositeAlpha = flag; break; }
+        }
+    }
     sci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
     sci.clipped          = VK_TRUE;
     sci.oldSwapchain     = deviceData->swapchain; // hand old swapchain to driver for reuse
 
     VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
     if (vkCreateSwapchainKHR(deviceData->device, &sci, nullptr, &newSwapchain) != VK_SUCCESS) {
-        
         return;
     }
 
@@ -1978,7 +2043,6 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
                           &deviceData->swapchainImageViews[i]);
     }
 
-    
 }
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
@@ -1986,24 +2050,24 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     auto deviceData = (DeviceData *)this->native;
     auto cbHandle   = (CommandBufferHandle *)commandBuffer->native;
 
+    // waitStage must outlive vkQueueSubmit; declared outside the if block to
+    // avoid a dangling pointer from pWaitDstStageMask.
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
     VkSubmitInfo submitInfo{};
     submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers    = &cbHandle->commandBuffer;
 
     if (cbHandle->hasSwapchain) {
-        // Swapchain submission: synchronise with acquire/present semaphores.
-        VkPipelineStageFlags waitStage  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         submitInfo.waitSemaphoreCount   = 1;
         submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphore;
         submitInfo.pWaitDstStageMask    = &waitStage;
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
     }
-    // Headless / offscreen / compute: no semaphores needed.
 
     if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-        
         return;
     }
 
@@ -2015,18 +2079,14 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         presentInfo.swapchainCount     = 1;
         presentInfo.pSwapchains        = &deviceData->swapchain;
         presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
-
         VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             recreateSwapchain(deviceData);
-        } else if (result != VK_SUCCESS) {
-            
         }
     }
 
     // Wait for the frame to finish before the caller can reuse the command buffer.
     vkQueueWaitIdle(deviceData->graphicsQueue);
-    
     deviceData->commandsSubmitted++;
 }
 
@@ -2042,13 +2102,14 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         vkResetFences(deviceData->device, 1, &fenceData->fence);
     }
 
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
     VkSubmitInfo submitInfo{};
     submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers    = &cbHandle->commandBuffer;
 
     if (cbHandle->hasSwapchain) {
-        VkPipelineStageFlags waitStage  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         submitInfo.waitSemaphoreCount   = 1;
         submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphore;
         submitInfo.pWaitDstStageMask    = &waitStage;
@@ -2058,7 +2119,6 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
 
     VkFence submitFence = fenceData ? fenceData->fence : VK_NULL_HANDLE;
     if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
-        
         return;
     }
 
@@ -2074,8 +2134,6 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             recreateSwapchain(deviceData);
-        } else if (result != VK_SUCCESS) {
-            
         }
     }
 
@@ -2110,15 +2168,10 @@ void Device::scheduleNextPresent(void* /*nativeDrawable*/) {
 }
 
 std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
-    auto deviceData = (DeviceData *)this->native;
-    if (deviceData->swapchain == VK_NULL_HANDLE)
-        return nullptr;
-    if (deviceData->swapchainImageViews.empty())
-        return nullptr;
-    if (deviceData->currentImageIndex >= deviceData->swapchainImageViews.size())
-        return nullptr;
-    return TextureView::fromNative(
-        reinterpret_cast<void *>(deviceData->swapchainImageViews[deviceData->currentImageIndex]));
+    // On Vulkan/Android the swapchain image is acquired per-frame via
+    // vkAcquireNextImageKHR. Use TextureView::fromNative() with the
+    // VkImageView for the current image instead.
+    return nullptr;
 }
 
 std::string systems::leal::campello_gpu::getVersion()
@@ -2340,8 +2393,6 @@ VkFormat pixelFormatToNative(PixelFormat format)
     // astc_12x12_unorm,
     case PixelFormat::astc_12x12_unorm_srgb:
         return VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
-    default:
-        return VK_FORMAT_UNDEFINED;
     }
 }
 
@@ -2560,7 +2611,7 @@ PixelFormat nativeToPixelFormat(VkFormat format)
 
     case VK_FORMAT_UNDEFINED:
     default:
-        
+        LOG_DEBUG("Unknown pixelFormat conversion: %d", format);
         return PixelFormat::invalid;
     }
 }
@@ -2743,7 +2794,7 @@ Device::createBottomLevelAccelerationStructure(
                                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
                                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                 buf, mem)) {
-        
+        LOG_DEBUG("createBLAS: backing buffer allocation failed");
         return nullptr;
     }
 
@@ -2823,7 +2874,7 @@ Device::createTopLevelAccelerationStructure(
                                 VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
                                 | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                 buf, mem)) {
-        
+        LOG_DEBUG("createTLAS: backing buffer allocation failed");
         return nullptr;
     }
 
@@ -2969,7 +3020,7 @@ Device::createRayTracingPipeline(const RayTracingPipelineDescriptor &descriptor)
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (pfnCreateRayTracingPipelinesKHR(d->device, VK_NULL_HANDLE, VK_NULL_HANDLE,
                                         1, &rtci, nullptr, &pipeline) != VK_SUCCESS) {
-        
+        LOG_DEBUG("createRayTracingPipeline: vkCreateRayTracingPipelinesKHR failed");
         return nullptr;
     }
 

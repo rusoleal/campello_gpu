@@ -36,21 +36,19 @@ CommandEncoder::CommandEncoder(void *pd) {
     this->native = pd;
 
     auto data = (CommandEncoderHandle *)pd;
-    
-    // Create timestamp query pool for GPU timing
+
+    // Create timestamp query pool for GPU timing.
     if (data->physicalDevice != VK_NULL_HANDLE) {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(data->physicalDevice, &props);
-        
-        // Check if timestamps are supported
         if (props.limits.timestampComputeAndGraphics) {
             VkQueryPoolCreateInfo queryPoolInfo{};
-            queryPoolInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
-            queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-            queryPoolInfo.queryCount = 2;  // Start and end timestamps
-            
-            if (vkCreateQueryPool(data->device, &queryPoolInfo, nullptr, &data->timestampQueryPool) == VK_SUCCESS) {
-                data->timestampPeriod = props.limits.timestampPeriod;
+            queryPoolInfo.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            queryPoolInfo.queryType  = VK_QUERY_TYPE_TIMESTAMP;
+            queryPoolInfo.queryCount = 2;
+            if (vkCreateQueryPool(data->device, &queryPoolInfo, nullptr,
+                                  &data->timestampQueryPool) == VK_SUCCESS) {
+                data->timestampPeriod     = props.limits.timestampPeriod;
                 data->timestampQueryIndex = 0;
             }
         }
@@ -62,15 +60,16 @@ CommandEncoder::CommandEncoder(void *pd) {
     info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(data->commandBuffer, &info);
-    
-    // Reset and write start timestamp if query pool was created
+
+    // Reset query pool and write start timestamp.
     if (data->timestampQueryPool != VK_NULL_HANDLE) {
         vkCmdResetQueryPool(data->commandBuffer, data->timestampQueryPool, 0, 2);
-        vkCmdWriteTimestamp(data->commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, data->timestampQueryPool, 0);
+        vkCmdWriteTimestamp(data->commandBuffer,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            data->timestampQueryPool, 0);
     }
-
-    
 }
+
 
 CommandEncoder::~CommandEncoder() {
     auto data = (CommandEncoderHandle *)this->native;
@@ -79,7 +78,6 @@ CommandEncoder::~CommandEncoder() {
         vkDestroyQueryPool(data->device, data->timestampQueryPool, nullptr);
     }
     delete data;
-    
 }
 
 static VkAttachmentLoadOp getLoadOp(LoadOp loadOp) {
@@ -116,6 +114,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
         // ── Swapchain path ────────────────────────────────────────────────────
         isSwapchain = true;
         uint32_t imageIndex = 0;
+
         VkResult acquireResult = vkAcquireNextImageKHR(
             data->device, data->swapchain, UINT64_MAX,
             data->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
@@ -127,9 +126,9 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             return nullptr;
         }
         if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
-            
             return nullptr;
         }
+
         data->currentImageIndex = imageIndex;
         if (data->deviceData) {
             data->deviceData->currentImageIndex = imageIndex;
@@ -161,7 +160,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
         // Transition offscreen image → COLOR_ATTACHMENT_OPTIMAL.
         VkImageMemoryBarrier barrier{};
         barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED; // valid for first use / render targets
+        barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -620,8 +619,8 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
         vkCmdWriteTimestamp(data->commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, data->timestampQueryPool, 1);
     }
 
-    if (vkEndCommandBuffer(data->commandBuffer) != VK_SUCCESS) {
-        
+    VkResult endResult = vkEndCommandBuffer(data->commandBuffer);
+    if (endResult != VK_SUCCESS) {
         return nullptr;
     }
 

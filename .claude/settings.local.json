@@ -27,7 +27,16 @@
       "PowerShell(cd \"C:\\\\Users\\\\rusol\\\\source\\\\repos\\\\campello_gpu\"; $cmake = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\Common7\\\\IDE\\\\CommonExtensions\\\\Microsoft\\\\CMake\\\\CMake\\\\bin\\\\cmake.exe\"; & $cmake --build build_dx --config Release --target campello_example 2>&1 | Select-Object -Last 100)",
       "PowerShell(cd \"C:\\\\Users\\\\rusol\\\\source\\\\repos\\\\campello_gpu\"; $cmake = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\Common7\\\\IDE\\\\CommonExtensions\\\\Microsoft\\\\CMake\\\\CMake\\\\bin\\\\cmake.exe\"; & $cmake -B build_dx -DBUILD_EXAMPLES=ON 2>&1 | Select-Object -Last 20; & $cmake --build build_dx --config Release --target campello_example 2>&1 | Select-Object -Last 100)",
       "PowerShell(Stop-Process *)",
-      "Bash(./build/tests/campello_gpu_integration_tests)"
+      "Bash(./build/tests/campello_gpu_integration_tests)",
+      "Bash(cp *)",
+      "Bash(dpkg -l)",
+      "Bash(wait)",
+      "Bash(echo \"BUILD_EXIT_CODE=$?\")",
+      "Bash(chmod +x /home/ruben/repos/campello_gpu/examples/linux/run.sh)",
+      "Bash(grep -n \"^[a-zA-Z].*CommandEncoder\\\\|^[a-zA-Z].*{$\" /home/ruben/repos/campello_gpu/src/vulkan/command_encoder.cpp)",
+      "Bash(awk -F: '$2 > 450 && $2 < 595')",
+      "Bash(vulkaninfo)",
+      "Bash(apt-cache show *)"
     ]
   }
 }

@@ -19,7 +19,6 @@ CommandBuffer::~CommandBuffer() {
     }
     vkFreeCommandBuffers(data->device, data->commandPool, 1, &data->commandBuffer);
     delete data;
-    
 }
 
 uint64_t CommandBuffer::getGPUExecutionTime() {

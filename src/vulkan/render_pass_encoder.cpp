@@ -14,7 +14,6 @@ extern PFN_vkCmdEndRenderingKHR pfnCmdEndRenderingKHR;
 
 RenderPassEncoder::RenderPassEncoder(void *pd) {
     native = pd;
-    
 }
 
 RenderPassEncoder::~RenderPassEncoder() {
@@ -31,7 +30,6 @@ void RenderPassEncoder::beginOcclusionQuery(uint32_t queryIndex) {
 void RenderPassEncoder::draw(uint32_t vertexCount, uint32_t instanceCount,
                               uint32_t firstVertex, uint32_t firstInstance) {
     auto data = (RenderPassEncoderHandle *)native;
-    if (data->boundPipeline == VK_NULL_HANDLE) return;
     vkCmdDraw(data->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
 }
 
@@ -39,7 +37,6 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
                                      uint32_t firstVertex, uint32_t baseVertex,
                                      uint32_t firstInstance) {
     auto data = (RenderPassEncoderHandle *)native;
-    if (data->boundPipeline == VK_NULL_HANDLE) return;
     vkCmdDrawIndexed(data->commandBuffer, indexCount, instanceCount,
                      firstVertex, static_cast<int32_t>(baseVertex), firstInstance);
 }
@@ -47,8 +44,6 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
 void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                       uint64_t indirectOffset) {
     auto data      = (RenderPassEncoderHandle *)native;
-    if (data->boundPipeline == VK_NULL_HANDLE) return;
-    if (!indirectBuffer || !indirectBuffer->native) return;
     auto bufHandle = (BufferHandle *)indirectBuffer->native;
     // drawCount=1, stride=sizeof(VkDrawIndirectCommand)=16
     vkCmdDrawIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset, 1, 16);
@@ -57,8 +52,6 @@ void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer,
 void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                              uint64_t indirectOffset) {
     auto data      = (RenderPassEncoderHandle *)native;
-    if (data->boundPipeline == VK_NULL_HANDLE) return;
-    if (!indirectBuffer || !indirectBuffer->native) return;
     auto bufHandle = (BufferHandle *)indirectBuffer->native;
     // drawCount=1, stride=sizeof(VkDrawIndexedIndirectCommand)=20
     vkCmdDrawIndexedIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset, 1, 20);
@@ -68,12 +61,6 @@ void RenderPassEncoder::end() {
     auto data = (RenderPassEncoderHandle *)native;
 
     pfnCmdEndRenderingKHR(data->commandBuffer);
-
-    VkImage image = data->isSwapchain ? data->currentSwapchainImage : data->offscreenImage;
-    if (image == VK_NULL_HANDLE) {
-        // No-attachment render pass: nothing to transition.
-        return;
-    }
 
     VkImageMemoryBarrier barrier{};
     barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -85,6 +72,7 @@ void RenderPassEncoder::end() {
 
     if (data->isSwapchain) {
         // Swapchain: transition to PRESENT_SRC_KHR for presentation.
+        barrier.image         = data->currentSwapchainImage;
         barrier.newLayout     = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         barrier.dstAccessMask = VK_ACCESS_NONE;
         vkCmdPipelineBarrier(data->commandBuffer,
@@ -93,16 +81,13 @@ void RenderPassEncoder::end() {
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
     } else {
         // Offscreen: transition to GENERAL so the image is readable for sampling/copy.
-        // Guard: some Mesa Intel drivers crash on this barrier after a dynamic-rendering
-        // pass with no pipeline/draws bound. In that case the layout is unchanged.
-        if (data->boundPipeline != VK_NULL_HANDLE) {
-            barrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-            vkCmdPipelineBarrier(data->commandBuffer,
-                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
-        }
+        barrier.image         = data->offscreenImage;
+        barrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        vkCmdPipelineBarrier(data->commandBuffer,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 }
 
@@ -158,7 +143,6 @@ void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     if (pipe->pipeline == VK_NULL_HANDLE) return;
     vkCmdBindPipeline(data->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe->pipeline);
     data->pipelineLayout = pipe->pipelineLayout; // cache for setBindGroup
-    data->boundPipeline  = pipe->pipeline;       // cache for draw safety
 }
 
 void RenderPassEncoder::setScissorRect(float x, float y, float width, float height) {

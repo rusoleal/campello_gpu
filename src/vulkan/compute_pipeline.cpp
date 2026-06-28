@@ -1,11 +1,9 @@
-#include <android/log.h>
 #include <campello_gpu/compute_pipeline.hpp>
 #include "compute_pipeline_handle.hpp"
 
 using namespace systems::leal::campello_gpu;
 
 ComputePipeline::ComputePipeline(void *pd) {
-    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","ComputePipeline::ComputePipeline()");
     native = pd;
 }
 
@@ -17,7 +15,6 @@ ComputePipeline::~ComputePipeline() {
     vkDestroyPipelineLayout(handle->device, handle->pipelineLayout, nullptr);
 
     delete handle;
-    __android_log_print(ANDROID_LOG_DEBUG,"campello_gpu","ComputePipeline::~ComputePipeline()");
 
 }
 

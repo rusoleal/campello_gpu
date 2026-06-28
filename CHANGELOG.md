@@ -4,6 +4,44 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-28
+
+### Added
+
+- **Vulkan validation layer support** — new `CAMPELLO_GPU_VALIDATION` CMake option (default `OFF`)
+  - When enabled, registers `VK_LAYER_KHRONOS_validation` at instance creation and sets up a
+    `VkDebugUtilsMessengerEXT` that prints `[Vulkan ERROR/WARNING/INFO/VERBOSE]` to stderr on
+    Linux and to logcat on Android
+  - `examples/linux/run.sh --validation` (or `-v`) enables the flag automatically for the Linux
+    example build
+  - Install on Ubuntu/Debian: `sudo apt install vulkan-validationlayers`
+
+- **Linux example launch script** — `examples/linux/run.sh`
+  - Builds the project with `cmake`/`make` and immediately executes the Linux example
+  - Accepts `--validation` / `-v` to enable Vulkan validation layers for that run
+
+### Fixed
+
+- **[Vulkan] Swapchain `minImageCount=0` hang** — on hardware where
+  `VkSurfaceCapabilitiesKHR::maxImageCount == 0` (meaning "no maximum" per the Vulkan spec),
+  the formula `std::min(std::max(minImageCount, 3), maxImageCount)` silently clamped the
+  requested image count to zero.  A zero-image swapchain caused `vkAcquireNextImageKHR` to
+  never signal its semaphore, making `vkQueueSubmit` appear to hang and
+  `vkQueuePresentKHR` to segfault.  Fixed in both `createDevice` and `recreateSwapchain` by
+  guarding the upper clamp: `if (maxImageCount > 0) count = std::min(count, maxImageCount);`
+  Discovered via the new validation layer flag (`vkCreateSwapchainKHR: minImageCount is 0`).
+
+- **[Vulkan] `waitStage` dangling pointer in `Device::submit()`** — `VkPipelineStageFlags
+  waitStage` was declared inside the `if (cbHandle->hasSwapchain)` block while
+  `pWaitDstStageMask` pointed to it; the pointer dangled by the time `vkQueueSubmit` read it.
+  `waitStage` is now declared in the outer function scope in both `submit` overloads.
+
+- **[Vulkan] `recreateSwapchain` hardcoded `compositeAlpha`** — `compositeAlpha` was
+  unconditionally set to `VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR`; on drivers that only support
+  `VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR` this caused swapchain creation to fail.  Fixed by
+  probing `caps.supportedCompositeAlpha` and selecting the first supported mode (preferring
+  OPAQUE → INHERIT → PRE_MULTIPLIED → POST_MULTIPLIED).
+
 ## [0.15.0] - 2026-06-26
 
 ### Added

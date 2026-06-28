@@ -4,7 +4,6 @@
 using namespace systems::leal::campello_gpu;
 
 RenderPipeline::RenderPipeline(void *pd) {
-    
     native = pd;
 }
 
@@ -17,6 +16,5 @@ RenderPipeline::~RenderPipeline() {
         vkDestroyPipelineLayout(handle->device, handle->pipelineLayout, nullptr);
 
     delete handle;
-    
 
 }

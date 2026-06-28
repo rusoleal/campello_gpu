@@ -79,6 +79,7 @@ int main()
     int windowHeight = 480;
 
     while (running) {
+
         // Pump X11 events.
         while (XPending(display)) {
             XEvent ev;

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.15.0)
+project(campello_gpu VERSION 0.16.0)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -82,6 +82,23 @@ install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/campello_gpuConfigVersion.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/campello_gpu
 )
+
+# ---------------------------------------------------------------------------
+# Vulkan validation layers
+#
+# CAMPELLO_GPU_VALIDATION=ON  — compile in VK_LAYER_KHRONOS_validation +
+#                               VK_EXT_debug_utils messenger (dev/debug only).
+#                               Requires vulkan-validationlayers to be installed.
+#                               Linux:   sudo apt install vulkan-validationlayers
+#                               Android: copy layer .so into the APK's jniLibs
+# ---------------------------------------------------------------------------
+option(CAMPELLO_GPU_VALIDATION "Enable Vulkan validation layers (debug only)" OFF)
+
+get_target_property(_campello_type ${PROJECT_NAME} TYPE)
+if(CAMPELLO_GPU_VALIDATION AND NOT _campello_type STREQUAL "INTERFACE_LIBRARY")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE CAMPELLO_GPU_VALIDATION=1)
+    message(STATUS "campello_gpu: Vulkan validation layers ENABLED")
+endif()
 
 # ---------------------------------------------------------------------------
 # Tests

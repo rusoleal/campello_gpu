@@ -28,14 +28,12 @@ void ComputePassEncoder::setPipeline(std::shared_ptr<ComputePipeline> pipeline) 
     if (pipe->pipeline == VK_NULL_HANDLE) return;
     vkCmdBindPipeline(data->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipe->pipeline);
     data->pipelineLayout = pipe->pipelineLayout; // cache for setBindGroup
-    data->boundPipeline  = pipe->pipeline;       // cache for dispatch safety
 }
 
 void ComputePassEncoder::dispatchWorkgroups(uint64_t workgroupCountX,
                                              uint64_t workgroupCountY,
                                              uint64_t workgroupCountZ) {
     auto data = (ComputePassEncoderHandle *)native;
-    if (data->boundPipeline == VK_NULL_HANDLE) return;
     vkCmdDispatch(data->commandBuffer,
                   static_cast<uint32_t>(workgroupCountX),
                   static_cast<uint32_t>(workgroupCountY),
@@ -45,8 +43,6 @@ void ComputePassEncoder::dispatchWorkgroups(uint64_t workgroupCountX,
 void ComputePassEncoder::dispatchWorkgroupsIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                                      uint64_t indirectOffset) {
     auto data   = (ComputePassEncoderHandle *)native;
-    if (data->boundPipeline == VK_NULL_HANDLE) return;
-    if (!indirectBuffer || !indirectBuffer->native) return;
     auto bufHandle = (BufferHandle *)indirectBuffer->native;
     vkCmdDispatchIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset);
 }

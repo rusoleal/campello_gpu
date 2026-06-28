@@ -1,5 +1,5 @@
-#include <memory>
 #include <cstring>
+#include <memory>
 #include <campello_gpu/buffer.hpp>
 #include "buffer_handle.hpp"
 #include "common.hpp"
@@ -8,7 +8,6 @@ using namespace systems::leal::campello_gpu;
 
 Buffer::Buffer(void *pd) {
     this->native = pd;
-    
 }
 
 Buffer::~Buffer() {
@@ -23,7 +22,6 @@ Buffer::~Buffer() {
     vkFreeMemory(data->device, data->memory, nullptr);
     vkDestroyBuffer(data->device, data->buffer, nullptr);
     delete data;
-    
 }
 
 uint64_t Buffer::getLength() {

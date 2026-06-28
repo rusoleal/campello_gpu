@@ -1,4 +1,3 @@
-#include <android/log.h>
 #include <vulkan/vulkan.h>
 #include <campello_gpu/ray_tracing_pass_encoder.hpp>
 #include <campello_gpu/ray_tracing_pipeline.hpp>
