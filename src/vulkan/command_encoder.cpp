@@ -110,6 +110,8 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     VkImage    firstImage = VK_NULL_HANDLE;
     bool       isSwapchain = false;
 
+    const bool useTraditional = data->deviceData && !data->deviceData->hasDynamicRendering;
+
     if (!hasExplicitView && data->swapchain != VK_NULL_HANDLE) {
         // ── Swapchain path ────────────────────────────────────────────────────
         isSwapchain = true;
@@ -136,148 +138,51 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
         firstImage   = data->swapchainImages[imageIndex];
         renderExtent = data->imageExtent;
 
-        // Transition swapchain image: UNDEFINED → COLOR_ATTACHMENT_OPTIMAL.
-        VkImageMemoryBarrier barrier{};
-        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image               = firstImage;
-        barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        barrier.srcAccessMask       = VK_ACCESS_NONE;
-        barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        vkCmdPipelineBarrier(data->commandBuffer,
-                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+        if (!useTraditional) {
+            // Dynamic rendering: manually transition UNDEFINED → COLOR_ATTACHMENT_OPTIMAL.
+            VkImageMemoryBarrier barrier{};
+            barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image               = firstImage;
+            barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            barrier.srcAccessMask       = VK_ACCESS_NONE;
+            barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            vkCmdPipelineBarrier(data->commandBuffer,
+                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
+        // Traditional render pass: the renderPass initialLayout handles the transition.
     } else if (hasExplicitView) {
         // ── Offscreen path ────────────────────────────────────────────────────
         auto *vh = (TextureViewHandle *)descriptor.colorAttachments[0].view->native;
         firstImage   = vh->image;
         renderExtent = { vh->width, vh->height };
 
-        // Transition offscreen image → COLOR_ATTACHMENT_OPTIMAL.
-        VkImageMemoryBarrier barrier{};
-        barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image               = firstImage;
-        barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-        barrier.srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT;
-        barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        vkCmdPipelineBarrier(data->commandBuffer,
-                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &barrier);
+        if (!useTraditional) {
+            // Dynamic rendering: manually transition offscreen image → COLOR_ATTACHMENT_OPTIMAL.
+            VkImageMemoryBarrier barrier{};
+            barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image               = firstImage;
+            barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            barrier.srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT;
+            barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            vkCmdPipelineBarrier(data->commandBuffer,
+                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
     } else {
         // ── No-attachment path ────────────────────────────────────────────────
         renderExtent = { 1, 1 };
     }
-
-    // Build color attachment infos.
-    std::vector<VkRenderingAttachmentInfo> colorAttachments(descriptor.colorAttachments.size());
-    for (uint32_t a = 0; a < (uint32_t)descriptor.colorAttachments.size(); a++) {
-        VkImageView attachView;
-        if (isSwapchain) {
-            attachView = data->swapchainImageViews[data->currentImageIndex];
-        } else {
-            auto *vh = (TextureViewHandle *)descriptor.colorAttachments[a].view->native;
-            attachView = vh->imageView;
-        }
-
-        colorAttachments[a]                    = {};
-        colorAttachments[a].sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        colorAttachments[a].imageView          = attachView;
-        colorAttachments[a].imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        colorAttachments[a].resolveMode        = VK_RESOLVE_MODE_NONE;
-        colorAttachments[a].resolveImageView   = VK_NULL_HANDLE;
-        colorAttachments[a].resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAttachments[a].loadOp             = getLoadOp(descriptor.colorAttachments[a].loadOp);
-        colorAttachments[a].storeOp            = getStoreOp(descriptor.colorAttachments[a].storeOp);
-        colorAttachments[a].clearValue.color   = { .float32 = {
-            descriptor.colorAttachments[a].clearValue[0],
-            descriptor.colorAttachments[a].clearValue[1],
-            descriptor.colorAttachments[a].clearValue[2],
-            descriptor.colorAttachments[a].clearValue[3],
-        }};
-    }
-
-    // Build depth/stencil attachment info if requested.
-    VkRenderingAttachmentInfo depthAttachmentInfo{};
-    VkRenderingAttachmentInfo stencilAttachmentInfo{};
-    bool hasDepthAttachment   = false;
-    bool hasStencilAttachment = false;
-
-    if (descriptor.depthStencilAttachment.has_value()) {
-        const auto &dsa = *descriptor.depthStencilAttachment;
-        auto *dvh = (TextureViewHandle *)dsa.view->native;
-
-        // Determine aspect flags from the format.
-        VkImageAspectFlags depthAspect = 0;
-        bool formatHasDepth   = (dvh->format != VK_FORMAT_S8_UINT);
-        bool formatHasStencil = (dvh->format == VK_FORMAT_D24_UNORM_S8_UINT ||
-                                 dvh->format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
-                                 dvh->format == VK_FORMAT_S8_UINT);
-        if (formatHasDepth)   depthAspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
-        if (formatHasStencil) depthAspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
-
-        // Transition depth image to DEPTH_STENCIL_ATTACHMENT_OPTIMAL.
-        // Note: uses UNDEFINED as old layout — valid when depthLoadOp::clear.
-        VkImageMemoryBarrier dsBarrier{};
-        dsBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        dsBarrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
-        dsBarrier.newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        dsBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        dsBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        dsBarrier.image               = dvh->image;
-        dsBarrier.subresourceRange    = { depthAspect, 0, 1, 0, 1 };
-        dsBarrier.srcAccessMask       = VK_ACCESS_NONE;
-        dsBarrier.dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        vkCmdPipelineBarrier(data->commandBuffer,
-                             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                             0, 0, nullptr, 0, nullptr, 1, &dsBarrier);
-
-        if (formatHasDepth) {
-            depthAttachmentInfo.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            depthAttachmentInfo.imageView   = dvh->imageView;
-            depthAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depthAttachmentInfo.resolveMode = VK_RESOLVE_MODE_NONE;
-            depthAttachmentInfo.loadOp      = getLoadOp(dsa.depthLoadOp);
-            depthAttachmentInfo.storeOp     = dsa.depthReadOnly
-                                              ? VK_ATTACHMENT_STORE_OP_DONT_CARE
-                                              : getStoreOp(dsa.depthStoreOp);
-            depthAttachmentInfo.clearValue.depthStencil = { dsa.depthClearValue, 0 };
-            hasDepthAttachment = true;
-        }
-        if (formatHasStencil) {
-            stencilAttachmentInfo.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            stencilAttachmentInfo.imageView   = dvh->imageView;
-            stencilAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            stencilAttachmentInfo.resolveMode = VK_RESOLVE_MODE_NONE;
-            stencilAttachmentInfo.loadOp      = getLoadOp(dsa.stencilLoadOp);
-            stencilAttachmentInfo.storeOp     = dsa.stencilReadOnly
-                                               ? VK_ATTACHMENT_STORE_OP_DONT_CARE
-                                               : getStoreOp(dsa.stencilStoreOp);
-            stencilAttachmentInfo.clearValue.depthStencil = { 0.0f, dsa.stencilClearValue };
-            hasStencilAttachment = true;
-        }
-    }
-
-    VkRenderingInfo rinfo{};
-    rinfo.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    rinfo.renderArea.offset    = { 0, 0 };
-    rinfo.renderArea.extent    = renderExtent;
-    rinfo.layerCount           = 1;
-    rinfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
-    rinfo.pColorAttachments    = colorAttachments.data();
-    rinfo.pDepthAttachment     = hasDepthAttachment   ? &depthAttachmentInfo   : nullptr;
-    rinfo.pStencilAttachment   = hasStencilAttachment ? &stencilAttachmentInfo : nullptr;
-
-    pfnCmdBeginRenderingKHR(data->commandBuffer, &rinfo);
 
     auto rpeHandle = new RenderPassEncoderHandle();
     rpeHandle->commandBuffer         = data->commandBuffer;
@@ -288,6 +193,210 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     if (descriptor.occlusionQuerySet) {
         rpeHandle->queryPool = ((QuerySetHandle *)descriptor.occlusionQuerySet->native)->queryPool;
     }
+
+    if (useTraditional) {
+        // ── Traditional vkCmdBeginRenderPass path ─────────────────────────────
+        VkRenderPass  rp = VK_NULL_HANDLE;
+        VkFramebuffer fb = VK_NULL_HANDLE;
+
+        VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+        VkImageView depthView = VK_NULL_HANDLE;
+        if (descriptor.depthStencilAttachment.has_value()) {
+            auto *dvh = (TextureViewHandle *)descriptor.depthStencilAttachment->view->native;
+            depthFormat = dvh->format;
+            depthView   = dvh->imageView;
+        }
+
+        const bool colorLoadClear = descriptor.colorAttachments.empty() ||
+                                    descriptor.colorAttachments[0].loadOp == LoadOp::clear;
+
+        if (isSwapchain && depthFormat == VK_FORMAT_UNDEFINED) {
+            // Use the pre-built swapchain render pass and framebuffer.
+            rp = colorLoadClear ? data->deviceData->swapchainRenderPassClear
+                                : data->deviceData->swapchainRenderPassLoad;
+            fb = data->deviceData->swapchainFramebuffers[data->currentImageIndex];
+        } else {
+            // Transient render pass + framebuffer for offscreen or depth cases.
+            VkImageLayout finalLayout = isSwapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                                                    : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            rp = buildRenderPass(data->device,
+                                 isSwapchain ? data->deviceData->surfaceFormat.format
+                                             : ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->format,
+                                 depthFormat,
+                                 colorLoadClear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+                                 finalLayout);
+
+            VkImageView attachments[2];
+            uint32_t    attachCount = 0;
+            if (!descriptor.colorAttachments.empty()) {
+                attachments[attachCount++] = isSwapchain
+                    ? data->swapchainImageViews[data->currentImageIndex]
+                    : ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->imageView;
+            }
+            if (depthView != VK_NULL_HANDLE)
+                attachments[attachCount++] = depthView;
+
+            VkFramebufferCreateInfo fbInfo{};
+            fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            fbInfo.renderPass      = rp;
+            fbInfo.attachmentCount = attachCount;
+            fbInfo.pAttachments    = attachments;
+            fbInfo.width           = renderExtent.width;
+            fbInfo.height          = renderExtent.height;
+            fbInfo.layers          = 1;
+            vkCreateFramebuffer(data->device, &fbInfo, nullptr, &fb);
+
+            // Defer destruction to CommandBuffer destructor.
+            data->transientRenderPasses.push_back(rp);
+            data->transientFramebuffers.push_back(fb);
+        }
+
+        // Collect clear values.
+        std::vector<VkClearValue> clearValues;
+        if (!descriptor.colorAttachments.empty()) {
+            VkClearValue cv{};
+            const auto &ca = descriptor.colorAttachments[0];
+            cv.color = { .float32 = { ca.clearValue[0], ca.clearValue[1],
+                                      ca.clearValue[2], ca.clearValue[3] } };
+            clearValues.push_back(cv);
+        }
+        if (depthFormat != VK_FORMAT_UNDEFINED) {
+            VkClearValue dv{};
+            dv.depthStencil = { descriptor.depthStencilAttachment->depthClearValue,
+                                descriptor.depthStencilAttachment->stencilClearValue };
+            clearValues.push_back(dv);
+        }
+
+        VkRenderPassBeginInfo rpBegin{};
+        rpBegin.sType                    = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpBegin.renderPass               = rp;
+        rpBegin.framebuffer              = fb;
+        rpBegin.renderArea.offset        = { 0, 0 };
+        rpBegin.renderArea.extent        = renderExtent;
+        rpBegin.clearValueCount          = (uint32_t)clearValues.size();
+        rpBegin.pClearValues             = clearValues.data();
+        vkCmdBeginRenderPass(data->commandBuffer, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+        rpeHandle->usesTraditionalRenderPass = true;
+    } else {
+        // ── Dynamic rendering path ────────────────────────────────────────────
+        // Build color attachment infos.
+        std::vector<VkRenderingAttachmentInfo> colorAttachments(descriptor.colorAttachments.size());
+        for (uint32_t a = 0; a < (uint32_t)descriptor.colorAttachments.size(); a++) {
+            VkImageView attachView;
+            if (isSwapchain) {
+                attachView = data->swapchainImageViews[data->currentImageIndex];
+            } else {
+                auto *vh = (TextureViewHandle *)descriptor.colorAttachments[a].view->native;
+                attachView = vh->imageView;
+            }
+
+            colorAttachments[a]                    = {};
+            colorAttachments[a].sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            colorAttachments[a].imageView          = attachView;
+            colorAttachments[a].imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorAttachments[a].resolveMode        = VK_RESOLVE_MODE_NONE;
+            colorAttachments[a].resolveImageView   = VK_NULL_HANDLE;
+            colorAttachments[a].resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            colorAttachments[a].loadOp             = getLoadOp(descriptor.colorAttachments[a].loadOp);
+            colorAttachments[a].storeOp            = getStoreOp(descriptor.colorAttachments[a].storeOp);
+            colorAttachments[a].clearValue.color   = { .float32 = {
+                descriptor.colorAttachments[a].clearValue[0],
+                descriptor.colorAttachments[a].clearValue[1],
+                descriptor.colorAttachments[a].clearValue[2],
+                descriptor.colorAttachments[a].clearValue[3],
+            }};
+        }
+
+        // Build depth/stencil attachment info if requested.
+        VkRenderingAttachmentInfo depthAttachmentInfo{};
+        VkRenderingAttachmentInfo stencilAttachmentInfo{};
+        bool hasDepthAttachment   = false;
+        bool hasStencilAttachment = false;
+
+        if (descriptor.depthStencilAttachment.has_value()) {
+            const auto &dsa = *descriptor.depthStencilAttachment;
+            auto *dvh = (TextureViewHandle *)dsa.view->native;
+
+            // Determine aspect flags from the format.
+            VkImageAspectFlags depthAspect = 0;
+            bool formatHasDepth   = (dvh->format != VK_FORMAT_S8_UINT);
+            bool formatHasStencil = (dvh->format == VK_FORMAT_D24_UNORM_S8_UINT ||
+                                     dvh->format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+                                     dvh->format == VK_FORMAT_S8_UINT);
+            if (formatHasDepth)   depthAspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
+            if (formatHasStencil) depthAspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+
+            // Transition depth image to DEPTH_STENCIL_ATTACHMENT_OPTIMAL.
+            VkImageMemoryBarrier dsBarrier{};
+            dsBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            dsBarrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+            dsBarrier.newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            dsBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            dsBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            dsBarrier.image               = dvh->image;
+            dsBarrier.subresourceRange    = { depthAspect, 0, 1, 0, 1 };
+            dsBarrier.srcAccessMask       = VK_ACCESS_NONE;
+            dsBarrier.dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            vkCmdPipelineBarrier(data->commandBuffer,
+                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &dsBarrier);
+
+            if (formatHasDepth) {
+                depthAttachmentInfo.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                depthAttachmentInfo.imageView   = dvh->imageView;
+                depthAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                depthAttachmentInfo.resolveMode = VK_RESOLVE_MODE_NONE;
+                depthAttachmentInfo.loadOp      = getLoadOp(dsa.depthLoadOp);
+                depthAttachmentInfo.storeOp     = dsa.depthReadOnly
+                                                  ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+                                                  : getStoreOp(dsa.depthStoreOp);
+                depthAttachmentInfo.clearValue.depthStencil = { dsa.depthClearValue, 0 };
+                hasDepthAttachment = true;
+            }
+            if (formatHasStencil) {
+                stencilAttachmentInfo.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                stencilAttachmentInfo.imageView   = dvh->imageView;
+                stencilAttachmentInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                stencilAttachmentInfo.resolveMode = VK_RESOLVE_MODE_NONE;
+                stencilAttachmentInfo.loadOp      = getLoadOp(dsa.stencilLoadOp);
+                stencilAttachmentInfo.storeOp     = dsa.stencilReadOnly
+                                                   ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+                                                   : getStoreOp(dsa.stencilStoreOp);
+                stencilAttachmentInfo.clearValue.depthStencil = { 0.0f, dsa.stencilClearValue };
+                hasStencilAttachment = true;
+            }
+        }
+
+        VkRenderingInfo rinfo{};
+        rinfo.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        rinfo.renderArea.offset    = { 0, 0 };
+        rinfo.renderArea.extent    = renderExtent;
+        rinfo.layerCount           = 1;
+        rinfo.colorAttachmentCount = static_cast<uint32_t>(colorAttachments.size());
+        rinfo.pColorAttachments    = colorAttachments.data();
+        rinfo.pDepthAttachment     = hasDepthAttachment   ? &depthAttachmentInfo   : nullptr;
+        rinfo.pStencilAttachment   = hasStencilAttachment ? &stencilAttachmentInfo : nullptr;
+
+        pfnCmdBeginRenderingKHR(data->commandBuffer, &rinfo);
+    }
+
+    // Default viewport and scissor to the full render area.
+    // Users can override with setViewport() / setScissorRect() after beginRenderPass().
+    VkViewport vp{};
+    vp.x        = 0.0f;
+    vp.y        = 0.0f;
+    vp.width    = static_cast<float>(renderExtent.width);
+    vp.height   = static_cast<float>(renderExtent.height);
+    vp.minDepth = 0.0f;
+    vp.maxDepth = 1.0f;
+    vkCmdSetViewport(data->commandBuffer, 0, 1, &vp);
+
+    VkRect2D scissor{};
+    scissor.offset = { 0, 0 };
+    scissor.extent = renderExtent;
+    vkCmdSetScissor(data->commandBuffer, 0, 1, &scissor);
 
     return std::shared_ptr<RenderPassEncoder>(new RenderPassEncoder(rpeHandle));
 }
@@ -632,8 +741,10 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbHandle->swapchain          = data->swapchain;
     cbHandle->currentImageIndex  = data->currentImageIndex;
     cbHandle->hasSwapchain       = (data->swapchain != VK_NULL_HANDLE);
-    cbHandle->stagingBuffers     = std::move(data->stagingBuffers);
-    cbHandle->stagingMemories    = std::move(data->stagingMemories);
+    cbHandle->stagingBuffers          = std::move(data->stagingBuffers);
+    cbHandle->stagingMemories         = std::move(data->stagingMemories);
+    cbHandle->transientRenderPasses   = std::move(data->transientRenderPasses);
+    cbHandle->transientFramebuffers   = std::move(data->transientFramebuffers);
     
     // Transfer timing data
     if (data->timestampQueryPool != VK_NULL_HANDLE) {

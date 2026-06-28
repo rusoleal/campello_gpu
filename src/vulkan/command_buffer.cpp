@@ -17,6 +17,10 @@ CommandBuffer::~CommandBuffer() {
         vkFreeMemory(data->device, data->stagingMemories[i], nullptr);
         vkDestroyBuffer(data->device, data->stagingBuffers[i], nullptr);
     }
+    for (auto fb : data->transientFramebuffers)
+        vkDestroyFramebuffer(data->device, fb, nullptr);
+    for (auto rp : data->transientRenderPasses)
+        vkDestroyRenderPass(data->device, rp, nullptr);
     vkFreeCommandBuffers(data->device, data->commandPool, 1, &data->commandBuffer);
     delete data;
 }

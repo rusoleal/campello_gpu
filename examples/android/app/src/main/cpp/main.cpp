@@ -114,7 +114,8 @@ void handle_cmd(android_app *pApp, int32_t cmd) {
                     passEncoder->draw(3);
                     passEncoder->end();
 
-
+                    auto commandBuffer = encoder->finish();
+                    device->submit(commandBuffer);
 
                 }
                 break;

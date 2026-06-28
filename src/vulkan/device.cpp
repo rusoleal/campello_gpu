@@ -111,6 +111,83 @@ static void setupDebugMessenger(VkInstance inst)
 
 #endif // CAMPELLO_GPU_VALIDATION
 
+// Creates a compatible VkRenderPass for the traditional-render-pass fallback path.
+// colorFinalLayout: PRESENT_SRC_KHR for swapchain, GENERAL for offscreen.
+VkRenderPass buildRenderPass(VkDevice device,
+                                     VkFormat colorFormat,
+                                     VkFormat depthFormat,
+                                     VkAttachmentLoadOp colorLoadOp,
+                                     VkImageLayout colorFinalLayout)
+{
+    std::vector<VkAttachmentDescription> attachments;
+
+    VkAttachmentDescription colorAtt{};
+    colorAtt.format         = colorFormat;
+    colorAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+    colorAtt.loadOp         = colorLoadOp;
+    colorAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    // For LOAD: initial layout = the layout the image was left in after the previous pass.
+    // For CLEAR: initial layout = UNDEFINED (content discarded).
+    colorAtt.initialLayout  = (colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
+                              ? colorFinalLayout
+                              : VK_IMAGE_LAYOUT_UNDEFINED;
+    colorAtt.finalLayout    = colorFinalLayout;
+    attachments.push_back(colorAtt);
+
+    VkAttachmentReference colorRef{};
+    colorRef.attachment = 0;
+    colorRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    bool hasDepth = (depthFormat != VK_FORMAT_UNDEFINED);
+    VkAttachmentDescription depthAtt{};
+    VkAttachmentReference   depthRef{};
+    if (hasDepth) {
+        depthAtt.format         = depthFormat;
+        depthAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+        depthAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAtt.storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthAtt.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        depthAtt.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachments.push_back(depthAtt);
+        depthRef.attachment = 1;
+        depthRef.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+
+    VkSubpassDescription subpass{};
+    subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount    = 1;
+    subpass.pColorAttachments       = &colorRef;
+    subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
+
+    VkSubpassDependency dep{};
+    dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
+    dep.dstSubpass    = 0;
+    dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                      | (hasDepth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT : 0u);
+    dep.srcAccessMask = 0;
+    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                      | (hasDepth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT : 0u);
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                      | (hasDepth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0u);
+
+    VkRenderPassCreateInfo rpInfo{};
+    rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    rpInfo.attachmentCount = (uint32_t)attachments.size();
+    rpInfo.pAttachments    = attachments.data();
+    rpInfo.subpassCount    = 1;
+    rpInfo.pSubpasses      = &subpass;
+    rpInfo.dependencyCount = 1;
+    rpInfo.pDependencies   = &dep;
+
+    VkRenderPass rp = VK_NULL_HANDLE;
+    vkCreateRenderPass(device, &rpInfo, nullptr, &rp);
+    return rp;
+}
+
 void loadDynamicRenderingFunctions(VkDevice device)
 {
     // Prefer Vulkan 1.3 core entry points; fall back to VK_KHR_dynamic_rendering.
@@ -317,6 +394,13 @@ Device::~Device()
         if (deviceData->imageAvailableSemaphore != VK_NULL_HANDLE)
             vkDestroySemaphore(deviceData->device, deviceData->imageAvailableSemaphore, nullptr);
 
+        for (auto fb : deviceData->swapchainFramebuffers)
+            vkDestroyFramebuffer(deviceData->device, fb, nullptr);
+        if (deviceData->swapchainRenderPassLoad != VK_NULL_HANDLE)
+            vkDestroyRenderPass(deviceData->device, deviceData->swapchainRenderPassLoad, nullptr);
+        if (deviceData->swapchainRenderPassClear != VK_NULL_HANDLE)
+            vkDestroyRenderPass(deviceData->device, deviceData->swapchainRenderPassClear, nullptr);
+
         for (auto iv : deviceData->swapchainImageViews)
             vkDestroyImageView(deviceData->device, iv, nullptr);
 
@@ -507,6 +591,15 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     }
     const bool rtSupported = hasAS && hasRTP && hasDHO;
 
+    const bool hasDynRenderSupport = isVulkan13 || hasDynRender;
+
+    LOG_DEBUG("Vulkan %d.%d.%d — dynamic_rendering: %s (core13=%d, ext=%d)",
+              VK_VERSION_MAJOR(deviceProps.apiVersion),
+              VK_VERSION_MINOR(deviceProps.apiVersion),
+              VK_VERSION_PATCH(deviceProps.apiVersion),
+              hasDynRenderSupport ? "yes" : "NO (traditional render pass fallback)",
+              isVulkan13, hasDynRender);
+
     std::vector<const char *> deviceExtensions;
     if (surface != VK_NULL_HANDLE)
         deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
@@ -547,12 +640,16 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     rtpFeatures.rayTracingPipeline = VK_TRUE;
     rtpFeatures.pNext              = &asFeatures;
 
-    // Chain: dynRender → [rt chain if supported]
-    dynRenderFeatures.pNext = rtSupported ? (void *)&rtpFeatures : nullptr;
-
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pNext = &dynRenderFeatures;
+
+    if (hasDynRenderSupport) {
+        // Chain dynamic rendering feature struct only when the device supports it.
+        dynRenderFeatures.pNext = rtSupported ? (void *)&rtpFeatures : nullptr;
+        createInfo.pNext = &dynRenderFeatures;
+    } else if (rtSupported) {
+        createInfo.pNext = &rtpFeatures;
+    }
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.queueCreateInfoCount = 1;
     createInfo.pEnabledFeatures = &deviceFeatures;
@@ -576,6 +673,10 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     std::vector<VkImage> swapchainImages;
     std::vector<VkImageView> swapchainImageViews;
     VkExtent2D imageExtent = {};
+    // Traditional render pass objects (populated when !hasDynRenderSupport)
+    VkRenderPass swapchainRenderPassClear = VK_NULL_HANDLE;
+    VkRenderPass swapchainRenderPassLoad  = VK_NULL_HANDLE;
+    std::vector<VkFramebuffer> swapchainFramebuffers;
 
     if (surface != VK_NULL_HANDLE && !surfaceFormats.empty())
     {
@@ -627,6 +728,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         swapchainData.clipped = true;
         swapchainData.oldSwapchain = 0;
         imageExtent = surfaceCapabilities.currentExtent;
+        LOG_DEBUG("swapchain extent: %u x %u", imageExtent.width, imageExtent.height);
 
         if (vkCreateSwapchainKHR(toReturn, &swapchainData, nullptr, &swapchain) != VK_SUCCESS)
         {
@@ -653,6 +755,31 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
             VkImageView imageView;
             vkCreateImageView(toReturn, &info, nullptr, &imageView);
             swapchainImageViews.push_back(imageView);
+        }
+
+        // Traditional render pass fallback: pre-build render passes and per-image framebuffers.
+        if (!hasDynRenderSupport) {
+            swapchainRenderPassClear = buildRenderPass(toReturn, chosenFormat.format,
+                                                       VK_FORMAT_UNDEFINED,
+                                                       VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            swapchainRenderPassLoad  = buildRenderPass(toReturn, chosenFormat.format,
+                                                       VK_FORMAT_UNDEFINED,
+                                                       VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+            for (auto& view : swapchainImageViews) {
+                VkFramebufferCreateInfo fbInfo{};
+                fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+                fbInfo.renderPass      = swapchainRenderPassClear;
+                fbInfo.attachmentCount = 1;
+                fbInfo.pAttachments    = &view;
+                fbInfo.width           = imageExtent.width;
+                fbInfo.height          = imageExtent.height;
+                fbInfo.layers          = 1;
+                VkFramebuffer fb = VK_NULL_HANDLE;
+                vkCreateFramebuffer(toReturn, &fbInfo, nullptr, &fb);
+                swapchainFramebuffers.push_back(fb);
+            }
         }
     }
 
@@ -709,6 +836,10 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
 #ifdef __ANDROID__
     deviceData->window                   = pd ? (ANativeWindow *)pd : nullptr;
 #endif
+    deviceData->hasDynamicRendering      = hasDynRenderSupport;
+    deviceData->swapchainRenderPassClear = swapchainRenderPassClear;
+    deviceData->swapchainRenderPassLoad  = swapchainRenderPassLoad;
+    deviceData->swapchainFramebuffers    = std::move(swapchainFramebuffers);
 
     return std::shared_ptr<Device>(new Device(deviceData));
 }
@@ -1544,16 +1675,28 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     }
 
     VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {};
-    pipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
-    pipelineRenderingCreateInfo.pNext = nullptr;
-    pipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    pipelineRenderingCreateInfo.pColorAttachmentFormats = &deviceData->surfaceFormat.format;
-    pipelineRenderingCreateInfo.depthAttachmentFormat   = depthAttachmentFormat;
-    pipelineRenderingCreateInfo.stencilAttachmentFormat = stencilAttachmentFormat;
+    VkRenderPass compatibleRenderPass = VK_NULL_HANDLE;
+
+    if (deviceData->hasDynamicRendering) {
+        pipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+        pipelineRenderingCreateInfo.pNext = nullptr;
+        pipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        pipelineRenderingCreateInfo.pColorAttachmentFormats = &deviceData->surfaceFormat.format;
+        pipelineRenderingCreateInfo.depthAttachmentFormat   = depthAttachmentFormat;
+        pipelineRenderingCreateInfo.stencilAttachmentFormat = stencilAttachmentFormat;
+    } else {
+        // Traditional render pass path: build a compatible render pass for pipeline creation.
+        // The pipeline is compatible with any render pass sharing the same attachment formats.
+        compatibleRenderPass = buildRenderPass(deviceData->device,
+                                               deviceData->surfaceFormat.format,
+                                               depthAttachmentFormat,
+                                               VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    }
 
     VkGraphicsPipelineCreateInfo pipelineInfo = {};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipelineInfo.pNext = &pipelineRenderingCreateInfo;
+    pipelineInfo.pNext = deviceData->hasDynamicRendering ? &pipelineRenderingCreateInfo : nullptr;
     pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size()),
     pipelineInfo.pStages = shaderStages.data();
     pipelineInfo.pVertexInputState = &vertexInputInfo;
@@ -1565,7 +1708,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout;
-    pipelineInfo.renderPass = VK_NULL_HANDLE; // dynamic rendering: renderPass must be VK_NULL_HANDLE
+    pipelineInfo.renderPass = compatibleRenderPass; // VK_NULL_HANDLE for dynamic rendering
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     pipelineInfo.basePipelineIndex = -1;
 
@@ -1578,8 +1721,12 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         nullptr,
         &pipeline
     ) != VK_SUCCESS) {
+        if (compatibleRenderPass != VK_NULL_HANDLE)
+            vkDestroyRenderPass(deviceData->device, compatibleRenderPass, nullptr);
         return nullptr;
     }
+    if (compatibleRenderPass != VK_NULL_HANDLE)
+        vkDestroyRenderPass(deviceData->device, compatibleRenderPass, nullptr);
 
     auto toReturn = new RenderPipelineHandle();
     toReturn->device              = deviceData->device;
@@ -1964,6 +2111,11 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
 
     vkDeviceWaitIdle(deviceData->device);
 
+    // Destroy old traditional render pass objects (framebuffers reference image views).
+    for (auto fb : deviceData->swapchainFramebuffers)
+        vkDestroyFramebuffer(deviceData->device, fb, nullptr);
+    deviceData->swapchainFramebuffers.clear();
+
     // Destroy old image views.
     for (auto iv : deviceData->swapchainImageViews)
         vkDestroyImageView(deviceData->device, iv, nullptr);
@@ -2041,6 +2193,23 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
         viewInfo.subresourceRange                = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         vkCreateImageView(deviceData->device, &viewInfo, nullptr,
                           &deviceData->swapchainImageViews[i]);
+    }
+
+    // Rebuild swapchain framebuffers for the traditional render pass fallback.
+    if (!deviceData->hasDynamicRendering) {
+        for (auto& view : deviceData->swapchainImageViews) {
+            VkFramebufferCreateInfo fbInfo{};
+            fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            fbInfo.renderPass      = deviceData->swapchainRenderPassClear;
+            fbInfo.attachmentCount = 1;
+            fbInfo.pAttachments    = &view;
+            fbInfo.width           = newExtent.width;
+            fbInfo.height          = newExtent.height;
+            fbInfo.layers          = 1;
+            VkFramebuffer fb = VK_NULL_HANDLE;
+            vkCreateFramebuffer(deviceData->device, &fbInfo, nullptr, &fb);
+            deviceData->swapchainFramebuffers.push_back(fb);
+        }
     }
 
 }

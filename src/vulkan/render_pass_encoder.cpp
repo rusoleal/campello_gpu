@@ -60,6 +60,12 @@ void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuff
 void RenderPassEncoder::end() {
     auto data = (RenderPassEncoderHandle *)native;
 
+    if (data->usesTraditionalRenderPass) {
+        // Traditional render pass: finalLayout handles image transitions — no manual barriers.
+        vkCmdEndRenderPass(data->commandBuffer);
+        return;
+    }
+
     pfnCmdEndRenderingKHR(data->commandBuffer);
 
     VkImageMemoryBarrier barrier{};

@@ -15,6 +15,8 @@ namespace systems::leal::campello_gpu {
         VkExtent2D       offscreenExtent       = {};
         // Occlusion queries
         VkQueryPool      queryPool             = VK_NULL_HANDLE;
+        // True when using traditional vkCmdBeginRenderPass / vkCmdEndRenderPass.
+        bool             usesTraditionalRenderPass = false;
     };
 
 }

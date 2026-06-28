@@ -36,7 +36,25 @@
       "Bash(grep -n \"^[a-zA-Z].*CommandEncoder\\\\|^[a-zA-Z].*{$\" /home/ruben/repos/campello_gpu/src/vulkan/command_encoder.cpp)",
       "Bash(awk -F: '$2 > 450 && $2 < 595')",
       "Bash(vulkaninfo)",
-      "Bash(apt-cache show *)"
+      "Bash(apt-cache show *)",
+      "Bash(adb devices *)",
+      "Read(//Applications/**)",
+      "Read(//Users/rubenleal/Library/Android/sdk/platform-tools/**)",
+      "Read(//Users/rubenleal/Library/Android/**)",
+      "Bash(~/Library/Android/sdk/emulator/emulator -list-avds)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb devices *)",
+      "Bash(./gradlew installDebug)",
+      "Bash(JAVA_HOME=\"/Applications/Android Studio.app/Contents/jbr/Contents/Home\" ./gradlew installDebug)",
+      "Bash(JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ANDROID_HOME=/Users/rubenleal/Library/Android/sdk ./gradlew installDebug)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb shell *)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb logcat *)",
+      "Bash(xargs cat -n)",
+      "Bash(JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ANDROID_HOME=/Users/rubenleal/Library/Android/sdk ./gradlew assembleDebug)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb install *)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb -s aaad91c0 shell cmd package resolve-activity --brief systems.leal.campello_gpu.example)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb *)",
+      "Bash(spirv-dis /Users/rubenleal/Documents/GitHub/campello_gpu/examples/android/app/src/main/assets/shader.spv)",
+      "Bash(spirv-cross --output /dev/stdout /Users/rubenleal/Documents/GitHub/campello_gpu/examples/android/app/src/main/assets/shader.spv)"
     ]
   }
 }

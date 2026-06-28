@@ -17,6 +17,9 @@ namespace systems::leal::campello_gpu {
         // Freed after the command buffer is submitted and GPU work finishes.
         std::vector<VkBuffer>       stagingBuffers;
         std::vector<VkDeviceMemory> stagingMemories;
+        // Transient render passes / framebuffers for the traditional-render-pass fallback.
+        std::vector<VkRenderPass>   transientRenderPasses;
+        std::vector<VkFramebuffer>  transientFramebuffers;
         
         // GPU timing data
         uint64_t gpuStartTimestamp = 0;

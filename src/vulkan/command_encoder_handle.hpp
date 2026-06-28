@@ -24,6 +24,10 @@ namespace systems::leal::campello_gpu
         // Staging resources (e.g. TLAS instance buffers) transferred to CommandBufferHandle in finish().
         std::vector<VkBuffer>       stagingBuffers;
         std::vector<VkDeviceMemory> stagingMemories;
+        // Transient render passes / framebuffers created for the traditional-render-pass fallback.
+        // Transferred to CommandBufferHandle in finish() for deferred destruction.
+        std::vector<VkRenderPass>   transientRenderPasses;
+        std::vector<VkFramebuffer>  transientFramebuffers;
         
         // GPU timing support
         VkPhysicalDevice         physicalDevice;

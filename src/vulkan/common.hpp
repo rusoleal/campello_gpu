@@ -35,7 +35,13 @@ namespace systems::leal::campello_gpu {
 #endif
         uint32_t                  queueFamilyIndex     = 0;
         bool                      rayTracingEnabled    = false;
+        bool                      hasDynamicRendering  = true;
         uint32_t                  currentImageIndex    = 0;
+
+        // Traditional render pass fallback (used when hasDynamicRendering == false)
+        VkRenderPass               swapchainRenderPassClear = VK_NULL_HANDLE;
+        VkRenderPass               swapchainRenderPassLoad  = VK_NULL_HANDLE;
+        std::vector<VkFramebuffer> swapchainFramebuffers;
 
         // Resource counters
         std::atomic<uint32_t> bufferCount{0};
@@ -103,4 +109,12 @@ namespace systems::leal::campello_gpu {
     // Swapchain recreation helper (defined in device.cpp, used by command_encoder.cpp).
     void recreateSwapchain(DeviceData *deviceData);
 
-}
+} // namespace systems::leal::campello_gpu
+
+// Render-pass builder helper (defined in device.cpp, used by command_encoder.cpp).
+// Builds a single-subpass VkRenderPass with one color attachment and optional depth.
+VkRenderPass buildRenderPass(VkDevice device,
+                              VkFormat colorFormat,
+                              VkFormat depthFormat,
+                              VkAttachmentLoadOp colorLoadOp,
+                              VkImageLayout colorFinalLayout);
