@@ -1,14 +1,13 @@
 //
 //  Minimal Linux windowed example — campello_gpu + raw X11.
 //
-//  Opens a 640×480 X11 window, creates a Vulkan swapchain, and clears
-//  the screen to a rotating color.
+//  Opens a 640×480 X11 window, creates a Vulkan swapchain, and renders a
+//  colored triangle every frame against an animated background.
 //
 //  Build:
-//    mkdir build && cd build
-//    cmake .. -DCMAKE_BUILD_TYPE=Release
-//    cmake --build .
-//    ./campello_linux_example
+//    cmake -B build -DBUILD_EXAMPLES=ON
+//    make -C build campello_linux_example
+//    ./build/examples/linux/campello_linux_example
 //
 
 #include <campello_gpu/device.hpp>
@@ -17,7 +16,15 @@
 #include <campello_gpu/render_pass_encoder.hpp>
 #include <campello_gpu/platform/linux_surface.hpp>
 #include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
+#include <campello_gpu/descriptors/render_pipeline_descriptor.hpp>
+#include <campello_gpu/descriptors/fragment_descriptor.hpp>
+#include <campello_gpu/descriptors/vertex_descriptor.hpp>
 #include <campello_gpu/constants/pixel_format.hpp>
+#include <campello_gpu/constants/cull_mode.hpp>
+#include <campello_gpu/constants/front_face.hpp>
+#include <campello_gpu/constants/primitive_topology.hpp>
+
+#include "triangle_shader.h"
 
 #include <X11/Xlib.h>
 #include <cstdio>
@@ -71,12 +78,51 @@ int main()
     printf("Engine: %s\n", Device::getEngineVersion().c_str());
 
     // ------------------------------------------------------------------
-    // 3. Render loop — clear the swapchain to a rotating color.
+    // 3. Create the triangle pipeline from embedded SPIR-V.
+    //    The shader has entry points "vertMain" (vertex) and "fragMain"
+    //    (fragment) with hardcoded positions and per-vertex RGB colors.
+    // ------------------------------------------------------------------
+    auto shaderModule = device->createShaderModule(kTriangleSpv, kTriangleSpvSize);
+    if (!shaderModule) {
+        fprintf(stderr, "Failed to create shader module\n");
+        device.reset();
+        XDestroyWindow(display, window);
+        XCloseDisplay(display);
+        return 1;
+    }
+
+    // pipelineDesc is scoped so its shared_ptr<ShaderModule> refs are released
+    // immediately after pipeline creation — before shaderModule.reset() in teardown.
+    std::shared_ptr<RenderPipeline> pipeline;
+    {
+        RenderPipelineDescriptor pipelineDesc{};
+        pipelineDesc.vertex = VertexDescriptor{
+            .module     = shaderModule,
+            .entryPoint = "vertMain",
+            .buffers    = {}
+        };
+        pipelineDesc.fragment = FragmentDescriptor{
+            .module     = shaderModule,
+            .entryPoint = "fragMain"
+        };
+        pipelineDesc.cullMode  = CullMode::none;
+        pipelineDesc.frontFace = FrontFace::ccw;
+        pipelineDesc.topology  = PrimitiveTopology::triangleList;
+        pipeline = device->createRenderPipeline(pipelineDesc);
+    }
+    if (!pipeline) {
+        fprintf(stderr, "Failed to create render pipeline\n");
+        device.reset();
+        XDestroyWindow(display, window);
+        XCloseDisplay(display);
+        return 1;
+    }
+
+    // ------------------------------------------------------------------
+    // 4. Render loop — animated background + colored triangle.
     // ------------------------------------------------------------------
     bool running = true;
     int frame = 0;
-    int windowWidth = 640;
-    int windowHeight = 480;
 
     while (running) {
 
@@ -87,16 +133,8 @@ int main()
             if (ev.type == KeyPress || ev.type == DestroyNotify) {
                 running = false;
             }
-            if (ev.type == ConfigureNotify) {
-                // Track the new window size. The Vulkan backend automatically
-                // recreates the swapchain when vkAcquireNextImageKHR or
-                // vkQueuePresentKHR reports OUT_OF_DATE.
-                windowWidth  = ev.xconfigure.width;
-                windowHeight = ev.xconfigure.height;
-            }
         }
 
-        // Build a simple render pass that clears the swapchain.
         auto encoder = device->createCommandEncoder();
         if (!encoder) {
             fprintf(stderr, "Failed to create command encoder\n");
@@ -104,19 +142,21 @@ int main()
         }
 
         ColorAttachment attachment{};
-        attachment.view       = nullptr;               // nullptr → use swapchain
-        attachment.loadOp     = LoadOp::clear;
-        attachment.storeOp    = StoreOp::store;
-        attachment.clearValue[0] = (std::sin(frame * 0.02f) + 1.0f) * 0.5f;  // R
-        attachment.clearValue[1] = (std::cos(frame * 0.03f) + 1.0f) * 0.5f;  // G
-        attachment.clearValue[2] = (std::sin(frame * 0.01f) + 1.0f) * 0.5f;  // B
-        attachment.clearValue[3] = 1.0f;                                        // A
+        attachment.view          = nullptr;
+        attachment.loadOp        = LoadOp::clear;
+        attachment.storeOp       = StoreOp::store;
+        attachment.clearValue[0] = (std::sin(frame * 0.02f) + 1.0f) * 0.5f * 0.3f;
+        attachment.clearValue[1] = (std::cos(frame * 0.03f) + 1.0f) * 0.5f * 0.3f;
+        attachment.clearValue[2] = (std::sin(frame * 0.01f) + 1.0f) * 0.5f * 0.3f;
+        attachment.clearValue[3] = 1.0f;
 
         BeginRenderPassDescriptor passDesc{};
         passDesc.colorAttachments = { attachment };
 
         auto pass = encoder->beginRenderPass(passDesc);
         if (pass) {
+            pass->setPipeline(pipeline);
+            pass->draw(3);
             pass->end();
         }
 
@@ -129,8 +169,10 @@ int main()
     }
 
     // ------------------------------------------------------------------
-    // 4. Tear-down (Device destructor handles all Vulkan cleanup).
+    // 5. Tear-down (Device destructor handles all Vulkan cleanup).
     // ------------------------------------------------------------------
+    pipeline.reset();
+    shaderModule.reset();
     device.reset();
     XDestroyWindow(display, window);
     XCloseDisplay(display);

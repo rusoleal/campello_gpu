@@ -19,6 +19,11 @@ done
 cmake -B "$BUILD_DIR" "$PROJECT_ROOT" \
     -DBUILD_EXAMPLES=ON \
     -DCAMPELLO_GPU_VALIDATION="$VALIDATION_FLAG"
+
+# Touch example sources so make always recompiles them, picking up any
+# header-only changes (e.g. triangle_shader.h) that cmake might have missed.
+touch "$SCRIPT_DIR/main.cpp"
+
 make -C "$BUILD_DIR" campello_linux_example
 
 exec "$BUILD_DIR/examples/linux/campello_linux_example"

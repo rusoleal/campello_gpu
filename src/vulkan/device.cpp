@@ -693,7 +693,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
             swapchainData.minImageCount = count;
         }
         // Prefer sRGB formats for correct gamma presentation; fall back to first available.
-        VkSurfaceFormatKHR chosenFormat = surfaceFormats[0];
+        chosenFormat = surfaceFormats[0];
         for (const auto &sf : surfaceFormats) {
             if ((sf.format == VK_FORMAT_B8G8R8A8_SRGB || sf.format == VK_FORMAT_R8G8B8A8_SRGB)
                 && sf.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {

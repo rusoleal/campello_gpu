@@ -42,6 +42,27 @@ All notable changes to campello_gpu are documented here.
   probing `caps.supportedCompositeAlpha` and selecting the first supported mode (preferring
   OPAQUE → INHERIT → PRE_MULTIPLIED → POST_MULTIPLIED).
 
+- **[Vulkan] `deviceData->surfaceFormat` always `VK_FORMAT_UNDEFINED`** — in `createDevice`,
+  the inner `VkSurfaceFormatKHR chosenFormat` declaration inside the swapchain creation block
+  shadowed the outer variable, so `deviceData->surfaceFormat` was never populated.
+  `createRenderPipeline` on the dynamic-rendering path passed `VK_FORMAT_UNDEFINED` to
+  `VkPipelineRenderingCreateInfo::pColorAttachmentFormats`, causing every draw call to be
+  silently rejected by the driver.  Fixed by removing the inner type declaration so the outer
+  `chosenFormat` is correctly assigned.  Discovered via Vulkan validation layers
+  (`VUID-vkCmdDraw-pColorAttachments-08963`).
+
+- **[Linux example] `vkDestroyShaderModule: Invalid device` crash on exit** — `pipelineDesc`
+  held `shared_ptr<ShaderModule>` references (via `vertex.module` and `fragment->module`) until
+  end-of-main, keeping the shader module alive past `shaderModule.reset()`.  `device.reset()`
+  then destroyed the `VkDevice` first, and the deferred module destruction triggered a Vulkan
+  Loader abort.  Fixed by scoping `pipelineDesc` inside a block that ends immediately after
+  `createRenderPipeline` returns, releasing the extra references before teardown.
+
+- **[Linux example] Colored triangle rendering** — added triangle rendering to the Linux
+  example using the same pre-compiled SPIR-V shader as the Android example (embedded in
+  `examples/linux/triangle_shader.h`), confirming the dynamic-rendering pipeline path works
+  correctly on Linux/Intel.
+
 ## [0.15.0] - 2026-06-26
 
 ### Added

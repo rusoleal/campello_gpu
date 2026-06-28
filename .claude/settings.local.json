@@ -54,7 +54,10 @@
       "Bash(~/Library/Android/sdk/platform-tools/adb -s aaad91c0 shell cmd package resolve-activity --brief systems.leal.campello_gpu.example)",
       "Bash(~/Library/Android/sdk/platform-tools/adb *)",
       "Bash(spirv-dis /Users/rubenleal/Documents/GitHub/campello_gpu/examples/android/app/src/main/assets/shader.spv)",
-      "Bash(spirv-cross --output /dev/stdout /Users/rubenleal/Documents/GitHub/campello_gpu/examples/android/app/src/main/assets/shader.spv)"
+      "Bash(spirv-cross --output /dev/stdout /Users/rubenleal/Documents/GitHub/campello_gpu/examples/android/app/src/main/assets/shader.spv)",
+      "Bash(xxd /home/ruben/repos/campello_gpu/examples/android/app/src/main/assets/shader.spv)",
+      "Bash(xxd -i /home/ruben/repos/campello_gpu/examples/android/app/src/main/assets/shader.spv)",
+      "Read(//tmp/**)"
     ]
   }
 }
