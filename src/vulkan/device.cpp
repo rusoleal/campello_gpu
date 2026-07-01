@@ -58,6 +58,11 @@ using namespace systems::leal::campello_gpu;
 
 VkInstance instance = nullptr;
 
+// Tracks the live Wayland DeviceData so campello_gpu_wayland_resize() can reach it
+// without going through the public API. Set when a Wayland device is created,
+// cleared in ~Device(). Single-device assumption matches campello_widgets' usage.
+static DeviceData* g_wayland_device = nullptr;
+
 // Function pointers for VK_KHR_dynamic_rendering (needed for Android API 28 / Vulkan 1.1)
 PFN_vkCmdBeginRenderingKHR pfnCmdBeginRenderingKHR = nullptr;
 PFN_vkCmdEndRenderingKHR pfnCmdEndRenderingKHR = nullptr;
@@ -386,6 +391,10 @@ Device::~Device()
     {
         auto deviceData = (DeviceData *)native;
 
+        // Unregister from the Wayland resize helper before any teardown.
+        if (g_wayland_device == deviceData)
+            g_wayland_device = nullptr;
+
         // Wait for all GPU work to finish before tearing down.
         vkDeviceWaitIdle(deviceData->device);
 
@@ -423,6 +432,7 @@ Device::~Device()
 {
     return native;
 }*/
+
 
 std::shared_ptr<Device> Device::createDefaultDevice(void *pd)
 {
@@ -533,12 +543,14 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
 
         if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &surfaceCapabilities) != VK_SUCCESS)
         {
+            vkDestroySurfaceKHR(getInstance(), surface, nullptr);
             return nullptr;
         }
 
         uint32_t surfaceFormatCount;
         if (vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &surfaceFormatCount, nullptr) != VK_SUCCESS)
         {
+            vkDestroySurfaceKHR(getInstance(), surface, nullptr);
             return nullptr;
         }
         surfaceFormats.resize(surfaceFormatCount);
@@ -573,6 +585,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     }
     if (queueFamilyIndex == -1)
     {
+        if (surface != VK_NULL_HANDLE)
+            vkDestroySurfaceKHR(getInstance(), surface, nullptr);
         return nullptr;
     }
 
@@ -659,6 +673,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     VkDevice toReturn;
     if (vkCreateDevice(gpu, &createInfo, nullptr, &toReturn) != VK_SUCCESS)
     {
+        if (surface != VK_NULL_HANDLE)
+            vkDestroySurfaceKHR(getInstance(), surface, nullptr);
         return nullptr;
     }
 
@@ -703,7 +719,19 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         }
         swapchainData.imageFormat = chosenFormat.format;
         swapchainData.imageColorSpace = chosenFormat.colorSpace;
-        swapchainData.imageExtent = surfaceCapabilities.currentExtent;
+        // currentExtent == {UINT32_MAX, UINT32_MAX} is the Wayland compositor's way of
+        // saying "choose any size within [minImageExtent, maxImageExtent]". Use the
+        // caller-supplied dimensions in that case, clamped to the allowed range.
+        if (surfaceCapabilities.currentExtent.width == UINT32_MAX) {
+            auto surfInfo2 = (LinuxSurfaceInfo *)pd;
+            uint32_t w = surfInfo2->width  ? surfInfo2->width  : surfaceCapabilities.minImageExtent.width;
+            uint32_t h = surfInfo2->height ? surfInfo2->height : surfaceCapabilities.minImageExtent.height;
+            w = std::max(surfaceCapabilities.minImageExtent.width,  std::min(surfaceCapabilities.maxImageExtent.width,  w));
+            h = std::max(surfaceCapabilities.minImageExtent.height, std::min(surfaceCapabilities.maxImageExtent.height, h));
+            swapchainData.imageExtent = { w, h };
+        } else {
+            swapchainData.imageExtent = surfaceCapabilities.currentExtent;
+        }
         swapchainData.imageArrayLayers = 1;
         swapchainData.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         swapchainData.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -727,17 +755,24 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         swapchainData.presentMode = VK_PRESENT_MODE_FIFO_KHR;
         swapchainData.clipped = true;
         swapchainData.oldSwapchain = 0;
-        imageExtent = surfaceCapabilities.currentExtent;
+        // Use the resolved swapchainData.imageExtent (may differ from
+        // currentExtent when currentExtent == {UINT32_MAX, UINT32_MAX}).
+        imageExtent = swapchainData.imageExtent;
         LOG_DEBUG("swapchain extent: %u x %u", imageExtent.width, imageExtent.height);
 
         if (vkCreateSwapchainKHR(toReturn, &swapchainData, nullptr, &swapchain) != VK_SUCCESS)
         {
+            vkDestroyDevice(toReturn, nullptr);
+            vkDestroySurfaceKHR(getInstance(), surface, nullptr);
             return nullptr;
         }
 
         uint32_t swapchainImageCount;
         if (vkGetSwapchainImagesKHR(toReturn, swapchain, &swapchainImageCount, nullptr) != VK_SUCCESS)
         {
+            vkDestroySwapchainKHR(toReturn, swapchain, nullptr);
+            vkDestroyDevice(toReturn, nullptr);
+            vkDestroySurfaceKHR(getInstance(), surface, nullptr);
             return nullptr;
         }
         swapchainImages.resize(swapchainImageCount);
@@ -840,6 +875,20 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->swapchainRenderPassClear = swapchainRenderPassClear;
     deviceData->swapchainRenderPassLoad  = swapchainRenderPassLoad;
     deviceData->swapchainFramebuffers    = std::move(swapchainFramebuffers);
+
+    // Register the Wayland resize helper for this device (Linux non-Android only).
+    // The guard keeps this inert on Android and on X11 (surface != VK_NULL_HANDLE
+    // only when a real window surface was created).
+#if CAMPELLO_GPU_WAYLAND
+    if (surface != VK_NULL_HANDLE) {
+        // Check whether this is actually a Wayland surface by testing for the
+        // wl_surface extension (the VkSurface was created with vkCreateWaylandSurfaceKHR).
+        // We rely on the fact that g_wayland_device is only meaningful when
+        // campello_gpu_wayland_resize() is called, which only happens from
+        // wayland_runner.cpp.
+        g_wayland_device = deviceData;
+    }
+#endif
 
     return std::shared_ptr<Device>(new Device(deviceData));
 }
@@ -2129,6 +2178,17 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
     }
 
     VkExtent2D newExtent = caps.currentExtent;
+    if (newExtent.width == UINT32_MAX) {
+        // Wayland: compositor always reports currentExtent = UINT32_MAX.
+        // Use the last successfully negotiated extent and clamp to the
+        // allowed range. This mirrors the handling in the initial swapchain
+        // creation path.
+        newExtent = deviceData->imageExtent;
+        newExtent.width  = std::max(caps.minImageExtent.width,
+                           std::min(caps.maxImageExtent.width,  newExtent.width));
+        newExtent.height = std::max(caps.minImageExtent.height,
+                           std::min(caps.maxImageExtent.height, newExtent.height));
+    }
 
     VkSwapchainCreateInfoKHR sci{};
     sci.sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -2212,6 +2272,29 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
         }
     }
 
+}
+
+// ---------------------------------------------------------------------------
+// Wayland swapchain resize helper (internal — not declared in device.hpp)
+//
+// campello_widgets' Wayland runner calls this between frames to resize the
+// swapchain without destroying the VkDevice.  On Wayland currentExtent is
+// always UINT32_MAX, so we patch imageExtent here before recreateSwapchain
+// reads it as the target size.
+//
+// Declared extern "C" so the linker symbol is predictable and wayland_runner.cpp
+// can forward-declare it without including any campello_gpu private header.
+// ---------------------------------------------------------------------------
+extern "C" void campello_gpu_wayland_resize(uint32_t w, uint32_t h)
+{
+#if CAMPELLO_GPU_WAYLAND
+    if (!g_wayland_device || w == 0 || h == 0) return;
+    g_wayland_device->imageExtent.width  = w;
+    g_wayland_device->imageExtent.height = h;
+    recreateSwapchain(g_wayland_device);
+#else
+    (void)w; (void)h;
+#endif
 }
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {

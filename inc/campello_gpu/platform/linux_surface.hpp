@@ -38,6 +38,11 @@ namespace systems::leal::campello_gpu
         void *display = nullptr; // Display* (X11) or wl_display* (Wayland)
         void *window  = nullptr; // Window cast via uintptr_t (X11) or wl_surface* (Wayland)
         LinuxWindowApi api = LinuxWindowApi::x11;
+        // Desired framebuffer size in pixels. Used as the swapchain extent when the
+        // Vulkan surface reports currentExtent = {UINT32_MAX, UINT32_MAX} (the Wayland
+        // protocol's way of saying "choose any size within min/max bounds").
+        uint32_t width  = 0;
+        uint32_t height = 0;
     };
 
 }

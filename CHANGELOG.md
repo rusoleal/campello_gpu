@@ -4,6 +4,20 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-30
+
+### Added
+
+- **[Linux/Wayland] `LinuxSurfaceInfo::width` / `height`** — new fields on `LinuxSurfaceInfo` that carry the desired framebuffer size in pixels. Required for Wayland, where the compositor always reports `VkSurfaceCapabilitiesKHR::currentExtent = {UINT32_MAX, UINT32_MAX}` ("choose any size within min/max bounds") instead of a concrete extent. Both initial swapchain creation and `recreateSwapchain()` now read these fields and clamp the result to `[minImageExtent, maxImageExtent]`.
+
+- **[Linux/Wayland] `campello_gpu_wayland_resize(uint32_t w, uint32_t h)`** — new `extern "C"` function (compiled in when `CAMPELLO_GPU_WAYLAND` is defined) that lets a Wayland runner (e.g. `campello_widgets`) trigger a swapchain resize between frames without destroying the `VkDevice`. It patches `DeviceData::imageExtent` and calls `recreateSwapchain()` directly. A file-scope `g_wayland_device` pointer is set on device creation and cleared in `~Device()`.
+
+### Fixed
+
+- **[Vulkan] Wayland swapchain extent** — `createDevice()` and `recreateSwapchain()` both previously used `surfaceCapabilities.currentExtent` unconditionally. On Wayland that value is always `{UINT32_MAX, UINT32_MAX}`, causing the swapchain to be created with a 4 GiB × 4 GiB extent. Both paths now detect `currentExtent.width == UINT32_MAX` and resolve the extent from caller-supplied dimensions (clamped to the surface's `min/maxImageExtent`).
+
+- **[Vulkan] `createDevice()` surface/swapchain/device leaks on error paths** — `VkSurfaceKHR`, `VkSwapchainKHR`, and `VkDevice` were not destroyed when `createDevice()` returned `nullptr` early due to capability query failures, no suitable queue family, `vkCreateDevice` failure, `vkCreateSwapchainKHR` failure, or `vkGetSwapchainImagesKHR` failure. All early-return paths now call the appropriate `vkDestroySurfaceKHR` / `vkDestroySwapchainKHR` / `vkDestroyDevice` before returning.
+
 ## [0.16.0] - 2026-06-28
 
 ### Added
