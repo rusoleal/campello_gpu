@@ -14,6 +14,8 @@ All notable changes to campello_gpu are documented here.
 
 ### Fixed
 
+- **[Android/Vulkan] Build error: `LinuxSurfaceInfo` undeclared on Android** — swapchain extent resolution at `device.cpp:726` cast `pd` to `LinuxSurfaceInfo*` without an `#ifndef __ANDROID__` guard, causing a compile error when building for Android (where `linux_surface.hpp` is not included). The block is now guarded; Android falls back to `minImageExtent` if `currentExtent.width == UINT32_MAX` (which should not occur in practice given that `ANativeWindow` always reports a concrete size).
+
 - **[Vulkan] Wayland swapchain extent** — `createDevice()` and `recreateSwapchain()` both previously used `surfaceCapabilities.currentExtent` unconditionally. On Wayland that value is always `{UINT32_MAX, UINT32_MAX}`, causing the swapchain to be created with a 4 GiB × 4 GiB extent. Both paths now detect `currentExtent.width == UINT32_MAX` and resolve the extent from caller-supplied dimensions (clamped to the surface's `min/maxImageExtent`).
 
 - **[Vulkan] `createDevice()` surface/swapchain/device leaks on error paths** — `VkSurfaceKHR`, `VkSwapchainKHR`, and `VkDevice` were not destroyed when `createDevice()` returned `nullptr` early due to capability query failures, no suitable queue family, `vkCreateDevice` failure, `vkCreateSwapchainKHR` failure, or `vkGetSwapchainImagesKHR` failure. All early-return paths now call the appropriate `vkDestroySurfaceKHR` / `vkDestroySwapchainKHR` / `vkDestroyDevice` before returning.

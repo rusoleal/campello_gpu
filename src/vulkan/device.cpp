@@ -723,12 +723,16 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         // saying "choose any size within [minImageExtent, maxImageExtent]". Use the
         // caller-supplied dimensions in that case, clamped to the allowed range.
         if (surfaceCapabilities.currentExtent.width == UINT32_MAX) {
+#ifndef __ANDROID__
             auto surfInfo2 = (LinuxSurfaceInfo *)pd;
             uint32_t w = surfInfo2->width  ? surfInfo2->width  : surfaceCapabilities.minImageExtent.width;
             uint32_t h = surfInfo2->height ? surfInfo2->height : surfaceCapabilities.minImageExtent.height;
             w = std::max(surfaceCapabilities.minImageExtent.width,  std::min(surfaceCapabilities.maxImageExtent.width,  w));
             h = std::max(surfaceCapabilities.minImageExtent.height, std::min(surfaceCapabilities.maxImageExtent.height, h));
             swapchainData.imageExtent = { w, h };
+#else
+            swapchainData.imageExtent = surfaceCapabilities.minImageExtent;
+#endif
         } else {
             swapchainData.imageExtent = surfaceCapabilities.currentExtent;
         }
