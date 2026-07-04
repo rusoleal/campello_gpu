@@ -86,13 +86,14 @@ void RenderPassEncoder::end() {
                              VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
     } else {
-        // Offscreen: transition to GENERAL so the image is readable for sampling/copy.
+        // Offscreen: transition to SHADER_READ_ONLY_OPTIMAL so the image can be
+        // sampled in the subsequent composite draw (createBindGroup sets this layout).
         barrier.image         = data->offscreenImage;
-        barrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-        barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        barrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         vkCmdPipelineBarrier(data->commandBuffer,
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 }

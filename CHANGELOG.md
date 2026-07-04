@@ -4,6 +4,30 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-04
+
+### Added
+
+- **[Vulkan] `DeviceData::gpu_mutex`** — `std::mutex` in `DeviceData` that serializes all `VkCommandPool` and `VkQueue` access across threads. `VkCommandPool` is not thread-safe; concurrent `vkAllocateCommandBuffers` / `vkFreeCommandBuffers` calls from the raster thread and the main thread previously caused undefined behaviour.
+
+### Fixed
+
+- **[Vulkan/Linux] Thread safety for queue and command pool operations** — `vkAllocateCommandBuffers`, `vkFreeCommandBuffers`, `vkQueueSubmit`, `vkQueuePresentKHR`, and `vkQueueWaitIdle` are now guarded by `gpu_mutex` in `Device::createCommandEncoder()`, both `Device::submit()` overloads, `Device::waitForIdle()`, `CommandBuffer::~CommandBuffer()`, `Texture::upload()`, and `Texture::download()`.
+
+- **[Vulkan] Double `vkAcquireNextImageKHR` per frame** — `CommandEncoderHandle` now tracks `swapchainImageAcquired`; `beginRenderPass()` skips the acquire on any call after the first within the same frame, preventing a hang when a frame encodes more than one render pass against the swapchain image.
+
+- **[Vulkan] Offscreen `TextureView` use-after-free** — `RenderPassEncoderHandle` now holds a `shared_ptr<void> offscreenViewRef` that keeps the caller's `TextureView` alive for the duration of the pass. Previously, destroying the `TextureView` on the CPU side while `vkCmdBeginRenderingKHR` still held the raw `VkImageView` handle triggered a validation error.
+
+- **[Vulkan] Offscreen image layout after render pass** — `RenderPassEncoder::end()` now transitions offscreen images to `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` (was `VK_IMAGE_LAYOUT_GENERAL`), matching the layout expected by `createBindGroup()` for subsequent texture sampling. The pipeline barrier destination stage is narrowed to `VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT`.
+
+- **[Vulkan/Linux] Dynamic rendering broken on Intel hasvk driver** — GPUs served by `libvulkan_intel_hasvk.so` (Gen8 BSW/HSW/BYT, Gen8LP CHV, Gen8 BDW) advertise Vulkan 1.3 but their dynamic rendering implementation is unreliable in practice. `createDevice()` now detects these devices by name and forces the traditional `vkCmdBeginRenderPass` / `vkCmdEndRenderPass` path regardless of API version.
+
+- **[Vulkan] Swapchain format preference** — the format selection loop now prefers `VK_FORMAT_B8G8R8A8_UNORM` / `VK_FORMAT_R8G8B8A8_UNORM` over the previous sRGB preference, consistent with the Metal backend and the UNORM pixel format used by campello_widgets for offscreen textures.
+
+- **[Vulkan] `VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT` on color render targets** — `TextureUsage::renderTarget` no longer adds `VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT` to color-format images. The flag is only valid for depth/stencil formats; including it on a color image caused `vkCreateImage` to fail on strict drivers.
+
+- **[Vulkan] Vertex input bindings and attributes silently ignored** — `Device::createRenderPipeline()` always passed `vertexBindingDescriptionCount = 0` and `vertexAttributeDescriptionCount = 0`, making vertex buffer data invisible to shaders. The descriptor now builds `VkVertexInputBindingDescription` and `VkVertexInputAttributeDescription` arrays from `RenderPipelineDescriptor::vertex.buffers`.
+
 ## [0.17.0] - 2026-06-30
 
 ### Added

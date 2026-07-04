@@ -5,9 +5,12 @@
 
 namespace systems::leal::campello_gpu {
 
+    struct DeviceData;  // Forward declaration
+
     struct CommandBufferHandle {
         VkDevice        device;
         VkCommandPool   commandPool;
+        DeviceData*     deviceData = nullptr;  // For gpu_mutex on vkFreeCommandBuffers
         VkCommandBuffer commandBuffer;
         VkQueue         graphicsQueue;
         VkSwapchainKHR  swapchain;

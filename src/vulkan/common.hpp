@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <atomic>
+#include <mutex>
 #include <vulkan/vulkan.h>
 #ifdef __ANDROID__
 #include <android/native_window.h>
@@ -96,6 +97,11 @@ namespace systems::leal::campello_gpu {
         // GPU timestamp query support
         VkQueryPool timestampQueryPool = VK_NULL_HANDLE;
         float timestampPeriod = 1.0f;  // From VkPhysicalDeviceLimits, in nanoseconds per tick
+
+        // Serializes access to commandPool and graphicsQueue across threads.
+        // VkCommandPool and VkQueue are not thread-safe; all allocate/free/submit
+        // calls must be guarded by this mutex.
+        std::mutex gpu_mutex;
     };
 
     /**

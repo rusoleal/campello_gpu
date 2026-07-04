@@ -1,5 +1,6 @@
 #include <campello_gpu/command_buffer.hpp>
 #include "command_buffer_handle.hpp"
+#include "common.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -21,7 +22,11 @@ CommandBuffer::~CommandBuffer() {
         vkDestroyFramebuffer(data->device, fb, nullptr);
     for (auto rp : data->transientRenderPasses)
         vkDestroyRenderPass(data->device, rp, nullptr);
-    vkFreeCommandBuffers(data->device, data->commandPool, 1, &data->commandBuffer);
+    {
+        std::unique_lock<std::mutex> lock;
+        if (data->deviceData) lock = std::unique_lock<std::mutex>(data->deviceData->gpu_mutex);
+        vkFreeCommandBuffers(data->device, data->commandPool, 1, &data->commandBuffer);
+    }
     delete data;
 }
 

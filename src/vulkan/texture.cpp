@@ -54,8 +54,12 @@ bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
     cbAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbAllocInfo.commandBufferCount = 1;
     VkCommandBuffer cmd;
-    if (vkAllocateCommandBuffers(handle->device, &cbAllocInfo, &cmd) != VK_SUCCESS)
-        return false;
+    {
+        std::unique_lock<std::mutex> lock;
+        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
+        if (vkAllocateCommandBuffers(handle->device, &cbAllocInfo, &cmd) != VK_SUCCESS)
+            return false;
+    }
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -134,10 +138,14 @@ bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
     submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers    = &cmd;
-    vkQueueSubmit(handle->graphicsQueue, 1, &submitInfo, fence);
-    vkWaitForFences(handle->device, 1, &fence, VK_TRUE, UINT64_MAX);
-    vkDestroyFence(handle->device, fence, nullptr);
-    vkFreeCommandBuffers(handle->device, handle->commandPool, 1, &cmd);
+    {
+        std::unique_lock<std::mutex> lock;
+        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
+        vkQueueSubmit(handle->graphicsQueue, 1, &submitInfo, fence);
+        vkWaitForFences(handle->device, 1, &fence, VK_TRUE, UINT64_MAX);
+        vkDestroyFence(handle->device, fence, nullptr);
+        vkFreeCommandBuffers(handle->device, handle->commandPool, 1, &cmd);
+    }
 
     return true;
 }
@@ -287,10 +295,14 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
     cbAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbAllocInfo.commandBufferCount = 1;
     VkCommandBuffer cmd;
-    if (vkAllocateCommandBuffers(handle->device, &cbAllocInfo, &cmd) != VK_SUCCESS) {
-        vkFreeMemory(handle->device, readbackMemory, nullptr);
-        vkDestroyBuffer(handle->device, readbackBuffer, nullptr);
-        return false;
+    {
+        std::unique_lock<std::mutex> lock;
+        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
+        if (vkAllocateCommandBuffers(handle->device, &cbAllocInfo, &cmd) != VK_SUCCESS) {
+            vkFreeMemory(handle->device, readbackMemory, nullptr);
+            vkDestroyBuffer(handle->device, readbackBuffer, nullptr);
+            return false;
+        }
     }
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -357,7 +369,11 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
     submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers    = &cmd;
-    vkQueueSubmit(handle->graphicsQueue, 1, &submitInfo, fence);
+    {
+        std::unique_lock<std::mutex> lock;
+        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
+        vkQueueSubmit(handle->graphicsQueue, 1, &submitInfo, fence);
+    }
     vkWaitForFences(handle->device, 1, &fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(handle->device, fence, nullptr);
 
@@ -368,7 +384,11 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
     vkUnmapMemory(handle->device, readbackMemory);
 
     // Cleanup.
-    vkFreeCommandBuffers(handle->device, handle->commandPool, 1, &cmd);
+    {
+        std::unique_lock<std::mutex> lock;
+        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
+        vkFreeCommandBuffers(handle->device, handle->commandPool, 1, &cmd);
+    }
     vkFreeMemory(handle->device, readbackMemory, nullptr);
     vkDestroyBuffer(handle->device, readbackBuffer, nullptr);
 

@@ -19,7 +19,8 @@ namespace systems::leal::campello_gpu
         VkSemaphore              renderFinishedSemaphore;
         std::vector<VkImage>     swapchainImages;
         std::vector<VkImageView> swapchainImageViews;
-        uint32_t                 currentImageIndex; ///< Set by beginRenderPass after acquire.
+        uint32_t                 currentImageIndex;       ///< Set by beginRenderPass after acquire.
+        bool                     swapchainImageAcquired = false; ///< True after the first acquire this frame.
         DeviceData*              deviceData = nullptr; ///< Back-pointer for updating shared state.
         // Staging resources (e.g. TLAS instance buffers) transferred to CommandBufferHandle in finish().
         std::vector<VkBuffer>       stagingBuffers;

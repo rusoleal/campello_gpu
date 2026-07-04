@@ -115,34 +115,46 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     if (!hasExplicitView && data->swapchain != VK_NULL_HANDLE) {
         // ── Swapchain path ────────────────────────────────────────────────────
         isSwapchain = true;
-        uint32_t imageIndex = 0;
 
-        VkResult acquireResult = vkAcquireNextImageKHR(
-            data->device, data->swapchain, UINT64_MAX,
-            data->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+        if (!data->swapchainImageAcquired) {
+            // First beginRenderPass this frame: acquire the swapchain image.
+            uint32_t imageIndex = 0;
 
-        if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-            if (data->deviceData) {
-                recreateSwapchain(data->deviceData);
+            VkResult acquireResult = vkAcquireNextImageKHR(
+                data->device, data->swapchain, UINT64_MAX,
+                data->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+            if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+                if (data->deviceData) {
+                    recreateSwapchain(data->deviceData);
+                }
+                return nullptr;
             }
-            return nullptr;
-        }
-        if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
-            return nullptr;
+            if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+                return nullptr;
+            }
+
+            data->currentImageIndex = imageIndex;
+            if (data->deviceData) {
+                data->deviceData->currentImageIndex = imageIndex;
+            }
+            data->swapchainImageAcquired = true;
         }
 
-        data->currentImageIndex = imageIndex;
-        if (data->deviceData) {
-            data->deviceData->currentImageIndex = imageIndex;
-        }
-        firstImage   = data->swapchainImages[imageIndex];
+        firstImage   = data->swapchainImages[data->currentImageIndex];
         renderExtent = data->imageExtent;
 
         if (!useTraditional) {
-            // Dynamic rendering: manually transition UNDEFINED → COLOR_ATTACHMENT_OPTIMAL.
+            // Dynamic rendering: transition the swapchain image to COLOR_ATTACHMENT_OPTIMAL.
+            // On the first pass this frame the image starts in UNDEFINED layout.
+            // On a restarted pass (e.g. after an offscreen sub-pass), render_pass_encoder::end()
+            // has already transitioned the image to PRESENT_SRC_KHR — use that as oldLayout.
+            const bool firstPass = descriptor.colorAttachments.empty()
+                                   || descriptor.colorAttachments[0].loadOp == LoadOp::clear;
             VkImageMemoryBarrier barrier{};
             barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.oldLayout           = firstPass ? VK_IMAGE_LAYOUT_UNDEFINED
+                                                    : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
             barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -151,7 +163,8 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             barrier.srcAccessMask       = VK_ACCESS_NONE;
             barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             vkCmdPipelineBarrier(data->commandBuffer,
-                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                 firstPass ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                           : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                  0, 0, nullptr, 0, nullptr, 1, &barrier);
         }
@@ -190,6 +203,12 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rpeHandle->currentSwapchainImage = isSwapchain ? firstImage : VK_NULL_HANDLE;
     rpeHandle->offscreenImage        = isSwapchain ? VK_NULL_HANDLE : firstImage;
     rpeHandle->offscreenExtent       = renderExtent;
+    // Keep the offscreen TextureView alive for the duration of the pass.
+    // vkCmdBeginRenderingKHR records the raw VkImageView; if the CPU-side
+    // TextureView is destroyed first the validation layer looks up a freed handle.
+    if (hasExplicitView) {
+        rpeHandle->offscreenViewRef = descriptor.colorAttachments[0].view;
+    }
     if (descriptor.occlusionQuerySet) {
         rpeHandle->queryPool = ((QuerySetHandle *)descriptor.occlusionQuerySet->native)->queryPool;
     }
@@ -736,6 +755,7 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     auto cbHandle                = new CommandBufferHandle();
     cbHandle->device             = data->device;
     cbHandle->commandPool        = data->commandPool;
+    cbHandle->deviceData         = data->deviceData;
     cbHandle->commandBuffer      = data->commandBuffer;
     cbHandle->graphicsQueue      = data->graphicsQueue;
     cbHandle->swapchain          = data->swapchain;

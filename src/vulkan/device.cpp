@@ -605,14 +605,23 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     }
     const bool rtSupported = hasAS && hasRTP && hasDHO;
 
-    const bool hasDynRenderSupport = isVulkan13 || hasDynRender;
+    // hasvk (Intel legacy driver for Gen8/BSW/HSW/BYT) reports Vulkan 1.3+ but its
+    // dynamic rendering implementation is broken in practice — force the traditional
+    // render pass path for any device served by this driver.
+    const bool isHasvk = (strstr(deviceProps.deviceName, "BSW") != nullptr)
+                      || (strstr(deviceProps.deviceName, "HSW") != nullptr)
+                      || (strstr(deviceProps.deviceName, "BYT") != nullptr)
+                      || (strstr(deviceProps.deviceName, "BDW") != nullptr)
+                      || (strstr(deviceProps.deviceName, "CHV") != nullptr)
+                      || (strstr(deviceProps.deviceName, "SKL") != nullptr && false); // placeholder
+    const bool hasDynRenderSupport = !isHasvk && (isVulkan13 || hasDynRender);
 
-    LOG_DEBUG("Vulkan %d.%d.%d — dynamic_rendering: %s (core13=%d, ext=%d)",
+    LOG_DEBUG("Vulkan %d.%d.%d — dynamic_rendering: %s (core13=%d, ext=%d, hasvk=%d)",
               VK_VERSION_MAJOR(deviceProps.apiVersion),
               VK_VERSION_MINOR(deviceProps.apiVersion),
               VK_VERSION_PATCH(deviceProps.apiVersion),
               hasDynRenderSupport ? "yes" : "NO (traditional render pass fallback)",
-              isVulkan13, hasDynRender);
+              isVulkan13, hasDynRender, (int)isHasvk);
 
     std::vector<const char *> deviceExtensions;
     if (surface != VK_NULL_HANDLE)
@@ -708,10 +717,12 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
                 count = std::min(count, surfaceCapabilities.maxImageCount);
             swapchainData.minImageCount = count;
         }
-        // Prefer sRGB formats for correct gamma presentation; fall back to first available.
+        // Prefer BGRA8/RGBA8 UNORM (linear) for consistency with the Metal backend
+        // and with the UNORM pixel format used by campello_widgets for offscreen
+        // textures.  Fall back to the first available format if UNORM is absent.
         chosenFormat = surfaceFormats[0];
         for (const auto &sf : surfaceFormats) {
-            if ((sf.format == VK_FORMAT_B8G8R8A8_SRGB || sf.format == VK_FORMAT_R8G8B8A8_SRGB)
+            if ((sf.format == VK_FORMAT_B8G8R8A8_UNORM || sf.format == VK_FORMAT_R8G8B8A8_UNORM)
                 && sf.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
                 chosenFormat = sf;
                 break;
@@ -933,7 +944,7 @@ std::shared_ptr<Texture> Device::createTexture(
     if ((int)usageMode & (int)TextureUsage::copyDst)
         imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if ((int)usageMode & (int)TextureUsage::renderTarget)
-        imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     if ((int)usageMode & (int)TextureUsage::storageBinding)
         imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
     if ((int)usageMode & (int)TextureUsage::textureBinding)
@@ -1540,14 +1551,49 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     dynamicState.dynamicStateCount = dynamicStates.size();
     dynamicState.pDynamicStates = dynamicStates.data();
 
+    auto vertexAttrFormat = [](ComponentType ct, AccessorType at) -> VkFormat {
+        if (ct == ComponentType::ctFloat) {
+            switch (at) {
+                case AccessorType::acScalar: return VK_FORMAT_R32_SFLOAT;
+                case AccessorType::acVec2:   return VK_FORMAT_R32G32_SFLOAT;
+                case AccessorType::acVec3:   return VK_FORMAT_R32G32B32_SFLOAT;
+                case AccessorType::acVec4:   return VK_FORMAT_R32G32B32A32_SFLOAT;
+                default:                     return VK_FORMAT_R32G32B32_SFLOAT;
+            }
+        }
+        return VK_FORMAT_R32G32B32_SFLOAT;
+    };
+
+    std::vector<VkVertexInputBindingDescription>   vkBindings;
+    std::vector<VkVertexInputAttributeDescription> vkAttributes;
+    for (uint32_t slot = 0; slot < descriptor.vertex.buffers.size(); ++slot) {
+        const auto& layout = descriptor.vertex.buffers[slot];
+        VkVertexInputBindingDescription bd{};
+        bd.binding   = slot;
+        bd.stride    = static_cast<uint32_t>(layout.arrayStride);
+        bd.inputRate = (layout.stepMode == StepMode::instance)
+                       ? VK_VERTEX_INPUT_RATE_INSTANCE
+                       : VK_VERTEX_INPUT_RATE_VERTEX;
+        vkBindings.push_back(bd);
+
+        for (const auto& attr : layout.attributes) {
+            VkVertexInputAttributeDescription ad{};
+            ad.location = attr.shaderLocation;
+            ad.binding  = slot;
+            ad.format   = vertexAttrFormat(attr.componentType, attr.accessorType);
+            ad.offset   = attr.offset;
+            vkAttributes.push_back(ad);
+        }
+    }
+
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertexInputInfo.pNext = nullptr;
     vertexInputInfo.flags = 0;
-    vertexInputInfo.vertexBindingDescriptionCount = 0;
-    vertexInputInfo.vertexAttributeDescriptionCount = 0;
-    vertexInputInfo.pVertexAttributeDescriptions = nullptr;
-    vertexInputInfo.pVertexBindingDescriptions = nullptr;
+    vertexInputInfo.vertexBindingDescriptionCount   = static_cast<uint32_t>(vkBindings.size());
+    vertexInputInfo.pVertexBindingDescriptions      = vkBindings.empty()   ? nullptr : vkBindings.data();
+    vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(vkAttributes.size());
+    vertexInputInfo.pVertexAttributeDescriptions    = vkAttributes.empty() ? nullptr : vkAttributes.data();
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -1842,8 +1888,11 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     info.commandBufferCount = 1;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
-    if (vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer) != VK_SUCCESS) {
-        return nullptr;
+    {
+        std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
+        if (vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer) != VK_SUCCESS) {
+            return nullptr;
+        }
     }
 
     auto toReturn = new CommandEncoderHandle();
@@ -2323,26 +2372,29 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
     }
 
-    if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-        return;
-    }
-
-    if (cbHandle->hasSwapchain) {
-        VkPresentInfoKHR presentInfo{};
-        presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores    = &deviceData->renderFinishedSemaphore;
-        presentInfo.swapchainCount     = 1;
-        presentInfo.pSwapchains        = &deviceData->swapchain;
-        presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
-        VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-            recreateSwapchain(deviceData);
+    {
+        std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
+        if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+            return;
         }
-    }
 
-    // Wait for the frame to finish before the caller can reuse the command buffer.
-    vkQueueWaitIdle(deviceData->graphicsQueue);
+        if (cbHandle->hasSwapchain) {
+            VkPresentInfoKHR presentInfo{};
+            presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores    = &deviceData->renderFinishedSemaphore;
+            presentInfo.swapchainCount     = 1;
+            presentInfo.pSwapchains        = &deviceData->swapchain;
+            presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
+            VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
+            if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+                recreateSwapchain(deviceData);
+            }
+        }
+
+        // Wait for the frame to finish before the caller can reuse the command buffer.
+        vkQueueWaitIdle(deviceData->graphicsQueue);
+    }
     deviceData->commandsSubmitted++;
 }
 
@@ -2374,25 +2426,27 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     }
 
     VkFence submitFence = fenceData ? fenceData->fence : VK_NULL_HANDLE;
-    if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
-        return;
-    }
+    {
+        std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
+        if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
+            return;
+        }
 
-    if (cbHandle->hasSwapchain) {
-        VkPresentInfoKHR presentInfo{};
-        presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores    = &deviceData->renderFinishedSemaphore;
-        presentInfo.swapchainCount     = 1;
-        presentInfo.pSwapchains        = &deviceData->swapchain;
-        presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
+        if (cbHandle->hasSwapchain) {
+            VkPresentInfoKHR presentInfo{};
+            presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores    = &deviceData->renderFinishedSemaphore;
+            presentInfo.swapchainCount     = 1;
+            presentInfo.pSwapchains        = &deviceData->swapchain;
+            presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
 
-        VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-            recreateSwapchain(deviceData);
+            VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
+            if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+                recreateSwapchain(deviceData);
+            }
         }
     }
-
     // NOTE: intentionally NOT calling vkQueueWaitIdle — caller waits on fence.
     deviceData->commandsSubmitted++;
 }
@@ -2416,6 +2470,7 @@ std::shared_ptr<Fence> Device::createFence() {
 
 void Device::waitForIdle() {
     auto deviceData = (DeviceData *)this->native;
+    std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
     vkQueueWaitIdle(deviceData->graphicsQueue);
 }
 
