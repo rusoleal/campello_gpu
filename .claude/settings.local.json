@@ -57,7 +57,27 @@
       "Bash(spirv-cross --output /dev/stdout /Users/rubenleal/Documents/GitHub/campello_gpu/examples/android/app/src/main/assets/shader.spv)",
       "Bash(xxd /home/ruben/repos/campello_gpu/examples/android/app/src/main/assets/shader.spv)",
       "Bash(xxd -i /home/ruben/repos/campello_gpu/examples/android/app/src/main/assets/shader.spv)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(brew list *)",
+      "Bash(brew --version)",
+      "Bash(clang++ -std=c++17 -fsyntax-only -DCAMPELLO_GPU_X11=0 -DCAMPELLO_GPU_WAYLAND=0 -I inc -I src/vulkan -I /tmp -I /tmp/vk_headers src/vulkan/adapter.cpp)",
+      "Bash(clang++ -std=c++17 -fsyntax-only -DCAMPELLO_GPU_X11=0 -DCAMPELLO_GPU_WAYLAND=0 -I inc -I src/vulkan -I /tmp -I /tmp/vk_headers src/vulkan/device.cpp)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:developer.chrome.com)",
+      "Bash(cp /Users/rubenleal/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/vulkan/*.h /tmp/vk_headers/vulkan/)",
+      "Bash(cp -r /Users/rubenleal/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/sysroot/usr/include/vk_video /tmp/vk_headers/)",
+      "Bash(clang++ -std=c++17 -fsyntax-only -DCAMPELLO_GPU_X11=0 -DCAMPELLO_GPU_WAYLAND=0 -I inc -I src/vulkan -I /tmp -I /tmp/vk_headers src/vulkan/fence.cpp)",
+      "Bash(grep *)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(clang++ -std=c++20 -Iinc -Ibuild -c /private/tmp/claude-501/-Users-rubenleal-Documents-GitHub-campello-gpu/7ad0b2ed-36c3-4f02-8b67-6a033d609f5b/scratchpad/check_coopmat_props.cpp -o /tmp/check_coopmat_props.o)",
+      "Bash(clang++ /tmp/check_coopmat_props.o -Lbuild -lcampello_gpu -o /tmp/check_coopmat_props -Wl,-rpath,build)",
+      "Bash(/tmp/check_coopmat_props)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "WebFetch(domain:metalbyexample.com)",
+      "Bash(clang++ -std=c++20 -fsyntax-only -I inc -I __TRACKED_VAR__/usr/include -I __TRACKED_VAR__/usr/include/aarch64-linux-android -DVK_USE_PLATFORM_ANDROID_KHR src/vulkan/adapter.cpp)",
+      "Bash(DYLD_LIBRARY_PATH=. /tmp/check_features)"
     ]
   }
 }

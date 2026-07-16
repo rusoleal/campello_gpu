@@ -242,6 +242,13 @@ std::set<Feature> Device::getFeatures() {
         if (dev->depth24Stencil8PixelFormatSupported())
             toReturn.insert(Feature::depth24Stencil8PixelFormat);
     }
+
+    // See Adapter::getFeatures() in src/metal/adapter.cpp for why these two are
+    // unconditional/family-gated the way they are.
+    toReturn.insert(Feature::fp16);
+    if (dev->supportsFamily(MTL::GPUFamilyApple6))
+        toReturn.insert(Feature::subgroupOperations);
+
     return toReturn;
 }
 

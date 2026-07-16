@@ -24,5 +24,17 @@ std::set<Feature> Adapter::getFeatures() {
             toReturn.insert(Feature::depth24Stencil8PixelFormat);
     }
 
+    // `half` is a native MSL scalar type on every Metal-capable device (has been
+    // since MSL 1.0) — there is no MTLDevice capability query for it because
+    // there's nothing to gate.
+    toReturn.insert(Feature::fp16);
+
+    // Full SIMD-group functions (simd_shuffle/simd_ballot/simd_sum etc., as
+    // opposed to the more limited quad-group functions available on older
+    // hardware) require GPUFamilyApple6+ — same bar as cooperativeMatrix above,
+    // and for the same reason (both landed with the same GPU generation).
+    if (dev->supportsFamily(MTL::GPUFamilyApple6))
+        toReturn.insert(Feature::subgroupOperations);
+
     return toReturn;
 }

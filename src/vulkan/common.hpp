@@ -47,6 +47,12 @@ namespace systems::leal::campello_gpu {
         bool cooperativeMatrixEnabled = false;
         std::vector<VkCooperativeMatrixPropertiesKHR> cooperativeMatrixProperties;
 
+        // shaderFloat16 (VK_KHR_shader_float16_int8 / core 1.2): whether the
+        // VkPhysicalDeviceShaderFloat16Int8Features::shaderFloat16 feature was
+        // actually enabled at device creation. Cached so Device::getFeatures()
+        // reflects what was enabled, not just what the hardware could support.
+        bool fp16Enabled = false;
+
         // Traditional render pass fallback (used when hasDynamicRendering == false)
         VkRenderPass               swapchainRenderPassClear = VK_NULL_HANDLE;
         VkRenderPass               swapchainRenderPassLoad  = VK_NULL_HANDLE;

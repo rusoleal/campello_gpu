@@ -4,6 +4,24 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-16
+
+### Added
+
+- **[Vulkan/Metal] `Feature::cooperativeMatrix`** — hardware-accelerated small-tile matrix multiply-accumulate detection, wired into both `Adapter::getFeatures()` and `Device::getFeatures()`. Metal gates on `MTL::GPUFamilyApple6`; Vulkan gates on `VK_KHR_cooperative_matrix` plus its `shaderFloat16`/Vulkan-1.2 dependency, and enables `VkPhysicalDeviceCooperativeMatrixFeaturesKHR` at device creation (generalizing the existing raytracing `pNext` chain so both can coexist). DirectX and WebGPU do not implement cooperative matrix yet — researched and deferred, see `TODO.md`.
+
+- **`CooperativeMatrixComponentType` / `CooperativeMatrixProperties` / `Device::getCooperativeMatrixProperties()`** — lets callers query the actual supported `(MSize, NSize, KSize, AType, BType, CType, ResultType)` tile shapes before compiling/dispatching a cooperative-matrix kernel, instead of relying on a bare feature flag. Vulkan returns real queried tuples (via `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`); Metal/DirectX/WebGPU return an empty vector (Metal has no runtime shape query at all — shapes are fixed by MSL template parameters at shader-compile time).
+
+- **`Fence::didFail()` / `Fence::failureReason()`** on Vulkan and DirectX (previously Metal-only, via `MTLCommandBuffer::status()`). Vulkan detects `VK_ERROR_DEVICE_LOST`; DirectX detects `GetCompletedValue() == UINT64_MAX` plus `GetDeviceRemovedReason()`. Both are coarser than Metal (whole-device loss, not per-submission failure).
+
+- **[Vulkan/Metal/DirectX/WebGPU] `Feature::fp16` / `Feature::subgroupOperations`** — two new boolean capability flags. `fp16`: Vulkan `shaderFloat16` (queried and actually enabled at device creation), Metal (unconditional — native MSL `half` type on every device), DirectX `Native16BitShaderOpsSupported`, WebGPU `shader-f16`. `subgroupOperations`: Vulkan subgroup basic+ballot+arithmetic support in the compute stage, Metal gated on `MTL::GPUFamilyApple6` (same bar as `cooperativeMatrix`), DirectX `WaveOps`, WebGPU `subgroups`.
+
+### Fixed
+
+- **[Vulkan] `Fence::wait()` / `isSignaled()`** — only checked `VK_SUCCESS`, so a lost device was treated as "never signaled," letting callers spin/hang forever. Now also detects `VK_ERROR_DEVICE_LOST`.
+
+- **[Vulkan] `Device::getFeatures()` missing `Feature::raytracing`** — only `Adapter::getFeatures()` inserted it, even though `DeviceData::rayTracingEnabled` was already tracked and available in that function; every Vulkan ray tracing integration test was silently skipping as a result.
+
 ## [0.18.0] - 2026-07-04
 
 ### Added

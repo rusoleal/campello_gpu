@@ -379,6 +379,119 @@
       before trusting this for anything real, given how easily "compiles but doesn't
       actually run" surfaced during this session's Metal investigation
 
+## fp16 / Subgroup Operations Features
+
+> Two new boolean `Feature` flags, researched (session 2026-07-16, via web search —
+> not from memory) as a follow-up to the cooperative-matrix work above, which
+> raised the question of what else could be exposed the same way. `int8` and
+> `int4` were considered and dropped: `int8` has no clean per-backend capability
+> query verified this session (Metal in particular has no advertised "int8
+> compute" flag), and `int4` isn't a real standalone shader capability on any
+> backend today — it only shows up as a cooperative-matrix component type, so it
+> belongs in `CooperativeMatrixComponentType` if a backend ever supports it, not
+> as a top-level `Feature`.
+
+### Constants & Enums
+- [x] Add `Feature::fp16` and `Feature::subgroupOperations` to
+      `inc/campello_gpu/constants/feature.hpp`, right after `cooperativeMatrix`.
+
+### Vulkan Backend (`src/vulkan/`)
+- [x] `fp16`: query `VkPhysicalDeviceShaderFloat16Int8Features::shaderFloat16` via
+      `vkGetPhysicalDeviceFeatures2`, gated on the same extension-or-1.2-core
+      check already computed for cooperative matrix (`hasFloat16Int8 ||
+      isVulkan12Plus`) — presence of the extension only means the struct is
+      meaningful to query, not that the bit is set. Enabled at device creation
+      by generalizing the existing pNext chain further (fp16 → coopMat → RT →
+      dynamic rendering), independent of whether coopMat itself is supported.
+      Cached on `DeviceData::fp16Enabled` (new field) since it needs an actual
+      enable step, mirroring `cooperativeMatrixEnabled`. Wired into both
+      `Adapter::getFeatures()` and `Device::getFeatures()`.
+- [x] `subgroupOperations`: query `VkPhysicalDeviceSubgroupProperties` via
+      `vkGetPhysicalDeviceProperties2` (core since Vulkan 1.1, no device-creation
+      enable step needed, unlike fp16) — require `VK_SHADER_STAGE_COMPUTE_BIT` in
+      `supportedStages` plus `BASIC | BALLOT | ARITHMETIC` in
+      `supportedOperations`, the minimum set that makes the flag actually useful
+      for a compute kernel rather than a bare "subgroups exist" signal. Queried
+      fresh in both `getFeatures()` calls (not cached — nothing to cache, same
+      as the existing `bcTextureCompression`/`etc2`/`astc`/`geometryShader`
+      checks).
+- [x] **Verified via `-fsyntax-only` against real Vulkan headers** (Android NDK
+      27.0.12077973's bundled `vulkan_core.h`, targeting
+      `aarch64-linux-android24`) — both `src/vulkan/adapter.cpp` and
+      `src/vulkan/device.cpp` compile clean with these changes. Same caveat as
+      the cooperative-matrix work: no real Vulkan driver available on this dev
+      machine to verify `vkCreateDevice`/the actual runtime values beyond
+      type-correctness.
+
+### Metal Backend (`src/metal/`)
+- [x] `fp16`: inserted unconditionally — `half` is a native MSL scalar type on
+      every Metal-capable device since MSL 1.0, so there's no `MTLDevice`
+      capability query for it (nothing to gate).
+- [x] `subgroupOperations`: gated on `supportsFamily(MTL::GPUFamilyApple6)` —
+      same bar as `Feature::cooperativeMatrix`, and for a defensible reason:
+      web research this session (Apple Developer Forums thread on SIMD-group
+      shuffle availability, cross-checked against a WWDC "Metal Enhancements"
+      writeup) indicates *full* SIMD-group functions (`simd_shuffle`,
+      `simd_ballot`, arithmetic reductions) — as opposed to the more limited
+      quad-group functions available since Apple4/A11 — require Apple6+. Did
+      **not** additionally gate on `GPUFamilyMac2` (Intel/AMD Macs): general
+      knowledge suggests Metal-2-era Mac GPUs support SIMD-group functions too,
+      but that specific claim wasn't independently confirmed this session, and
+      given this repo's own real Metal test hardware is an Intel Mac, a wrong
+      positive there would be a live bug, not a theoretical one. Revisit with a
+      confirmed source if Intel/AMD Mac subgroup support turns out to matter.
+- [x] **Verified end-to-end via a real build+link+run on this session's Intel
+      UHD 630** (same machine the cooperative-matrix work used): `fp16` reports
+      `YES`, `subgroupOperations` reports `no` — matching `cooperativeMatrix`'s
+      `no` on the same hardware and confirming the family gate is real, not a
+      blanket flag, while `raytracing`/`bcTextureCompression` still correctly
+      report `YES` alongside it.
+
+### DirectX 12 Backend (`src/directx/`)
+- [x] `fp16`: `D3D12_FEATURE_DATA_D3D12_OPTIONS4::Native16BitShaderOpsSupported`
+      via `CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, ...)`.
+- [x] `subgroupOperations`: `D3D12_FEATURE_DATA_D3D12_OPTIONS1::WaveOps` via
+      `CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, ...)`. No
+      device-creation enable step exists for either in D3D12 — `CheckFeatureSupport`
+      is query-only. Field names confirmed via Microsoft Learn docs (web search,
+      not memory) rather than assumed.
+      **Not build-verified** — no Windows machine or D3D12 headers available
+      this session (same limitation noted throughout the DirectX sections
+      above); struct/field names are correct per current MS documentation but
+      the actual `CheckFeatureSupport` call path is unverified against a real
+      driver.
+
+### WebGPU Backend (`src/webgpu/`)
+- [x] `fp16` → `WGPUFeatureName_ShaderF16`, `subgroupOperations` →
+      `WGPUFeatureName_Subgroups`, both via the existing `wgpuDeviceHasFeature`
+      pattern already used for BC/ETC2/ASTC in `Device::getFeatures()`.
+      **Correction to an assumption from the cooperative-matrix session's own
+      TODO notes above**: those notes mention "the now-standardized plain
+      `subgroups` feature" in passing while confirming *subgroup-matrix* is
+      still unshipped — this session confirmed that detail directly: `subgroups`
+      shipped in Chrome 134 (Feb 2025) and is requestable as a required device
+      feature as of Chrome 145 (Jan 2026). `shader-f16` has shipped even
+      longer. Unlike cooperative matrix, both are real, queryable, shippable
+      WebGPU features today.
+      Left `Adapter::getFeatures()` untouched — it's a pre-existing stub (its
+      `native` is always `nullptr`, never populated by `getAdapters()`, so it
+      already hardcodes a fixed feature set rather than querying anything, for
+      every feature, not just these two). Note also that WebGPU device
+      creation in this backend goes through `emscripten_webgpu_get_device()`,
+      i.e. the JS-side `requestDevice()` call the host page makes — this C++
+      code has no control over which features actually got negotiated, exactly
+      like the existing BC/ETC2/ASTC checks; `wgpuDeviceHasFeature()` will
+      correctly report `false` for either flag if the host page's JS didn't
+      request them.
+      **Not build-verified** — no Emscripten toolchain or `webgpu.h` available
+      on this dev machine.
+
+### Tests & Examples
+- [ ] Add unit tests covering `Feature::fp16`/`Feature::subgroupOperations`
+      detection and graceful skip when absent, mirroring
+      `tests/platform/test_raytracing.cpp`'s precedent (same gap already open
+      for `Feature::cooperativeMatrix` above).
+
 ## Public API / headers
 
 - [x] **Cubemap texture support** — `TextureType::ttCube` and `TextureType::ttCubeArray` added to public enum

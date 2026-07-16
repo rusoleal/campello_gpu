@@ -612,6 +612,19 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     // as of Vulkan 1.2 — on a 1.2+ driver that dependency won't show up as an extension.
     const bool coopMatSupported = hasCoopMat && (hasFloat16Int8 || isVulkan12Plus);
 
+    // shaderFloat16 is independent of cooperative matrix — query the actual feature
+    // bit rather than assuming extension/1.2-core presence implies it's set.
+    bool fp16Supported = false;
+    if (hasFloat16Int8 || isVulkan12Plus) {
+        VkPhysicalDeviceShaderFloat16Int8Features float16Int8Query{};
+        float16Int8Query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        VkPhysicalDeviceFeatures2 features2Query{};
+        features2Query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        features2Query.pNext = &float16Int8Query;
+        vkGetPhysicalDeviceFeatures2(gpu, &features2Query);
+        fp16Supported = float16Int8Query.shaderFloat16;
+    }
+
     // "Supported" isn't enough to safely emit a cooperative-matrix kernel — query the
     // actual (MSize,NSize,KSize,AType,BType,CType,ResultType) tuples this physical
     // device exposes. This only needs the VkPhysicalDevice, so it's done here rather
@@ -661,10 +674,11 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     }
     if (coopMatSupported) {
         deviceExtensions.push_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
-        // Only needed as an explicit extension pre-1.2; core afterwards.
-        if (!isVulkan12Plus)
-            deviceExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
     }
+    // Only needed as an explicit extension pre-1.2; core afterwards. Shared between
+    // cooperative matrix and fp16 since both depend on the same feature struct.
+    if ((coopMatSupported || fp16Supported) && !isVulkan12Plus)
+        deviceExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
 
     float priority = 1.0;
     VkDeviceQueueCreateInfo queueCreateInfo{};
@@ -699,13 +713,21 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     coopMatFeatures.sType             = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
     coopMatFeatures.cooperativeMatrix = VK_TRUE;
 
+    // shaderFloat16 feature — independent of cooperative matrix, only attached
+    // when actually supported (see fp16Supported above).
+    VkPhysicalDeviceShaderFloat16Int8Features float16Int8Features{};
+    float16Int8Features.sType        = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+    float16Int8Features.shaderFloat16 = VK_TRUE;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 
-    // Build the chain tail-first: coopMat (if any) sits at the end, RT features
-    // (if any) point to it instead of leaving pNext null, and dynamic rendering
-    // (if any) points to whatever RT/coopMat chain resulted.
-    void *chainTail = coopMatSupported ? (void *)&coopMatFeatures : nullptr;
+    // Build the chain tail-first: fp16 (if any) sits at the very end, coopMat (if
+    // any) points to it, RT features (if any) point to whatever resulted, and
+    // dynamic rendering (if any) points to whatever RT/coopMat/fp16 chain resulted.
+    void *chainTail = fp16Supported ? (void *)&float16Int8Features : nullptr;
+    coopMatFeatures.pNext = chainTail;
+    if (coopMatSupported) chainTail = &coopMatFeatures;
     bdaFeatures.pNext = chainTail;
     if (rtSupported) chainTail = &rtpFeatures;
 
@@ -915,6 +937,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->rayTracingEnabled        = rtSupported;
     deviceData->cooperativeMatrixEnabled = coopMatSupported;
     deviceData->cooperativeMatrixProperties = std::move(coopMatProperties);
+    deviceData->fp16Enabled               = fp16Supported;
     deviceData->surface                  = surface;
     deviceData->swapchain                = swapchain;
     deviceData->imageExtent              = imageExtent;
@@ -1274,6 +1297,28 @@ std::set<Feature> Device::getFeatures()
     if (deviceData->cooperativeMatrixEnabled)
     {
         toReturn.insert(Feature::cooperativeMatrix);
+    }
+
+    if (deviceData->fp16Enabled)
+    {
+        toReturn.insert(Feature::fp16);
+    }
+
+    // Subgroup operations need no device-creation enable step (core since Vulkan
+    // 1.1) — query the live supportedOperations bitmask rather than caching it,
+    // matching the bcTextureCompression/etc2/astc/geometryShader style above.
+    VkPhysicalDeviceSubgroupProperties subgroupProps{};
+    subgroupProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+    VkPhysicalDeviceProperties2 subgroupProps2{};
+    subgroupProps2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    subgroupProps2.pNext = &subgroupProps;
+    vkGetPhysicalDeviceProperties2(deviceData->physicalDevice, &subgroupProps2);
+    constexpr VkSubgroupFeatureFlags kRequiredSubgroupOps =
+        VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+    if ((subgroupProps.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+        (subgroupProps.supportedOperations & kRequiredSubgroupOps) == kRequiredSubgroupOps)
+    {
+        toReturn.insert(Feature::subgroupOperations);
     }
 
     return toReturn;

@@ -169,6 +169,17 @@ std::set<Feature> Device::getFeatures() {
             features.insert(Feature::etc2TextureCompression);
         if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_TextureCompressionASTC))
             features.insert(Feature::astcTextureCompression);
+        // Unlike cooperative/subgroup-matrix (still unshipped — see
+        // Adapter::getFeatures() and TODO.md), plain "shader-f16" and
+        // "subgroups" are both standardized, shipping WebGPU features
+        // (confirmed via web search, not memory: shader-f16 has been available
+        // since early WebGPU implementations; subgroups shipped in Chrome 134,
+        // Feb 2025, and is requestable as a required device feature as of
+        // Chrome 145).
+        if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_ShaderF16))
+            features.insert(Feature::fp16);
+        if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_Subgroups))
+            features.insert(Feature::subgroupOperations);
     }
 
     return features;

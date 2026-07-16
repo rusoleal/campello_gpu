@@ -447,6 +447,20 @@ std::set<Feature> Device::getFeatures() {
     if (fmt.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D)
         features.insert(Feature::bcTextureCompression);
 
+    D3D12_FEATURE_DATA_D3D12_OPTIONS1 opts1 = {};
+    if (SUCCEEDED(d->device->CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS1, &opts1, sizeof(opts1)))) {
+        if (opts1.WaveOps)
+            features.insert(Feature::subgroupOperations);
+    }
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS4 opts4 = {};
+    if (SUCCEEDED(d->device->CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS4, &opts4, sizeof(opts4)))) {
+        if (opts4.Native16BitShaderOpsSupported)
+            features.insert(Feature::fp16);
+    }
+
     return features;
 }
 

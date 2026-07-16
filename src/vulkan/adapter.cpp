@@ -59,5 +59,37 @@ std::set<Feature> Adapter::getFeatures() {
     if (hasCoopMat && (hasFloat16Int8 || isVulkan12Plus))
         features.insert(Feature::cooperativeMatrix);
 
+    // shaderFloat16 lives behind the same extension/1.2-core dependency as
+    // cooperative matrix above, but is its own independent feature bit — query
+    // the actual VkPhysicalDeviceShaderFloat16Int8Features::shaderFloat16 value
+    // rather than assuming presence of the extension implies it's set.
+    if (hasFloat16Int8 || isVulkan12Plus) {
+        VkPhysicalDeviceShaderFloat16Int8Features float16Int8Features{};
+        float16Int8Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        VkPhysicalDeviceFeatures2 features2{};
+        features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        features2.pNext = &float16Int8Features;
+        vkGetPhysicalDeviceFeatures2(gpu, &features2);
+        if (float16Int8Features.shaderFloat16)
+            features.insert(Feature::fp16);
+    }
+
+    // Subgroup operations are core since Vulkan 1.1 (no extension/enable step
+    // needed) — query VkPhysicalDeviceSubgroupProperties for the actual
+    // supportedOperations bitmask rather than assuming 1.1+ implies everything.
+    // Require basic + ballot + arithmetic in the compute stage: the minimum set
+    // that makes "subgroup operations" actually useful for a compute kernel.
+    VkPhysicalDeviceSubgroupProperties subgroupProps{};
+    subgroupProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+    VkPhysicalDeviceProperties2 subgroupProps2{};
+    subgroupProps2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    subgroupProps2.pNext = &subgroupProps;
+    vkGetPhysicalDeviceProperties2(gpu, &subgroupProps2);
+    constexpr VkSubgroupFeatureFlags kRequiredSubgroupOps =
+        VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+    if ((subgroupProps.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+        (subgroupProps.supportedOperations & kRequiredSubgroupOps) == kRequiredSubgroupOps)
+        features.insert(Feature::subgroupOperations);
+
     return features;
 }
