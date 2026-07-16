@@ -169,17 +169,21 @@ std::set<Feature> Device::getFeatures() {
             features.insert(Feature::etc2TextureCompression);
         if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_TextureCompressionASTC))
             features.insert(Feature::astcTextureCompression);
-        // Unlike cooperative/subgroup-matrix (still unshipped — see
-        // Adapter::getFeatures() and TODO.md), plain "shader-f16" and
-        // "subgroups" are both standardized, shipping WebGPU features
-        // (confirmed via web search, not memory: shader-f16 has been available
-        // since early WebGPU implementations; subgroups shipped in Chrome 134,
-        // Feb 2025, and is requestable as a required device feature as of
-        // Chrome 145).
+        // "shader-f16" is a standardized, shipping WebGPU feature (confirmed via
+        // web search, not memory — has been available since early WebGPU
+        // implementations) and its enum is present in Emscripten's bundled
+        // webgpu.h, so it's queryable here.
         if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_ShaderF16))
             features.insert(Feature::fp16);
-        if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_Subgroups))
-            features.insert(Feature::subgroupOperations);
+        // Feature::subgroupOperations intentionally NOT queried here: plain
+        // "subgroups" (as opposed to subgroup-matrix, which is still unshipped
+        // — see Adapter::getFeatures() above and TODO.md) did ship in Chrome 134
+        // (Feb 2025) and is a real WGPUFeatureName in Dawn's own headers, but
+        // the build-wasm CI job caught this session (2026-07-16): Emscripten
+        // SDK 3.1.74's bundled webgpu.h does not define
+        // WGPUFeatureName_Subgroups at all, so referencing it is a compile
+        // error against this project's actual toolchain, not just a runtime
+        // false-negative. Revisit once Emscripten's vendored header catches up.
     }
 
     return features;

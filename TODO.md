@@ -75,6 +75,14 @@
       and built with the same NDK (27.0.12077973), `ANDROID_ABI=arm64-v8a`,
       `ANDROID_PLATFORM=android-28` as the CI job — confirmed the undefined-symbol link
       error with the old code, then confirmed a clean link after the fix.
+- [x] **[WebGPU]** `build-wasm` CI job failing (caught via job log, session 2026-07-16):
+      `error: use of undeclared identifier 'WGPUFeatureName_Subgroups'` in
+      `src/webgpu/device.cpp:181`. See the WebGPU Backend subsection under
+      "fp16 / Subgroup Operations Features" above for the full root-cause
+      writeup and fix (Emscripten 3.1.74's bundled `webgpu.h` doesn't define
+      this enumerator). Verified by installing the exact CI Emscripten
+      version locally and reproducing `emcmake cmake` + `cmake --build` —
+      confirmed the compile error before the fix and a clean build after.
 
 ## Missing implementations — Vulkan/Android
 
@@ -477,29 +485,41 @@
       driver.
 
 ### WebGPU Backend (`src/webgpu/`)
-- [x] `fp16` → `WGPUFeatureName_ShaderF16`, `subgroupOperations` →
-      `WGPUFeatureName_Subgroups`, both via the existing `wgpuDeviceHasFeature`
+- [x] `fp16` → `WGPUFeatureName_ShaderF16` via the existing `wgpuDeviceHasFeature`
       pattern already used for BC/ETC2/ASTC in `Device::getFeatures()`.
-      **Correction to an assumption from the cooperative-matrix session's own
-      TODO notes above**: those notes mention "the now-standardized plain
-      `subgroups` feature" in passing while confirming *subgroup-matrix* is
-      still unshipped — this session confirmed that detail directly: `subgroups`
-      shipped in Chrome 134 (Feb 2025) and is requestable as a required device
-      feature as of Chrome 145 (Jan 2026). `shader-f16` has shipped even
-      longer. Unlike cooperative matrix, both are real, queryable, shippable
-      WebGPU features today.
       Left `Adapter::getFeatures()` untouched — it's a pre-existing stub (its
       `native` is always `nullptr`, never populated by `getAdapters()`, so it
       already hardcodes a fixed feature set rather than querying anything, for
-      every feature, not just these two). Note also that WebGPU device
-      creation in this backend goes through `emscripten_webgpu_get_device()`,
-      i.e. the JS-side `requestDevice()` call the host page makes — this C++
-      code has no control over which features actually got negotiated, exactly
-      like the existing BC/ETC2/ASTC checks; `wgpuDeviceHasFeature()` will
-      correctly report `false` for either flag if the host page's JS didn't
-      request them.
-      **Not build-verified** — no Emscripten toolchain or `webgpu.h` available
-      on this dev machine.
+      every feature, not just this one). Note also that WebGPU device creation
+      in this backend goes through `emscripten_webgpu_get_device()`, i.e. the
+      JS-side `requestDevice()` call the host page makes — this C++ code has no
+      control over which features actually got negotiated, exactly like the
+      existing BC/ETC2/ASTC checks; `wgpuDeviceHasFeature()` will correctly
+      report `false` if the host page's JS didn't request it.
+- [x] **`Feature::subgroupOperations` was attempted the same way
+      (`WGPUFeatureName_Subgroups`) and had to be reverted — build-wasm CI
+      caught a real compile error** (session 2026-07-16): `use of undeclared
+      identifier 'WGPUFeatureName_Subgroups'` in `src/webgpu/device.cpp:181`.
+      This corrects an over-confident claim from earlier the same session: it's
+      true that plain `subgroups` (as opposed to subgroup-matrix, still
+      unshipped — see above) is a real, standardized, shipped WebGPU feature
+      and a real `WGPUFeatureName` in Dawn's own headers, shipped in Chrome 134
+      (Feb 2025) — but **this project's actual toolchain, Emscripten SDK
+      3.1.74, bundles a `webgpu.h` that predates that enumerator entirely**
+      (confirmed by fetching `system/include/webgpu/webgpu.h` at the exact
+      `3.1.74` tag: `WGPUFeatureName_ShaderF16` is present, nothing containing
+      "Subgroup" is). Not a runtime false-negative — a hard compile error
+      regardless of which browser the output ultimately runs in. Reverted to
+      not querying this feature on WebGPU at all, with a comment explaining
+      why (mirrors the DirectX/WebGPU cooperative-matrix deferrals above).
+      Revisit once Emscripten's vendored header catches up to Dawn.
+- [x] **Build-verified for real** (session 2026-07-16, after the above fix):
+      installed Emscripten SDK 3.1.74 locally (the exact version
+      `build-wasm` CI uses via `mymindstorm/setup-emsdk@v14`) and ran the
+      same `emcmake cmake -B build -S . -DCMAKE_BUILD_TYPE=Release` +
+      `cmake --build build --config Release` steps CI runs — compiles and
+      links `libcampello_gpu.a` clean. Supersedes the earlier
+      "not build-verified" note for this backend.
 
 ### Tests & Examples
 - [ ] Add unit tests covering `Feature::fp16`/`Feature::subgroupOperations`

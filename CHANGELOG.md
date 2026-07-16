@@ -14,7 +14,7 @@ All notable changes to campello_gpu are documented here.
 
 - **`Fence::didFail()` / `Fence::failureReason()`** on Vulkan and DirectX (previously Metal-only, via `MTLCommandBuffer::status()`). Vulkan detects `VK_ERROR_DEVICE_LOST`; DirectX detects `GetCompletedValue() == UINT64_MAX` plus `GetDeviceRemovedReason()`. Both are coarser than Metal (whole-device loss, not per-submission failure).
 
-- **[Vulkan/Metal/DirectX/WebGPU] `Feature::fp16` / `Feature::subgroupOperations`** — two new boolean capability flags. `fp16`: Vulkan `shaderFloat16` (queried and actually enabled at device creation), Metal (unconditional — native MSL `half` type on every device), DirectX `Native16BitShaderOpsSupported`, WebGPU `shader-f16`. `subgroupOperations`: Vulkan subgroup basic+ballot+arithmetic support in the compute stage, Metal gated on `MTL::GPUFamilyApple6` (same bar as `cooperativeMatrix`), DirectX `WaveOps`, WebGPU `subgroups`.
+- **[Vulkan/Metal/DirectX/WebGPU] `Feature::fp16`, [Vulkan/Metal/DirectX] `Feature::subgroupOperations`** — two new boolean capability flags. `fp16`: Vulkan `shaderFloat16` (queried and actually enabled at device creation), Metal (unconditional — native MSL `half` type on every device), DirectX `Native16BitShaderOpsSupported`, WebGPU `shader-f16`. `subgroupOperations`: Vulkan subgroup basic+ballot+arithmetic support in the compute stage, Metal gated on `MTL::GPUFamilyApple6` (same bar as `cooperativeMatrix`), DirectX `WaveOps`. Not queried on WebGPU — Emscripten SDK 3.1.74's bundled `webgpu.h` doesn't define `WGPUFeatureName_Subgroups` yet, even though the feature itself has shipped in Chrome since version 134; see `TODO.md`.
 
 ### Fixed
 
@@ -23,6 +23,8 @@ All notable changes to campello_gpu are documented here.
 - **[Vulkan] `Device::getFeatures()` missing `Feature::raytracing`** — only `Adapter::getFeatures()` inserted it, even though `DeviceData::rayTracingEnabled` was already tracked and available in that function; every Vulkan ray tracing integration test was silently skipping as a result.
 
 - **[Android/Vulkan] Build failure on all 4 ABIs** — `ld.lld: error: undefined symbol: vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`. Android's `libvulkan.so` only statically exports core Vulkan symbols; every other KHR extension function in `device.cpp` is already resolved dynamically via `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr`, but the cooperative-matrix properties query called this one directly. Fixed by resolving it the same way. Caught via CI job log inspection and reproduced/verified locally by building against the real Android NDK toolchain before and after the fix.
+
+- **[WebGPU] Build failure (`build-wasm`)** — `error: use of undeclared identifier 'WGPUFeatureName_Subgroups'`. Emscripten SDK 3.1.74's bundled `webgpu.h` does not define this enumerator (confirmed by fetching the header at that exact SDK tag). Fixed by not querying `Feature::subgroupOperations` on this backend. Caught via CI job log inspection and reproduced/verified locally by installing the exact CI Emscripten version and building before and after the fix.
 
 ## [0.18.0] - 2026-07-04
 
