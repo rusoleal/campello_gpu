@@ -174,6 +174,13 @@ std::set<Feature> Device::getFeatures() {
     return features;
 }
 
+std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties() {
+    // Not implemented -- WGSL's cooperative/subgroup-matrix proposal is still
+    // in design discussion, unshipped (see Adapter::getFeatures() and
+    // TODO.md). Feature::cooperativeMatrix is never set here either.
+    return {};
+}
+
 DeviceMemoryInfo Device::getMemoryInfo() {
     DeviceMemoryInfo info{};
     // WebGPU does not expose detailed memory info.

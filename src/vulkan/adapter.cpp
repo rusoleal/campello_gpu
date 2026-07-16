@@ -45,5 +45,19 @@ std::set<Feature> Adapter::getFeatures() {
     if (hasAS && hasRTP && hasDHO)
         features.insert(Feature::raytracing);
 
+    // Detect cooperative matrix support: VK_KHR_cooperative_matrix depends on
+    // VK_KHR_shader_float16_int8, which is core as of Vulkan 1.2 — so on a 1.2+
+    // driver that dependency won't appear in the extension list at all.
+    VkPhysicalDeviceProperties deviceProps{};
+    vkGetPhysicalDeviceProperties(gpu, &deviceProps);
+    bool hasCoopMat = false, hasFloat16Int8 = false;
+    for (const auto &e : exts) {
+        if (strcmp(e.extensionName, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)  == 0) hasCoopMat     = true;
+        if (strcmp(e.extensionName, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) == 0) hasFloat16Int8 = true;
+    }
+    const bool isVulkan12Plus = deviceProps.apiVersion >= VK_API_VERSION_1_2;
+    if (hasCoopMat && (hasFloat16Int8 || isVulkan12Plus))
+        features.insert(Feature::cooperativeMatrix);
+
     return features;
 }

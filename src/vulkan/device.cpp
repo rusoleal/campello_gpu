@@ -594,16 +594,41 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     VkPhysicalDeviceProperties deviceProps{};
     vkGetPhysicalDeviceProperties(gpu, &deviceProps);
     const bool isVulkan13 = VK_VERSION_MINOR(deviceProps.apiVersion) >= 3;
+    const bool isVulkan12Plus = deviceProps.apiVersion >= VK_API_VERSION_1_2;
 
     // Detect extension availability.
     bool hasAS  = false, hasRTP = false, hasDHO = false, hasDynRender = false;
+    bool hasCoopMat = false, hasFloat16Int8 = false;
     for (const auto &e : availableExtensions) {
         if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)   == 0) hasAS       = true;
         if (strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)     == 0) hasRTP      = true;
         if (strcmp(e.extensionName, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) == 0) hasDHO      = true;
         if (strcmp(e.extensionName, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)        == 0) hasDynRender = true;
+        if (strcmp(e.extensionName, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)       == 0) hasCoopMat     = true;
+        if (strcmp(e.extensionName, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)      == 0) hasFloat16Int8 = true;
     }
     const bool rtSupported = hasAS && hasRTP && hasDHO;
+    // VK_KHR_cooperative_matrix depends on VK_KHR_shader_float16_int8, which is core
+    // as of Vulkan 1.2 — on a 1.2+ driver that dependency won't show up as an extension.
+    const bool coopMatSupported = hasCoopMat && (hasFloat16Int8 || isVulkan12Plus);
+
+    // "Supported" isn't enough to safely emit a cooperative-matrix kernel — query the
+    // actual (MSize,NSize,KSize,AType,BType,CType,ResultType) tuples this physical
+    // device exposes. This only needs the VkPhysicalDevice, so it's done here rather
+    // than after vkCreateDevice.
+    std::vector<VkCooperativeMatrixPropertiesKHR> coopMatProperties;
+    if (coopMatSupported) {
+        uint32_t coopMatCount = 0;
+        vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(gpu, &coopMatCount, nullptr);
+        if (coopMatCount > 0) {
+            coopMatProperties.resize(coopMatCount);
+            for (auto &p : coopMatProperties) {
+                p.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+                p.pNext = nullptr;
+            }
+            vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(gpu, &coopMatCount, coopMatProperties.data());
+        }
+    }
 
     // hasvk (Intel legacy driver for Gen8/BSW/HSW/BYT) reports Vulkan 1.3+ but its
     // dynamic rendering implementation is broken in practice — force the traditional
@@ -634,6 +659,12 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         deviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     }
+    if (coopMatSupported) {
+        deviceExtensions.push_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+        // Only needed as an explicit extension pre-1.2; core afterwards.
+        if (!isVulkan12Plus)
+            deviceExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
+    }
 
     float priority = 1.0;
     VkDeviceQueueCreateInfo queueCreateInfo{};
@@ -663,15 +694,26 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     rtpFeatures.rayTracingPipeline = VK_TRUE;
     rtpFeatures.pNext              = &asFeatures;
 
+    // Cooperative matrix feature — only attached when the extension is available.
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR coopMatFeatures{};
+    coopMatFeatures.sType             = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR;
+    coopMatFeatures.cooperativeMatrix = VK_TRUE;
+
     VkDeviceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 
+    // Build the chain tail-first: coopMat (if any) sits at the end, RT features
+    // (if any) point to it instead of leaving pNext null, and dynamic rendering
+    // (if any) points to whatever RT/coopMat chain resulted.
+    void *chainTail = coopMatSupported ? (void *)&coopMatFeatures : nullptr;
+    bdaFeatures.pNext = chainTail;
+    if (rtSupported) chainTail = &rtpFeatures;
+
     if (hasDynRenderSupport) {
-        // Chain dynamic rendering feature struct only when the device supports it.
-        dynRenderFeatures.pNext = rtSupported ? (void *)&rtpFeatures : nullptr;
+        dynRenderFeatures.pNext = chainTail;
         createInfo.pNext = &dynRenderFeatures;
-    } else if (rtSupported) {
-        createInfo.pNext = &rtpFeatures;
+    } else {
+        createInfo.pNext = chainTail;
     }
     createInfo.pQueueCreateInfos = &queueCreateInfo;
     createInfo.queueCreateInfoCount = 1;
@@ -871,6 +913,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     vkGetDeviceQueue(toReturn, queueFamilyIndex, 0, &deviceData->graphicsQueue);
     deviceData->physicalDevice           = gpu;
     deviceData->rayTracingEnabled        = rtSupported;
+    deviceData->cooperativeMatrixEnabled = coopMatSupported;
+    deviceData->cooperativeMatrixProperties = std::move(coopMatProperties);
     deviceData->surface                  = surface;
     deviceData->swapchain                = swapchain;
     deviceData->imageExtent              = imageExtent;
@@ -1222,6 +1266,54 @@ std::set<Feature> Device::getFeatures()
         toReturn.insert(Feature::geometryShader);
     }
 
+    if (deviceData->rayTracingEnabled)
+    {
+        toReturn.insert(Feature::raytracing);
+    }
+
+    if (deviceData->cooperativeMatrixEnabled)
+    {
+        toReturn.insert(Feature::cooperativeMatrix);
+    }
+
+    return toReturn;
+}
+
+static CooperativeMatrixComponentType toPublicCooperativeMatrixComponentType(VkComponentTypeKHR t)
+{
+    switch (t) {
+        case VK_COMPONENT_TYPE_FLOAT16_KHR: return CooperativeMatrixComponentType::float16;
+        case VK_COMPONENT_TYPE_FLOAT32_KHR: return CooperativeMatrixComponentType::float32;
+        case VK_COMPONENT_TYPE_FLOAT64_KHR: return CooperativeMatrixComponentType::float64;
+        case VK_COMPONENT_TYPE_SINT8_KHR:   return CooperativeMatrixComponentType::sint8;
+        case VK_COMPONENT_TYPE_SINT16_KHR:  return CooperativeMatrixComponentType::sint16;
+        case VK_COMPONENT_TYPE_SINT32_KHR:  return CooperativeMatrixComponentType::sint32;
+        case VK_COMPONENT_TYPE_SINT64_KHR:  return CooperativeMatrixComponentType::sint64;
+        case VK_COMPONENT_TYPE_UINT8_KHR:   return CooperativeMatrixComponentType::uint8;
+        case VK_COMPONENT_TYPE_UINT16_KHR:  return CooperativeMatrixComponentType::uint16;
+        case VK_COMPONENT_TYPE_UINT32_KHR:  return CooperativeMatrixComponentType::uint32;
+        case VK_COMPONENT_TYPE_UINT64_KHR:  return CooperativeMatrixComponentType::uint64;
+        default:                            return CooperativeMatrixComponentType::float16;
+    }
+}
+
+std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties()
+{
+    auto deviceData = (DeviceData *)this->native;
+    std::vector<CooperativeMatrixProperties> toReturn;
+    toReturn.reserve(deviceData->cooperativeMatrixProperties.size());
+    for (const auto &p : deviceData->cooperativeMatrixProperties) {
+        CooperativeMatrixProperties out;
+        out.mSize = p.MSize;
+        out.nSize = p.NSize;
+        out.kSize = p.KSize;
+        out.aType = toPublicCooperativeMatrixComponentType(p.AType);
+        out.bType = toPublicCooperativeMatrixComponentType(p.BType);
+        out.cType = toPublicCooperativeMatrixComponentType(p.CType);
+        out.resultType = toPublicCooperativeMatrixComponentType(p.ResultType);
+        out.saturatingAccumulation = (p.saturatingAccumulation == VK_TRUE);
+        toReturn.push_back(out);
+    }
     return toReturn;
 }
 

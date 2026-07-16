@@ -450,6 +450,14 @@ std::set<Feature> Device::getFeatures() {
     return features;
 }
 
+std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties() {
+    // Not implemented -- this backend does not detect or enable any
+    // cooperative-matrix-equivalent (WaveMMA / Cooperative Vectors / LinAlg
+    // Matrix are all still in flux; see TODO.md). Feature::cooperativeMatrix
+    // is never set here either.
+    return {};
+}
+
 std::string Device::getEngineVersion() {
     const D3D_FEATURE_LEVEL levels[] = {
 #ifdef D3D_FEATURE_LEVEL_12_2
@@ -1591,6 +1599,7 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
 std::shared_ptr<Fence> Device::createFence() {
     auto* d = static_cast<DeviceData*>(native);
     auto* fenceData = new DirectXFenceData();
+    fenceData->device = d->device;
 
     if (FAILED(d->device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
                                        IID_PPV_ARGS(&fenceData->fence)))) {

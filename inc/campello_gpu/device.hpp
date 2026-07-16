@@ -34,6 +34,7 @@
 #include <campello_gpu/constants/feature.hpp>
 #include <campello_gpu/metrics.hpp>
 #include <campello_gpu/fence.hpp>
+#include <campello_gpu/cooperative_matrix_properties.hpp>
 
 namespace systems::leal::campello_gpu
 {
@@ -94,6 +95,29 @@ namespace systems::leal::campello_gpu
          * @return Set of `Feature` enum values available on this device.
          */
         std::set<Feature> getFeatures();
+
+        /**
+         * @brief Queries the hardware-supported cooperative-matrix tile
+         * shapes and element types on this device.
+         *
+         * `Feature::cooperativeMatrix` only says *some* shape/type
+         * combination is supported, not which one -- check this list for a
+         * compatible entry before compiling/dispatching a cooperative-matrix
+         * compute shader.
+         *
+         * Only Vulkan currently returns real data here (queried once via
+         * `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR` at device
+         * creation). Metal has no runtime shape query -- `simdgroup_matrix`
+         * shapes are fixed by MSL template parameters at shader-compile
+         * time, gated only by `Feature::cooperativeMatrix` itself. DirectX
+         * and WebGPU do not implement cooperative matrix at all yet. All
+         * three return an empty vector.
+         *
+         * @return The supported tile shape/type combinations, or empty if
+         *         `Feature::cooperativeMatrix` is absent or this backend
+         *         doesn't expose per-shape data.
+         */
+        std::vector<CooperativeMatrixProperties> getCooperativeMatrixProperties();
 
         // ------------------------------------------------------------------
         // Metrics and monitoring (Phase 1)

@@ -17,7 +17,12 @@ namespace systems::leal::campello_gpu
         etc2TextureCompression, ///< ETC2/EAC block-compressed texture formats.
         astcTextureCompression, ///< ASTC block-compressed texture formats.
         depth24Stencil8PixelFormat, ///< Combined 24-bit depth + 8-bit stencil pixel format.
-        geometryShader          ///< Programmable geometry shader stage (not available on Metal).
+        geometryShader,         ///< Programmable geometry shader stage (not available on Metal).
+        cooperativeMatrix       ///< Hardware-accelerated small-tile matrix multiply-accumulate
+                                ///< (Vulkan `VK_KHR_cooperative_matrix`, Metal `simdgroup_matrix`,
+                                ///< DirectX SM6.8 Wave Matrix). Support implies only that *some*
+                                ///< tile shape/type combination is available, not every one —
+                                ///< query the specific shapes you need before compiling a kernel.
     };
 
 }

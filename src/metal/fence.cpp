@@ -35,3 +35,16 @@ bool Fence::isSignaled() const {
     auto *data = static_cast<MetalFenceData *>(native);
     return data->signaled.load(std::memory_order_acquire);
 }
+
+bool Fence::didFail() const {
+    if (native == nullptr) return false;
+    auto *data = static_cast<MetalFenceData *>(native);
+    return data->failed.load(std::memory_order_acquire);
+}
+
+std::string Fence::failureReason() const {
+    if (native == nullptr) return {};
+    auto *data = static_cast<MetalFenceData *>(native);
+    if (!data->failed.load(std::memory_order_acquire)) return {};
+    return data->failureReason;
+}

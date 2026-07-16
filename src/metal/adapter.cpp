@@ -17,6 +17,8 @@ std::set<Feature> Adapter::getFeatures() {
         toReturn.insert(Feature::msaa32bit);
     if (dev->supportsBCTextureCompression())
         toReturn.insert(Feature::bcTextureCompression);
+    if (dev->supportsFamily(MTL::GPUFamilyApple6))
+        toReturn.insert(Feature::cooperativeMatrix);
     if (__builtin_available(macOS 10.11, *)) {
         if (dev->depth24Stencil8PixelFormatSupported())
             toReturn.insert(Feature::depth24Stencil8PixelFormat);

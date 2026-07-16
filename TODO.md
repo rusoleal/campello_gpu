@@ -183,6 +183,22 @@
 
 ### Vulkan / Android Backend
 - [x] Detect `VK_KHR_acceleration_structure` + `VK_KHR_ray_tracing_pipeline` + `VK_KHR_deferred_host_operations` in `src/vulkan_android/adapter.cpp`; set `Feature::raytracing`
+- [x] **Bug found and fixed (session 2026-07-16):** `Device::getFeatures()` in
+      `src/vulkan/device.cpp` never inserted `Feature::raytracing` — only
+      `Adapter::getFeatures()` did, even though `DeviceData::rayTracingEnabled`
+      was tracked and available right there. `tests/platform/test_raytracing.cpp`'s
+      `requireRaytracing()` helper gates every RT test on `device->getFeatures()`,
+      so every Vulkan RT integration test was silently skipping even on hardware
+      that genuinely supports ray tracing. Invisible on CI because
+      `build-linux-vulkan` runs through Mesa lavapipe (no RT support at all), so
+      those tests were already skipping for an unrelated, coincidentally-correct
+      reason and never exercised the buggy path. Fixed by inserting
+      `Feature::raytracing` when `deviceData->rayTracingEnabled` is true,
+      mirroring the pattern already used for `cooperativeMatrixEnabled` in the
+      same function. Verified via `-fsyntax-only` against real Vulkan headers
+      (no Windows/Linux-with-RT-hardware machine available this session to run
+      it) — same verification caveat as the earlier cooperative-matrix Vulkan
+      work.
 - [x] Enable extensions and device features (`bufferDeviceAddress`, `accelerationStructure`, `rayTracingPipeline`) in `src/vulkan_android/device.cpp`
 - [x] Load `VK_KHR_acceleration_structure` and `VK_KHR_ray_tracing_pipeline` function pointers (follow the existing `pfnCmdBeginRenderingKHR` pattern)
 - [x] Add `acceleration_structure_handle.hpp` — wraps `VkAccelerationStructureKHR` + backing `VkBuffer`
@@ -213,6 +229,155 @@
 - [x] Add unit tests in `tests/platform/test_raytracing.cpp` covering BLAS/TLAS creation, build, pipeline creation, and feature-gated skip when `Feature::raytracing` is absent
 - [x] Add a minimal raytracing example in `examples/android/` — `RaytracingDemo.h/.cpp` (single-triangle BLAS→TLAS→RT pipeline, SPIR-V shaders, writes to storage texture via traceRays)
 - [x] Add a minimal raytracing example in `examples/apple/` — `RaytracingDemo.h/.mm` + `RaytracingShaders.metal` (same flow using Metal raytracing kernel)
+
+## Cooperative Matrix Multiply
+
+> Hardware-accelerated small-tile matrix multiply-accumulate, exposed differently per
+> API: Vulkan's `VK_KHR_cooperative_matrix`, Metal's `simdgroup_matrix` /
+> `simdgroup_multiply_accumulate()`, HLSL Shader Model 6.8's Wave Matrix. Motivated by
+> campello_nn's `GgmlQuantizedMatmul`/`GqaMatMul` kernels, which currently do scalar
+> per-thread dot products with a manual threadgroup-memory reduction — real hardware
+> matrix acceleration could be a substantial lever there. **Verified this session (not
+> assumed): this repo's actual Metal dev/test machine (Intel UHD 630) does NOT support
+> `simdgroup_matrix`** — `supportsFamily(MTL::GPUFamilyApple6)` returns false, and a real
+> test kernel compiles but fails pipeline creation with "AIR builtin function was called
+> but no definition was found". Metal support here is Apple-Silicon-only (M1+, GPU family
+> Apple6+); do not assume it works during local Intel Mac development — gate it and test
+> the fallback path just as carefully as the accelerated one. Vulkan support is
+> GPU/driver-dependent (mostly modern desktop/professional GPUs); DirectX support depends
+> on Agility SDK + SM6.8 availability, not yet confirmed for this project's DirectX
+> backend at all.
+
+### Constants & Enums
+- [x] Add `Feature::cooperativeMatrix` to `inc/campello_gpu/constants/feature.hpp`
+- [x] Consider whether supported element/tile shapes need their own descriptor. **Resolved
+      (session 2026-07-16): yes, added.** New public types:
+      `inc/campello_gpu/constants/cooperative_matrix_component_type.hpp`
+      (`CooperativeMatrixComponentType` — float16/32/64, sint/uint 8/16/32/64, mirrors
+      `VkComponentTypeKHR`) and `inc/campello_gpu/cooperative_matrix_properties.hpp`
+      (`CooperativeMatrixProperties` — mSize/nSize/kSize/aType/bType/cType/resultType/
+      saturatingAccumulation; mirrors `VkCooperativeMatrixPropertiesKHR` minus its `scope`
+      field, omitted since it's always subgroup-scope for this extension in practice).
+      `Device::getCooperativeMatrixProperties()` added to `device.hpp` right after
+      `getFeatures()`. Vulkan converts the tuples already cached on `DeviceData` (see
+      below); Metal/DirectX/WebGPU all return an empty vector (documented per-backend why:
+      Metal has no runtime shape query at all, the other two don't implement cooperative
+      matrix). Verified end-to-end on Metal via a real build+link+run on this session's
+      Intel Mac (correctly returns an empty vector); verified on Vulkan via `-fsyntax-only`
+      against real Vulkan headers (same caveat as below — no real Vulkan driver available
+      to actually run it).
+
+### Vulkan Backend (`src/vulkan/`)
+- [x] Detect `VK_KHR_cooperative_matrix` (+ its dependency `VK_KHR_shader_float16_int8` /
+      Vulkan 1.2 baseline) in `src/vulkan/adapter.cpp`'s `Adapter::getFeatures()`, following
+      the existing `Feature::raytracing` detection pattern in that same function. Also
+      wired the same detection into `Device::getFeatures()` in `device.cpp` via the cached
+      `DeviceData::cooperativeMatrixEnabled` flag (that function previously derived features
+      straight from `vkGetPhysicalDeviceFeatures` rather than what was actually enabled at
+      device-creation time).
+- [x] Query `vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR` for the actual supported
+      `(MSize, NSize, KSize, AType, BType, CType, ResultType, saturatingAccumulation)`
+      tuples on the selected physical device — needed before compiling/dispatching any
+      cooperative-matrix shader, not just a single yes/no check. Cached on
+      `DeviceData::cooperativeMatrixProperties` in `src/vulkan/device.cpp`'s
+      `createDevice()`. **Now exposed publicly** (session 2026-07-16) via
+      `Device::getCooperativeMatrixProperties()` — see the Constants & Enums item above.
+- [x] Enable the extension + `VkPhysicalDeviceCooperativeMatrixFeaturesKHR` device feature
+      in `src/vulkan/device.cpp`'s device creation (mirror how raytracing's
+      `bufferDeviceAddress`/`accelerationStructure`/`rayTracingPipeline` features are
+      enabled there). The existing RT `pNext` chain construction was generalized (tail
+      pointer built up before assigning to `dynRenderFeatures`/`createInfo`) so cooperative
+      matrix, RT, and dynamic rendering features can all coexist in the chain regardless of
+      which subset is actually supported.
+      **Not build-verified with the real Vulkan SDK/driver** — this dev machine has no
+      Vulkan SDK installed, so `src/vulkan/*.cpp` can't be linked/run locally for the
+      Linux/Android targets. Verified instead via a `-fsyntax-only` type-check against the
+      real `vulkan_core.h` (borrowed from the Android NDK's bundled headers, which do
+      define `VK_KHR_cooperative_matrix`) — confirms the structs/enums/function signatures
+      used are correct, but the actual `vkCreateDevice`/extension-enable path is unverified
+      against a real driver. Recommend confirming on CI (`build-linux-vulkan` job) or a
+      Linux/Android box before trusting this beyond compiling.
+- [ ] Confirm the shader toolchain path: GLSL's `GL_KHR_cooperative_matrix` extension (for
+      hand-written compute shaders) vs. accepting pre-compiled SPIR-V containing
+      `OpTypeCooperativeMatrixKHR` directly (campello_gpu currently loads precompiled
+      SPIR-V bytes, not GLSL source, for its Vulkan shader modules — verify the SPIR-V
+      route works with whatever shader compiler campello_nn's build step uses)
+
+### Metal Backend (`src/metal/`)
+- [x] Add `Feature::cooperativeMatrix` detection to `src/metal/adapter.cpp`'s
+      `Adapter::getFeatures()` via `dev->supportsFamily(MTL::GPUFamilyApple6)` — same
+      pattern as the existing `supportsRaytracing()`/`supports32BitMSAA()`/
+      `supportsBCTextureCompression()` checks in that function. Also added the matching
+      check to `Device::getFeatures()` in `src/metal/device.cpp` (mirrors how raytracing/
+      BC/MSAA are exposed on both `Adapter` and `Device`). Verified on this session's
+      Intel UHD 630: reports `NO` for `cooperativeMatrix` while still correctly reporting
+      `YES` for raytracing/BC/MSAA — confirms the detection is real family-gating, not a
+      blanket flag.
+- [ ] **Test on real Apple Silicon hardware before trusting this path at all** — this
+      session's Intel Mac cannot validate the accelerated path locally (confirmed: kernel
+      compiles, pipeline creation fails), only the "unsupported, fall back" branch;
+      shipping this without ever running the accelerated path on real M-series hardware is
+      a real correctness risk, not just a performance question
+- [ ] Decide where `simdgroup_matrix` usage lives: campello_gpu itself has no MSL-source
+      compilation entry point exposed to callers today (`createShaderModule()` only takes
+      precompiled `.metallib` bytes or WGSL source, not raw MSL) — cooperative-matrix
+      kernels are almost certainly hand-written MSL (like campello_nn's existing
+      `.metal` shaders), so this may end up being campello_nn's concern (a new precompiled
+      shader variant, selected via this new `Feature`) more than a `campello_gpu` API
+      change; confirm the actual split before designing the API surface
+
+### DirectX 12 Backend (`src/directx/`)
+- [x] Research current status (session 2026-07-16, via web search — not from memory,
+      given how fast this area is moving): **the TODO's original premise was imprecise.**
+      SM6.8's headline feature is actually Work Graphs, not Wave Matrix. "Wave Matrix"
+      (`WaveMMA`/`wave_matrix` intrinsics) is its own still-labeled-`6_x` preview spec,
+      feature-gated via a distinct `D3D12_FEATURE_DATA_WAVE_MMA` cap — not cleanly tied to
+      SM6.8. The actively "current" retail feature is **Cooperative Vectors** (SM6.9, went
+      retail in **Agility SDK 1.619**, Feb 2026) — but per Microsoft's own DirectX
+      Developer Blog, Cooperative Vectors is already being superseded by a unified
+      "LinAlg Matrix" spec targeted at SM6.10, still under review/unreleased as of this
+      session (2026-07-16); Microsoft states Cooperative Vectors "won't officially be
+      supported in a future Agility SDK." So this is a three-way moving target (WaveMMA
+      preview → Cooperative Vectors retail-but-dying → unreleased LinAlg), separate from
+      the fact that this repo's `windows.cmake`/`src/directx/common.hpp` link only the
+      legacy `d3dcompiler.h` (FXC, HLSL ≤5.1, no Agility SDK NuGet reference, no
+      DXC/dxil.dll linkage) — there is no shader-toolchain path to emit SM6.8/6.9 bytecode
+      here at all yet, independent of the feature-detection question.
+      **Decision: do not implement speculative detection code now.** No Windows machine
+      or D3D12/Agility SDK headers were available this session to verify anything against
+      (unlike Vulkan, where real NDK headers let the change be type-checked) — writing
+      `D3D12_FEATURE_DATA_WAVE_MMA`-shaped code un-verifiable against an actively-churning,
+      soon-to-be-superseded spec was assessed as not worth the risk. Revisit once the
+      LinAlg Matrix spec ships and stabilizes, or once real Windows/Agility SDK hardware
+      is available to verify against.
+- [ ] If pursued: add `Feature::cooperativeMatrix` detection to `src/directx/adapter.cpp`'s
+      `Adapter::getFeatures()` — target whichever spec (LinAlg Matrix, or Cooperative
+      Vectors if LinAlg still isn't out) is current at the time this is picked back up,
+      not the WaveMMA name originally assumed here
+
+### WebGPU Backend (`src/webgpu/`)
+- [x] Verify current WGSL/WebGPU spec status for any cooperative-matrix-equivalent
+      extension before assuming this is out of scope. Checked this session (2026-07-16)
+      via web search, not memory: WGSL's "subgroup matrix" proposal (the
+      cooperative-matrix equivalent, building on the now-standardized plain `subgroups`
+      feature) is confirmed **still in design discussion** as of the gpuweb working
+      group's March 2026 meeting minutes — the group was still debating API ergonomics
+      (row/column-major layout parameters) with no shipped feature name or enable
+      directive yet. Cross-checked against Chrome 144's own release notes, which ship
+      unrelated subgroup features (`subgroup_id`) but make no mention of subgroup/
+      cooperative matrix — confirms it isn't even behind an experimental Chromium flag.
+      Documented this explicitly as a comment in `Adapter::getFeatures()`
+      (`src/webgpu/adapter.cpp`) rather than silently omitting `Feature::cooperativeMatrix`,
+      per this item's own instruction. Revisit once the proposal reaches at least an
+      experimental flag.
+
+### Tests & Examples
+- [ ] Add unit tests (mirroring `tests/platform/test_raytracing.cpp`'s precedent) covering
+      `Feature::cooperativeMatrix` detection and graceful skip when absent
+- [ ] Add a minimal compute example exercising a real cooperative-matrix multiply-add on
+      each backend where supported, verified against a scalar CPU reference — needed
+      before trusting this for anything real, given how easily "compiles but doesn't
+      actually run" surfaced during this session's Metal investigation
 
 ## Public API / headers
 

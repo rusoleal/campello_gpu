@@ -24,3 +24,13 @@ bool Fence::isSignaled() const {
     auto* handle = static_cast<FenceHandle*>(native);
     return handle->signaled.load();
 }
+
+bool Fence::didFail() const {
+    // Not yet tracked on this backend -- see fence.hpp's doc comment.
+    return false;
+}
+
+std::string Fence::failureReason() const {
+    // Not yet tracked on this backend -- see fence.hpp's doc comment.
+    return {};
+}

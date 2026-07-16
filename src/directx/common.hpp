@@ -374,6 +374,9 @@ struct DirectXFenceData {
     ID3D12Fence* fence      = nullptr;
     HANDLE       fenceEvent = nullptr;
     UINT64       value      = 0;
+    // Non-owning; the device outlives every fence created from it. Needed by
+    // didFail()/failureReason() to call ID3D12Device::GetDeviceRemovedReason().
+    ID3D12Device* device    = nullptr;
 };
 
 } // namespace systems::leal::campello_gpu

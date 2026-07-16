@@ -39,6 +39,14 @@ namespace systems::leal::campello_gpu {
         bool                      hasDynamicRendering  = true;
         uint32_t                  currentImageIndex    = 0;
 
+        // Cooperative matrix (VK_KHR_cooperative_matrix): whether the extension was
+        // enabled at device creation, and the (MSize,NSize,KSize,type) tuples the
+        // physical device actually supports — queried once at device creation via
+        // vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR since it is not a bare
+        // yes/no capability. Not yet exposed through a public API.
+        bool cooperativeMatrixEnabled = false;
+        std::vector<VkCooperativeMatrixPropertiesKHR> cooperativeMatrixProperties;
+
         // Traditional render pass fallback (used when hasDynamicRendering == false)
         VkRenderPass               swapchainRenderPassClear = VK_NULL_HANDLE;
         VkRenderPass               swapchainRenderPassLoad  = VK_NULL_HANDLE;

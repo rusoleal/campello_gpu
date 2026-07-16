@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
+#include <string>
 #include <campello_gpu/metrics.hpp>
 
 // Forward declarations for Metal classes
@@ -22,6 +24,20 @@ namespace systems::leal::campello_gpu {
  */
 struct MetalFenceData {
     std::atomic<bool> signaled{true};  // start signaled so first frame doesn't block
+    // Set from the command buffer's addCompletedHandler when its status is
+    // MTLCommandBufferStatusError (e.g. a driver-level GPU timeout under load)
+    // instead of Completed. Metal invokes completed handlers on failure just
+    // as on success, so without this a failed submission would signal the
+    // fence exactly like a successful one -- the caller's wait() would return
+    // normally and it would read back whatever was already sitting in the
+    // destination buffer (stale data from a prior submission, not this one's
+    // actual output) with no indication anything went wrong.
+    std::atomic<bool> failed{false};
+    // Human-readable reason for `failed`, e.g. "Caused GPU Timeout Error
+    // (...)" from MTLCommandBuffer::error()->localizedDescription() -- set
+    // once, before `failed` flips true and before signal(), so it's safe to
+    // read after observing `failed` without additional locking.
+    std::string failureReason;
     mutable std::mutex mutex;
     std::condition_variable cv;
 

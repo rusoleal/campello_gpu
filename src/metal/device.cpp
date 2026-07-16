@@ -223,6 +223,8 @@ std::set<Feature> Device::getFeatures() {
         toReturn.insert(Feature::msaa32bit);
     if (dev->supportsBCTextureCompression())
         toReturn.insert(Feature::bcTextureCompression);
+    if (dev->supportsFamily(MTL::GPUFamilyApple6))
+        toReturn.insert(Feature::cooperativeMatrix);
 #if defined(TARGET_OS_IOS) && TARGET_OS_IOS
     // ASTC and ETC2 are universally supported on Apple GPUs (iOS/tvOS).
     toReturn.insert(Feature::astcTextureCompression);
@@ -241,6 +243,13 @@ std::set<Feature> Device::getFeatures() {
             toReturn.insert(Feature::depth24Stencil8PixelFormat);
     }
     return toReturn;
+}
+
+std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties() {
+    // Metal has no runtime shape query -- simdgroup_matrix<T, cols, rows>
+    // shapes are fixed by MSL template parameters at shader-compile time,
+    // gated only by Feature::cooperativeMatrix (see device.hpp's doc comment).
+    return {};
 }
 
 std::string Device::getEngineVersion() {
@@ -907,10 +916,28 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     }
 
     // Capture shared_ptr so the fence stays alive until the GPU finishes.
-    cmdBuf->addCompletedHandler([signalFence](MTL::CommandBuffer*) {
+    cmdBuf->addCompletedHandler([signalFence](MTL::CommandBuffer* buf) {
         if (!signalFence) return;
         auto *fenceData = static_cast<MetalFenceData *>(signalFence->native);
-        if (fenceData) fenceData->signal();
+        if (!fenceData) return;
+        // Metal calls the completed handler on failure (timeout, page fault,
+        // device removed, ...) exactly as on success -- status() distinguishes
+        // the two. See MetalFenceData::failed's doc comment for why this
+        // matters: without checking it, a failed submission signals its fence
+        // just like a successful one.
+        if (buf->status() == MTL::CommandBufferStatusError) {
+            // Capture the real reason (distinguishes e.g. a genuine execution
+            // timeout from an out-of-memory or invalid-resource failure, which
+            // would need a very different fix) before signaling -- see
+            // MetalFenceData::failureReason's doc comment for the ordering
+            // requirement.
+            auto *err = buf->error();
+            fenceData->failureReason = (err && err->localizedDescription())
+                ? err->localizedDescription()->utf8String()
+                : "(no NS::Error detail available)";
+            fenceData->failed.store(true, std::memory_order_release);
+        }
+        fenceData->signal();
     });
 
     cmdBuf->commit();
