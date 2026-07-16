@@ -47,13 +47,18 @@ static std::shared_ptr<Device> tryCreateDevice() {
 }
 
 // Create an off-screen RGBA render-target texture and return its view.
+// outTexture must be kept alive by the caller for as long as the view is used
+// -- a TextureView does not itself keep the source Texture alive (same
+// contract as e.g. Vulkan's VkImageView/VkImage), so letting outTexture go
+// out of scope while the view is still in use is a use-after-free.
 static std::shared_ptr<TextureView> makeRTView(std::shared_ptr<Device>& device,
+                                               std::shared_ptr<Texture>& outTexture,
                                                uint32_t w = 64, uint32_t h = 64) {
-    auto tex = device->createTexture(
+    outTexture = device->createTexture(
         TextureType::tt2d, PixelFormat::rgba8unorm,
         w, h, 1, 1, 1, TextureUsage::renderTarget);
-    if (!tex) return nullptr;
-    return tex->createView(PixelFormat::rgba8unorm, 1);
+    if (!outTexture) return nullptr;
+    return outTexture->createView(PixelFormat::rgba8unorm, 1);
 }
 
 // Build a minimal color-only BeginRenderPassDescriptor.
@@ -95,7 +100,8 @@ TEST(RenderPassEncoder, BeginWithLoadOpLoadReturnsNonNull) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device on this platform";
 
-    auto view = makeRTView(device);
+    std::shared_ptr<Texture> tex;
+    auto view = makeRTView(device, tex);
     if (!view) GTEST_SKIP() << "Could not create render-target view";
 
     auto encoder = device->createCommandEncoder();
@@ -109,7 +115,8 @@ TEST(RenderPassEncoder, BeginWithLoadOpClearReturnsNonNull) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device on this platform";
 
-    auto view = makeRTView(device);
+    std::shared_ptr<Texture> tex;
+    auto view = makeRTView(device, tex);
     if (!view) GTEST_SKIP() << "Could not create render-target view";
 
     auto encoder = device->createCommandEncoder();
@@ -337,7 +344,8 @@ TEST(RenderPassEncoder, FullPassWithColorAttachmentProducesCommandBuffer) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device on this platform";
 
-    auto view = makeRTView(device);
+    std::shared_ptr<Texture> tex;
+    auto view = makeRTView(device, tex);
     if (!view) GTEST_SKIP() << "Could not create render-target view";
 
     auto encoder = device->createCommandEncoder();

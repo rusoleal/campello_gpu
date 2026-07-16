@@ -91,6 +91,56 @@ TEST(Device, GetFeaturesDoesNotThrow) {
 }
 
 // ---------------------------------------------------------------------------
+// getCooperativeMatrixProperties
+// ---------------------------------------------------------------------------
+
+TEST(Device, GetCooperativeMatrixPropertiesDoesNotThrow) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    EXPECT_NO_THROW(device->getCooperativeMatrixProperties());
+}
+
+// Feature::cooperativeMatrix absent implies no shape data can exist to query
+// (holds on every backend, including Metal/DirectX/WebGPU, which report the
+// feature absent-or-present but never populate shape data at all). This does
+// NOT assert the converse: when the feature IS present, Vulkan returns real
+// queried tuples but Metal reports the feature yet still returns an empty
+// vector (simdgroup_matrix shapes are fixed at shader-compile time, not
+// runtime-queryable) -- see Device::getCooperativeMatrixProperties()'s doc
+// comment.
+TEST(Device, GetCooperativeMatrixPropertiesEmptyWhenFeatureAbsent) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    auto features = device->getFeatures();
+    auto props = device->getCooperativeMatrixProperties();
+    if (features.find(Feature::cooperativeMatrix) == features.end()) {
+        EXPECT_TRUE(props.empty());
+    } else {
+        SUCCEED();
+    }
+}
+
+#if defined(_WIN32)
+// DirectX does not implement cooperative-matrix feature detection at all
+// (WaveMMA/Cooperative Vectors/LinAlg Matrix landscape still churning -- see
+// TODO.md), so Feature::cooperativeMatrix must never be reported here. If
+// this starts failing, it means DirectX cooperative-matrix support was added
+// and this test (plus getCooperativeMatrixProperties()) needs updating.
+TEST(Device, CooperativeMatrixFeatureNotReportedOnDirectX) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    auto features = device->getFeatures();
+    EXPECT_EQ(features.find(Feature::cooperativeMatrix), features.end());
+}
+#endif
+
+// ---------------------------------------------------------------------------
 // createSampler
 // ---------------------------------------------------------------------------
 

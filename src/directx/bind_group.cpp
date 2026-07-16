@@ -7,5 +7,7 @@ BindGroup::BindGroup(void* pd) : native(pd) {}
 
 BindGroup::~BindGroup() {
     if (!native) return;
-    delete static_cast<BindGroupHandle*>(native);
+    auto* h = static_cast<BindGroupHandle*>(native);
+    if (h->deviceData) h->deviceData->freeSrvSlots(h->srvSlotIndices);
+    delete h;
 }

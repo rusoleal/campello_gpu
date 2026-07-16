@@ -349,11 +349,14 @@ TEST(CommandEncoder, CopyTextureToTextureMipLevels) {
 
     auto encoder = device->createCommandEncoder();
     ASSERT_NE(encoder, nullptr);
-    // Copy src mip 0 → dst mip 1
+    // Copy src mip 0's top-left corner into dst mip 1. The extent must match
+    // the destination subresource's actual dimensions -- mip 1 of a 64x64
+    // texture is 32x32, half the base size, not 64x64 (that would extend
+    // past the destination subresource's edges).
     encoder->copyTextureToTexture(
         src, 0, Offset3D(0, 0, 0),
         dst, 1, Offset3D(0, 0, 0),
-        Extent3D(W, H, 1));
+        Extent3D(W / 2, H / 2, 1));
 
     auto cmdBuf = encoder->finish();
     EXPECT_NE(cmdBuf, nullptr);
@@ -362,8 +365,8 @@ TEST(CommandEncoder, CopyTextureToTextureMipLevels) {
     device->submit(cmdBuf, fence);
     fence->wait();
 
-    // Download dst mip 1 and verify
-    std::vector<uint8_t> readback(mip0Data.size(), 0);
+    // Download dst mip 1 (32x32) and verify
+    std::vector<uint8_t> readback((W / 2) * (H / 2) * 4, 0);
     EXPECT_TRUE(dst->download(1, 0, readback.data(), readback.size()));
 
     EXPECT_EQ(readback[0], 0xAB);

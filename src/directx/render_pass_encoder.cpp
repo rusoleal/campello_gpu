@@ -70,6 +70,34 @@ void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuff
 
 void RenderPassEncoder::end() {
     // The command list stays open until CommandEncoder::finish().
+
+    // Transition every offscreen color attachment written by this pass from
+    // RENDER_TARGET to a shader-readable state, so a later pass can safely
+    // sample it (e.g. the next blur pass, or the final BackdropFilter/
+    // ClipRRect/ShaderMask composite draw). See TextureHandle::currentState's
+    // doc comment in common.hpp for why this is necessary at all on D3D12.
+    if (!native) return;
+    auto* h = static_cast<RenderPassEncoderHandle*>(native);
+    if (h->colorAttachmentTextures.empty()) return;
+
+    std::vector<D3D12_RESOURCE_BARRIER> barriers;
+    barriers.reserve(h->colorAttachmentTextures.size());
+    for (TextureHandle* th : h->colorAttachmentTextures) {
+        if (th->currentState == D3D12_RESOURCE_STATE_RENDER_TARGET) {
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource   = th->resource;
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            barriers.push_back(barrier);
+            th->currentState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        }
+    }
+    if (!barriers.empty())
+        h->cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
 }
 
 void RenderPassEncoder::endOcclusionQuery() {
@@ -107,6 +135,7 @@ void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     h->vertexStrides  = rph->vertexStrides;
     h->cmdList->SetPipelineState(rph->pso);
     h->cmdList->SetGraphicsRootSignature(rph->rootSignature);
+    h->hasRootSignature = true;
 }
 
 void RenderPassEncoder::setScissorRect(float x, float y, float width, float height) {
@@ -167,6 +196,10 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
     if (!bindGroup) return;
     auto* h   = static_cast<RenderPassEncoderHandle*>(native);
     if (!h->cmdList) return;
+    // SetGraphicsRootDescriptorTable() is undefined behavior before any
+    // SetGraphicsRootSignature() call on this command list -- see
+    // RenderPassEncoderHandle::hasRootSignature's doc comment.
+    if (!h->hasRootSignature) return;
     if (!bindGroup->native) return;
     auto* bgh = static_cast<BindGroupHandle*>(bindGroup->native);
 

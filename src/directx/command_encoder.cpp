@@ -58,11 +58,32 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
     std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> rtvHandles;
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
     bool hasDSV = false;
+    std::vector<TextureHandle*> colorAttachmentTextures;
 
     for (const auto& ca : descriptor.colorAttachments) {
         if (!ca.view || !ca.view->native) continue;
         auto* tvh = static_cast<TextureViewHandle*>(ca.view->native);
         rtvHandles.push_back(tvh->cpuHandle);
+
+        // Transition into RENDER_TARGET if this texture was last left in a
+        // shader-readable state by a previous RenderPassEncoder::end() (or
+        // it's a brand new texture already created in RENDER_TARGET state,
+        // in which case this is a no-op). Skipped for views with no
+        // sourceHandle (the swapchain backbuffer — see its doc comment).
+        if (tvh->sourceHandle) {
+            TextureHandle* th = tvh->sourceHandle;
+            if (th->currentState != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+                D3D12_RESOURCE_BARRIER barrier = {};
+                barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Transition.pResource   = th->resource;
+                barrier.Transition.StateBefore = th->currentState;
+                barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                list->ResourceBarrier(1, &barrier);
+                th->currentState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            }
+            colorAttachmentTextures.push_back(th);
+        }
 
         if (ca.loadOp == LoadOp::clear) {
             list->ClearRenderTargetView(tvh->cpuHandle, ca.clearValue, 0, nullptr);
@@ -95,6 +116,7 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
     auto* ph        = new RenderPassEncoderHandle();
     ph->cmdList     = list;
     ph->deviceData  = h->deviceData;
+    ph->colorAttachmentTextures = std::move(colorAttachmentTextures);
     if (descriptor.occlusionQuerySet && descriptor.occlusionQuerySet->native) {
         auto* qsh      = static_cast<QuerySetHandle*>(descriptor.occlusionQuerySet->native);
         ph->queryHeap  = qsh->queryHeap;
@@ -487,9 +509,12 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         h->cmdList->ResourceBarrier(2, barriers);
 
-        // Allocate temporary descriptors
-        D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = d->allocSrvCpu();
-        D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = d->srvGpuAt(d->srvOffset - 1);
+        // Allocate temporary descriptors. Capture the index explicitly
+        // rather than assuming srvOffset - 1 — allocSrvIndex() may now
+        // return a reused slot from srvFreeSlots instead of a fresh one.
+        UINT srvIdx = d->allocSrvIndex();
+        D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = d->srvCpuAt(srvIdx);
+        D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = d->srvGpuAt(srvIdx);
         D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = d->allocRtvExtra();
 
         // Create SRV for source mip

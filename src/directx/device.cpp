@@ -40,6 +40,28 @@
 
 using namespace systems::leal::campello_gpu;
 
+#ifdef _DEBUG
+// Drains and prints every pending D3D12 debug-layer message (see
+// DeviceData::infoQueue's doc comment for why this polls instead of using
+// ID3D12InfoQueue1's callback). Called once per submit() — the CPU already
+// blocks on waitForGpu() there, so messages from this frame's GPU work are
+// guaranteed available by the time this runs.
+static void drainDebugMessages(DeviceData* d) {
+    if (!d->infoQueue) return;
+    UINT64 n = d->infoQueue->GetNumStoredMessages();
+    for (UINT64 i = 0; i < n; ++i) {
+        SIZE_T len = 0;
+        d->infoQueue->GetMessage(i, nullptr, &len);
+        if (len == 0) continue;
+        std::vector<uint8_t> buf(len);
+        auto* msg = reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+        if (SUCCEEDED(d->infoQueue->GetMessage(i, msg, &len)))
+            std::cerr << "[D3D12 debug layer] " << msg->pDescription << std::endl;
+    }
+    d->infoQueue->ClearStoredMessages();
+}
+#endif
+
 // -----------------------------------------------------------------------
 // Format conversion helpers
 // -----------------------------------------------------------------------
@@ -160,12 +182,47 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
     auto* data = new DeviceData();
     data->adapter = adapter;
 
+#ifdef _DEBUG
+    // D3D12 equivalent of Vulkan's validation layers — must be enabled
+    // before D3D12CreateDevice(). Silently no-ops (D3D12GetDebugInterface
+    // fails) if the "Graphics Tools" optional Windows feature isn't
+    // installed, rather than blocking device creation.
+    {
+        ID3D12Debug* debugController = nullptr;
+        HRESULT hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debugController));
+        if (SUCCEEDED(hr)) {
+            debugController->EnableDebugLayer();
+            debugController->Release();
+            std::cerr << "[D3D12 debug layer] EnableDebugLayer() succeeded" << std::endl;
+        } else {
+            std::cerr << "[D3D12 debug layer] D3D12GetDebugInterface FAILED hr=0x"
+                       << std::hex << hr << std::dec << std::endl;
+        }
+    }
+#endif
+
     if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0,
                                   IID_PPV_ARGS(&data->device)))) {
         delete data;
         return nullptr;
     }
     auto* dev = data->device;
+
+#ifdef _DEBUG
+    // ID3D12InfoQueue1::RegisterMessageCallback isn't supported on all driver
+    // stacks (confirmed E_NOINTERFACE on this machine's Intel iGPU driver),
+    // so use the classic ID3D12InfoQueue instead — polled once per submit()
+    // via drainDebugMessages() below, rather than pushed via callback.
+    {
+        HRESULT hr = dev->QueryInterface(IID_PPV_ARGS(&data->infoQueue));
+        if (SUCCEEDED(hr)) {
+            std::cerr << "[D3D12 debug layer] ID3D12InfoQueue acquired — draining once per frame" << std::endl;
+        } else {
+            std::cerr << "[D3D12 debug layer] QueryInterface(ID3D12InfoQueue) FAILED hr=0x"
+                       << std::hex << hr << std::dec << std::endl;
+        }
+    }
+#endif
 
     // Command queue
     D3D12_COMMAND_QUEUE_DESC qd = {};
@@ -175,14 +232,33 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
         dev->Release(); delete data; return nullptr;
     }
 
-    // CBV/SRV/UAV heap — 1024 shader-visible descriptors
+    // CBV/SRV/UAV heap — shader-visible descriptors. This heap never
+    // reclaims slots (allocSrvCpu() only ever increments srvOffset), so
+    // consumers that create a fresh BindGroup every frame (e.g. an
+    // animated BackdropFilter blur) burn through it permanently — sized
+    // generously as defense in depth on top of fixing call sites to reuse
+    // BindGroups where the underlying resource is stable across frames.
     {
         D3D12_DESCRIPTOR_HEAP_DESC hd = {};
-        hd.NumDescriptors = 1024;
+        hd.NumDescriptors = 65536;
         hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&data->srvHeap));
         data->srvDescSize = dev->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+
+    // Non-shader-visible staging heap for each Texture's canonical SRV — see
+    // DeviceData::srvStagingHeap's doc comment. Sized to match srvHeap since
+    // one texture ~ one staging slot, one-time cost per texture (not per bind
+    // group), so far fewer than srvHeap ever actually needs in practice.
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+        hd.NumDescriptors = 65536;
+        hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&data->srvStagingHeap));
+        data->srvStagingDescSize = dev->GetDescriptorHandleIncrementSize(
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
@@ -284,13 +360,22 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
 static ID3D12RootSignature* createUniversalRootSignature(ID3D12Device* device,
     const std::vector<BindGroupLayoutHandle*>& layouts) {
 
-    // Build descriptor tables from each bind group layout.
+    // Build descriptor tables from each bind group layout. Sampler
+    // descriptors live in a separate heap from CBV/SRV/UAV descriptors, so a
+    // D3D12 descriptor table cannot mix D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER
+    // ranges with CBV/SRV/UAV ranges — a layout that declares both (e.g. the
+    // widgets quad pipeline's uniform+texture+sampler layout) must contribute
+    // two consecutive root parameters: [resource table, sampler table]. This
+    // matches RenderPassEncoder::setBindGroup(index, ...), which always
+    // writes the resource table at `index` and the sampler table at
+    // `index + 1`.
     std::vector<D3D12_ROOT_PARAMETER1> params;
     std::vector<std::vector<D3D12_DESCRIPTOR_RANGE1>> allRanges;
+    allRanges.reserve(layouts.size() * 2);
 
-    for (auto* layout : layouts) {
-        if (!layout || layout->ranges.empty()) continue;
-        allRanges.push_back(layout->ranges);
+    auto addTable = [&](std::vector<D3D12_DESCRIPTOR_RANGE1> ranges) {
+        if (ranges.empty()) return;
+        allRanges.push_back(std::move(ranges));
         D3D12_ROOT_PARAMETER1 p = {};
         p.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         p.DescriptorTable.NumDescriptorRanges =
@@ -298,6 +383,25 @@ static ID3D12RootSignature* createUniversalRootSignature(ID3D12Device* device,
         p.DescriptorTable.pDescriptorRanges   = allRanges.back().data();
         p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         params.push_back(p);
+    };
+
+    for (auto* layout : layouts) {
+        if (!layout || layout->ranges.empty()) continue;
+
+        std::vector<D3D12_DESCRIPTOR_RANGE1> resourceRanges;
+        std::vector<D3D12_DESCRIPTOR_RANGE1> samplerRanges;
+        for (auto range : layout->ranges) {
+            // Re-derive a per-table APPEND offset — the source range may
+            // have been positioned for the combined list it came from.
+            range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+            if (range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER)
+                samplerRanges.push_back(range);
+            else
+                resourceRanges.push_back(range);
+        }
+
+        addTable(std::move(resourceRanges));
+        addTable(std::move(samplerRanges));
     }
 
     // If no layouts, create an empty root signature.
@@ -357,10 +461,12 @@ Device::~Device() {
     if (d->mipmapVS)      d->mipmapVS->Release();
     if (d->mipmapPS)      d->mipmapPS->Release();
 
-    if (d->srvHeap)      d->srvHeap->Release();
+    if (d->srvHeap)        d->srvHeap->Release();
+    if (d->srvStagingHeap) d->srvStagingHeap->Release();
     if (d->samplerHeap)  d->samplerHeap->Release();
     if (d->rtvExtraHeap) d->rtvExtraHeap->Release();
     if (d->dsvHeap)      d->dsvHeap->Release();
+    if (d->infoQueue)    d->infoQueue->Release();
 
     if (d->queue)   d->queue->Release();
     if (d->device)  d->device->Release();
@@ -883,6 +989,7 @@ std::shared_ptr<Texture> Device::createTexture(
     handle->sampleCount    = std::max(samples, 1u);
     handle->usage          = usageMode;
     handle->queue          = d->queue;
+    handle->currentState   = initialState;
 
     // Pre-create the RTV/DSV if this texture is a render target
     if (u & static_cast<int>(TextureUsage::renderTarget)) {
@@ -890,7 +997,8 @@ std::shared_ptr<Texture> Device::createTexture(
             handle->dsvHandle = d->allocDsv();
             dev->CreateDepthStencilView(resource, nullptr, handle->dsvHandle);
         } else {
-            handle->rtvHandle = d->allocRtvExtra();
+            handle->rtvExtraIndex = d->allocRtvExtraIndex();
+            handle->rtvHandle     = d->rtvExtraCpuAt(handle->rtvExtraIndex);
             dev->CreateRenderTargetView(resource, nullptr, handle->rtvHandle);
         }
     }
@@ -926,7 +1034,11 @@ std::shared_ptr<Texture> Device::createTexture(
                 }
                 break;
         }
-        handle->srvCpuHandle = d->allocSrvCpu();
+        // Allocated from the non-shader-visible staging heap, NOT srvHeap:
+        // createBindGroup() later CopyDescriptorsSimple()s this handle INTO
+        // srvHeap, and D3D12 forbids reading FROM a shader-visible heap as a
+        // copy source — see srvStagingHeap's doc comment in common.hpp.
+        handle->srvCpuHandle = d->allocSrvStagingCpu();
         dev->CreateShaderResourceView(resource, &srvDesc, handle->srvCpuHandle);
     }
 
@@ -1012,82 +1124,19 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
 
-    // Build a root signature with four descriptor tables:
-    //   root param 0 — SRV table     (8 x t0-t7, space0) — PBR material (t0-t4) + clearcoat (t5-t7)
-    //   root param 1 — Sampler table (1 x s0,    space0) — material/clearcoat sampler
-    //   root param 2 — SRV table     (3 x t8-t10,space0) — IBL prefilter/BRDF-LUT/SH9
-    //   root param 3 — Sampler table (1 x s1,    space0) — IBL sampler
-    // setBindGroup(0, bg) → tables 0+1; setBindGroup(2, bg) → tables 2+3.
+    // Root signature comes from descriptor.layout (a PipelineLayout built from
+    // the caller's BindGroupLayouts), matching the documented contract in
+    // RenderPipelineDescriptor::layout and mirroring createComputePipeline()
+    // below. Previously this always built its own fixed 4-table PBR/IBL
+    // root signature (SRV-only, no CBV range) and ignored descriptor.layout
+    // entirely, so no render pipeline could ever bind a uniform buffer.
     ID3D12RootSignature* rootSig = nullptr;
-    {
-        D3D12_DESCRIPTOR_RANGE1 srvRange = {};
-        srvRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        srvRange.NumDescriptors                    = 10; // t0-t9: 5 PBR + 3 clearcoat + 2 sheen
-        srvRange.BaseShaderRegister                = 0;
-        srvRange.RegisterSpace                     = 0;
-        srvRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-        srvRange.OffsetInDescriptorsFromTableStart = 0;
-
-        D3D12_DESCRIPTOR_RANGE1 samplerRange = {};
-        samplerRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-        samplerRange.NumDescriptors                    = 1;
-        samplerRange.BaseShaderRegister                = 0;
-        samplerRange.RegisterSpace                     = 0;
-        samplerRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-        samplerRange.OffsetInDescriptorsFromTableStart = 0;
-
-        D3D12_DESCRIPTOR_RANGE1 iblSrvRange = {};
-        iblSrvRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        iblSrvRange.NumDescriptors                    = 3;
-        iblSrvRange.BaseShaderRegister                = 10; // t10-t12
-        iblSrvRange.RegisterSpace                     = 0;
-        iblSrvRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-        iblSrvRange.OffsetInDescriptorsFromTableStart = 0;
-
-        D3D12_DESCRIPTOR_RANGE1 iblSamplerRange = {};
-        iblSamplerRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
-        iblSamplerRange.NumDescriptors                    = 1;
-        iblSamplerRange.BaseShaderRegister                = 1; // s1
-        iblSamplerRange.RegisterSpace                     = 0;
-        iblSamplerRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-        iblSamplerRange.OffsetInDescriptorsFromTableStart = 0;
-
-        D3D12_ROOT_PARAMETER1 params[4] = {};
-        params[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[0].DescriptorTable.NumDescriptorRanges = 1;
-        params[0].DescriptorTable.pDescriptorRanges   = &srvRange;
-        params[0].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        params[1].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[1].DescriptorTable.NumDescriptorRanges = 1;
-        params[1].DescriptorTable.pDescriptorRanges   = &samplerRange;
-        params[1].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        params[2].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[2].DescriptorTable.NumDescriptorRanges = 1;
-        params[2].DescriptorTable.pDescriptorRanges   = &iblSrvRange;
-        params[2].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        params[3].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        params[3].DescriptorTable.NumDescriptorRanges = 1;
-        params[3].DescriptorTable.pDescriptorRanges   = &iblSamplerRange;
-        params[3].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.Version                    = D3D_ROOT_SIGNATURE_VERSION_1_1;
-        rsDesc.Desc_1_1.NumParameters     = 4;
-        rsDesc.Desc_1_1.pParameters       = params;
-        rsDesc.Desc_1_1.Flags             = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-        ID3DBlob* blob  = nullptr;
-        ID3DBlob* error = nullptr;
-        if (SUCCEEDED(D3D12SerializeVersionedRootSignature(&rsDesc, &blob, &error))) {
-            dev->CreateRootSignature(0, blob->GetBufferPointer(),
-                                     blob->GetBufferSize(), IID_PPV_ARGS(&rootSig));
-            blob->Release();
-        }
-        if (error) error->Release();
+    if (descriptor.layout) {
+        auto* plh = static_cast<PipelineLayoutHandle*>(descriptor.layout->native);
+        rootSig = plh ? plh->rootSignature : nullptr;
+        if (rootSig) rootSig->AddRef();
     }
+    if (!rootSig) rootSig = createUniversalRootSignature(dev, {});
     if (!rootSig) return nullptr;
 
     // Input layout from vertex descriptor
@@ -1315,12 +1364,22 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(
 
 std::shared_ptr<BindGroup> Device::createBindGroup(
     const BindGroupDescriptor& descriptor) {
-    // For each texture entry, allocate a consecutive SRV slot in the shader-visible
-    // heap by copying the pre-built SRV.  The base GPU handle of the first slot is
-    // stored so SetGraphicsRootDescriptorTable can point at the contiguous range.
+    // For each texture entry, allocate an SRV slot in the shader-visible
+    // heap by copying the pre-built SRV. The base GPU handle of the first
+    // slot is stored so SetGraphicsRootDescriptorTable can point at it.
+    //
+    // NOTE: with srvFreeSlots reuse (see DeviceData's doc comment), slots
+    // allocated within one createBindGroup() call are NOT guaranteed
+    // contiguous the way they always were when srvOffset only incremented.
+    // Every BindGroupLayout actually used by campello_widgets' DirectX
+    // backend has at most one non-sampler entry, so this doesn't matter in
+    // practice today — but a hypothetical future layout with 2+ SRV/CBV
+    // entries bound as a single descriptor table would need contiguous
+    // allocation here, which this does not currently guarantee.
     auto* h   = new BindGroupHandle();
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
+    h->deviceData = d;
 
     bool firstSrv = true;
     UINT baseIdx  = 0;
@@ -1330,8 +1389,10 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
             auto& bb = *bbPtr;
             if (bb.buffer && bb.buffer->native) {
                 auto* bh = static_cast<BufferHandle*>(bb.buffer->native);
-                if (firstSrv) { baseIdx = d->srvOffset; firstSrv = false; }
-                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->allocSrvCpu();
+                UINT idx = d->allocSrvIndex();
+                if (firstSrv) { baseIdx = idx; firstSrv = false; }
+                h->srvSlotIndices.push_back(idx);
+                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->srvCpuAt(idx);
                 // Uniform buffers → CBV; others → raw SRV
                 D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
                 cbvDesc.BufferLocation = bh->resource->GetGPUVirtualAddress() + bb.offset;
@@ -1342,8 +1403,10 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
             auto& tex = *texPtr;
             if (tex && tex->native) {
                 auto* th = static_cast<TextureHandle*>(tex->native);
-                if (firstSrv) { baseIdx = d->srvOffset; firstSrv = false; }
-                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->allocSrvCpu();
+                UINT idx = d->allocSrvIndex();
+                if (firstSrv) { baseIdx = idx; firstSrv = false; }
+                h->srvSlotIndices.push_back(idx);
+                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->srvCpuAt(idx);
                 if (th->srvCpuHandle.ptr != 0)
                     dev->CopyDescriptorsSimple(1, dst, th->srvCpuHandle,
                                                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -1359,8 +1422,10 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
             auto& as = *asPtr;
             if (as && as->native) {
                 auto* ash = static_cast<AccelerationStructureHandle*>(as->native);
-                if (firstSrv) { baseIdx = d->srvOffset; firstSrv = false; }
-                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->allocSrvCpu();
+                UINT idx = d->allocSrvIndex();
+                if (firstSrv) { baseIdx = idx; firstSrv = false; }
+                h->srvSlotIndices.push_back(idx);
+                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->srvCpuAt(idx);
                 D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
                 srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
                 srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1584,6 +1649,18 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     }
 
     d->waitForGpu();
+
+    // Safe to reclaim now: waitForGpu() guarantees every draw call that
+    // could have referenced these slots' old contents has finished
+    // executing. See DeviceData::srvPendingFreeSlots' doc comment — this is
+    // NOT done in the other submit() overload below, which doesn't block on
+    // waitForGpu().
+    d->recycleSrvSlots();
+    d->recycleRtvExtraSlots();
+
+#ifdef _DEBUG
+    drainDebugMessages(d);
+#endif
     d->commandsSubmitted++;
 }
 
@@ -1607,6 +1684,12 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         d->queue->Signal(fenceData->fence, fenceData->value);
     }
 
+#ifdef _DEBUG
+    // Best-effort: this overload doesn't block on waitForGpu(), so messages
+    // from this specific submission may not be ready yet — still drains
+    // whatever's accumulated from prior work.
+    drainDebugMessages(d);
+#endif
     d->commandsSubmitted++;
 }
 
@@ -1784,10 +1867,25 @@ static ID3D12Resource* allocShaderTable(ID3D12Device* device, UINT numRecords) {
     return res;
 }
 
+// ID3D12Device5 is an API/runtime-version interface (available since the
+// Windows 10 October 2018 update) -- QueryInterface for it can succeed on
+// hardware with no actual DXR silicon (e.g. pre-RTX Intel iGPUs), and calling
+// GetRaytracingAccelerationStructurePrebuildInfo() on such a driver crashes
+// instead of failing gracefully. D3D12_FEATURE_DATA_D3D12_OPTIONS5's
+// RaytracingTier is the real hardware-capability check -- same one
+// Device::getFeatures() uses to decide whether to report Feature::raytracing.
+static bool deviceSupportsRaytracing(ID3D12Device* device) {
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
+    return SUCCEEDED(device->CheckFeatureSupport(
+               D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)))
+           && opts5.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+}
+
 std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStructure(
     const BottomLevelAccelerationStructureDescriptor& descriptor)
 {
     auto* d = static_cast<DeviceData*>(native);
+    if (!deviceSupportsRaytracing(d->device)) return nullptr;
 
     ID3D12Device5* dev5 = nullptr;
     if (FAILED(d->device->QueryInterface(IID_PPV_ARGS(&dev5)))) return nullptr;
@@ -1842,6 +1940,7 @@ std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructu
     const TopLevelAccelerationStructureDescriptor& descriptor)
 {
     auto* d = static_cast<DeviceData*>(native);
+    if (!deviceSupportsRaytracing(d->device)) return nullptr;
 
     ID3D12Device5* dev5 = nullptr;
     if (FAILED(d->device->QueryInterface(IID_PPV_ARGS(&dev5)))) return nullptr;

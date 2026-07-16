@@ -25,8 +25,11 @@ Texture::~Texture() {
     if (h->deviceData) {
         h->deviceData->textureCount--;
         h->deviceData->textureBytes.fetch_sub(h->allocatedSize);
+
+        if (h->rtvExtraIndex != static_cast<UINT>(-1))
+            h->deviceData->freeRtvExtraSlots({ h->rtvExtraIndex });
     }
-    
+
     if (h->resource) h->resource->Release();
     delete h;
 }
@@ -50,6 +53,7 @@ std::shared_ptr<TextureView> Texture::createView(
 
     auto* vh = new TextureViewHandle();
     vh->format = fmt;
+    vh->sourceHandle = h;
 
     if (isDepth) {
         // DSV — returned as cpu-only handle in the view
@@ -128,8 +132,11 @@ std::shared_ptr<TextureView> Texture::createView(
             } else if (h->deviceData) {
                 // Fallback: allocate a new SRV slot now (e.g. for textures created
                 // without textureBinding but used as shader resources anyway).
+                // Staging heap, not srvHeap — see srvStagingHeap's doc comment
+                // in common.hpp (a shader-visible heap's CPU handle can't be
+                // used as a CopyDescriptorsSimple source later).
                 auto* d = h->deviceData;
-                vh->cpuHandle = d->allocSrvCpu();
+                vh->cpuHandle = d->allocSrvStagingCpu();
                 h->device->CreateShaderResourceView(h->resource, &srvDesc, vh->cpuHandle);
             }
         }

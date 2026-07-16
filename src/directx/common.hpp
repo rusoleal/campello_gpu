@@ -7,6 +7,7 @@
 #include <vector>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/texture_type.hpp>
@@ -37,6 +38,18 @@ struct DeviceData {
     UINT                    srvDescSize       = 0;
     UINT                    srvOffset         = 0;  // next free slot index
 
+    // Non-shader-visible staging heap for each Texture's canonical/pre-baked
+    // SRV (TextureHandle::srvCpuHandle). D3D12 forbids using a shader-visible
+    // heap's CPU descriptor handle as a CopyDescriptorsSimple source (its
+    // memory is write-combined/CPU-write-only on most hardware) — every
+    // texture's SRV must live here and get copied INTO srvHeap per-bind-group,
+    // never the other way around. Confirmed via the D3D12 debug layer:
+    // "SrcDescriptorRangeStart points to a descriptor heap type that is CPU
+    // write only, so reading it (in this case a copy source) is invalid."
+    ID3D12DescriptorHeap*   srvStagingHeap    = nullptr;
+    UINT                    srvStagingDescSize = 0;
+    UINT                    srvStagingOffset  = 0;
+
     // Persistent shader-visible sampler heap
     ID3D12DescriptorHeap*   samplerHeap       = nullptr;
     UINT                    samplerDescSize   = 0;
@@ -57,11 +70,88 @@ struct DeviceData {
     UINT64                  fenceValue        = 0;
     HANDLE                  fenceEvent        = nullptr;
 
-    // Allocate one SRV slot; returns the CPU and GPU handles for it.
-    D3D12_CPU_DESCRIPTOR_HANDLE allocSrvCpu() {
+    // Debug-layer message queue (classic ID3D12InfoQueue — not ID3D12InfoQueue1,
+    // whose RegisterMessageCallback isn't supported on all driver stacks, e.g.
+    // older Intel iGPU drivers return E_NOINTERFACE for it). Polled once per
+    // submit() in _DEBUG builds; see drainDebugMessages() in device.cpp.
+    ID3D12InfoQueue*        infoQueue         = nullptr;
+
+    // srvHeap slot reclamation. Every BindGroup::~BindGroup() used to leak
+    // its slot(s) forever (srvOffset only ever incremented) — fine for
+    // long-lived bind groups, fatal for anything that creates them
+    // per-frame for genuinely-new resources that can't be identity-cached
+    // (e.g. a widget that recreates its source texture every frame, or an
+    // offscreen capture whose size changes every frame so pooling by size
+    // never converges). BindGroup::~BindGroup() pushes its slots onto
+    // srvPendingFreeSlots (NOT srvFreeSlots directly — the command list
+    // that referenced them may not have executed yet, since GPU descriptor
+    // tables are read by the GPU at *execution* time, not at recording
+    // time, so reusing a slot within the same still-being-recorded frame
+    // could corrupt an earlier draw call in that same frame). Device::submit()
+    // merges pending into the real free list only after waitForGpu(), by
+    // which point every draw call that could have referenced the old
+    // contents has definitely finished executing.
+    //
+    // Guarded by srvMutex: campello_widgets' image loading pipeline runs a
+    // background thread pool (ImageLoader) whose tasks own shared_ptr<Texture>/
+    // shared_ptr<BindGroup> references — the LAST reference to one can be
+    // dropped on a worker thread (e.g. a superseded/discarded load task),
+    // triggering ~Texture()/~BindGroup() concurrently with the main render
+    // thread's own allocations. Without a lock, two threads simultaneously
+    // push_back()/pop_back() on the same std::vector is a data race that can
+    // corrupt the vector's internal state — indistinguishable, from the
+    // outside, from the exact kind of heap-corruption crash this was found
+    // debugging (reproducible but with wildly inconsistent timing, which is
+    // the signature of a race rather than a deterministic resource leak).
+    std::mutex              srvMutex;
+    std::vector<UINT>      srvFreeSlots;
+    std::vector<UINT>      srvPendingFreeSlots;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE srvCpuAt(UINT idx) const {
         D3D12_CPU_DESCRIPTOR_HANDLE h = srvHeap->GetCPUDescriptorHandleForHeapStart();
-        h.ptr += srvOffset * srvDescSize;
-        ++srvOffset;
+        h.ptr += idx * srvDescSize;
+        return h;
+    }
+
+    // Returns a slot index — reused from srvFreeSlots if one is available,
+    // otherwise a fresh one from the end of the heap. Thread-safe — see
+    // srvMutex's doc comment above.
+    UINT allocSrvIndex() {
+        std::lock_guard<std::mutex> lock(srvMutex);
+        if (!srvFreeSlots.empty()) {
+            UINT idx = srvFreeSlots.back();
+            srvFreeSlots.pop_back();
+            return idx;
+        }
+        return srvOffset++;
+    }
+
+    // Thread-safe — see srvMutex's doc comment above.
+    void freeSrvSlots(const std::vector<UINT>& indices) {
+        if (indices.empty()) return;
+        std::lock_guard<std::mutex> lock(srvMutex);
+        srvPendingFreeSlots.insert(srvPendingFreeSlots.end(), indices.begin(), indices.end());
+    }
+
+    // Thread-safe — see srvMutex's doc comment above. Called once per
+    // Device::submit() after waitForGpu().
+    void recycleSrvSlots() {
+        std::lock_guard<std::mutex> lock(srvMutex);
+        if (srvPendingFreeSlots.empty()) return;
+        srvFreeSlots.insert(srvFreeSlots.end(), srvPendingFreeSlots.begin(), srvPendingFreeSlots.end());
+        srvPendingFreeSlots.clear();
+    }
+
+    // Allocate one SRV slot; returns the CPU handle for it.
+    D3D12_CPU_DESCRIPTOR_HANDLE allocSrvCpu() {
+        return srvCpuAt(allocSrvIndex());
+    }
+    // Allocate one slot in the non-shader-visible staging heap — see
+    // srvStagingHeap's doc comment above.
+    D3D12_CPU_DESCRIPTOR_HANDLE allocSrvStagingCpu() {
+        D3D12_CPU_DESCRIPTOR_HANDLE h = srvStagingHeap->GetCPUDescriptorHandleForHeapStart();
+        h.ptr += srvStagingOffset * srvStagingDescSize;
+        ++srvStagingOffset;
         return h;
     }
     D3D12_GPU_DESCRIPTOR_HANDLE srvGpuAt(UINT idx) const {
@@ -84,11 +174,69 @@ struct DeviceData {
     }
     UINT samplerCurrentIdx() const { return samplerOffset == 0 ? 0 : samplerOffset - 1; }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE allocRtvExtra() {
+    // rtvExtraHeap slot reclamation — same rationale and lifecycle as
+    // srvFreeSlots/srvPendingFreeSlots above (see that doc comment for the
+    // full explanation of the deferred-free-until-after-waitForGpu()
+    // pattern). Before this, allocRtvExtraIndex() only ever incremented
+    // rtvExtraOffset — fatal for rtvExtraHeap's mere 64 slots given
+    // campello_widgets' D3DDrawBackend::OffscreenTexturePool creates a new
+    // render-target Texture (permanently consuming one slot each) for every
+    // distinct ClipRRect/ClipOval/ShaderMask/BackdropFilter offscreen size
+    // encountered across a session — confirmed via a full minidump showing
+    // D3D12SDKLayers!ReportCorruption raised from inside
+    // Device::createTexture()'s CreateRenderTargetView call, reached via
+    // OffscreenTexturePool::acquire() -> Renderer::applyClipShape().
+    std::mutex        rtvExtraMutex;
+    std::vector<UINT> rtvExtraFreeSlots;
+    std::vector<UINT> rtvExtraPendingFreeSlots;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvExtraCpuAt(UINT idx) const {
         D3D12_CPU_DESCRIPTOR_HANDLE h = rtvExtraHeap->GetCPUDescriptorHandleForHeapStart();
-        h.ptr += rtvExtraOffset * rtvExtraDescSize;
-        ++rtvExtraOffset;
+        h.ptr += idx * rtvExtraDescSize;
         return h;
+    }
+
+    // Thread-safe — mirrors allocSrvIndex().
+    UINT allocRtvExtraIndex() {
+        std::lock_guard<std::mutex> lock(rtvExtraMutex);
+        if (!rtvExtraFreeSlots.empty()) {
+            UINT idx = rtvExtraFreeSlots.back();
+            rtvExtraFreeSlots.pop_back();
+            return idx;
+        }
+        return rtvExtraOffset++;
+    }
+
+    // Thread-safe — mirrors freeSrvSlots(). Texture::~Texture() can run on
+    // an ImageLoader worker thread (see srvMutex's doc comment above for
+    // why), so this needs the same protection even though today's offscreen
+    // render targets are only ever created/destroyed on the main thread —
+    // future-proofing against that changing is cheap and matches the
+    // existing SRV pattern exactly.
+    void freeRtvExtraSlots(const std::vector<UINT>& indices) {
+        if (indices.empty()) return;
+        std::lock_guard<std::mutex> lock(rtvExtraMutex);
+        rtvExtraPendingFreeSlots.insert(rtvExtraPendingFreeSlots.end(), indices.begin(), indices.end());
+    }
+
+    // Thread-safe — mirrors recycleSrvSlots(). Called once per
+    // Device::submit() after waitForGpu().
+    void recycleRtvExtraSlots() {
+        std::lock_guard<std::mutex> lock(rtvExtraMutex);
+        if (rtvExtraPendingFreeSlots.empty()) return;
+        rtvExtraFreeSlots.insert(rtvExtraFreeSlots.end(), rtvExtraPendingFreeSlots.begin(), rtvExtraPendingFreeSlots.end());
+        rtvExtraPendingFreeSlots.clear();
+    }
+
+    // Convenience wrapper for transient, single-command-list-recording RTV
+    // use (e.g. CommandEncoder::generateMipmaps()'s per-mip-level RTV) where
+    // the caller doesn't wrap the allocation in a TextureHandle to free it
+    // via freeRtvExtraSlots() later. Callers that DO need to free their
+    // allocation (Device::createTexture(), which stores the index in
+    // TextureHandle::rtvExtraIndex) should call allocRtvExtraIndex() +
+    // rtvExtraCpuAt() directly instead, as createTexture() does.
+    D3D12_CPU_DESCRIPTOR_HANDLE allocRtvExtra() {
+        return rtvExtraCpuAt(allocRtvExtraIndex());
     }
 
     D3D12_CPU_DESCRIPTOR_HANDLE allocDsv() {
@@ -237,6 +385,25 @@ struct TextureHandle {
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle    = {};
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle    = {};
     D3D12_CPU_DESCRIPTOR_HANDLE srvCpuHandle = {};  // pre-baked SRV for shader binding
+    // rtvExtraHeap slot index backing rtvHandle above, so Texture::~Texture()
+    // can free it via DeviceData::freeRtvExtraSlots() — sentinel (-1) means
+    // this texture was never allocated a rtvExtraHeap slot (not a render
+    // target, or a depth format using dsvHandle/allocDsv() instead).
+    UINT rtvExtraIndex = static_cast<UINT>(-1);
+
+    // Current resource state (initialized in Device::createTexture() to
+    // whatever InitialResourceState was passed to CreateCommittedResource,
+    // then updated as CommandEncoder::beginRenderPass()/RenderPassEncoder::
+    // end() transition it between RENDER_TARGET (while written as a color
+    // attachment) and PIXEL_SHADER_RESOURCE|NON_PIXEL_SHADER_RESOURCE (while
+    // read as a shader resource) — a texture used as an offscreen render
+    // target and then sampled (BackdropFilter blur, ClipRRect/ShaderMask
+    // composites) needs an explicit barrier between those two uses; D3D12
+    // has no implicit tracking the way Metal/Vulkan's runtimes do. Confirmed
+    // via the D3D12 debug layer: "SetGraphicsRootDescriptorTable: Resource
+    // state (RENDER_TARGET) ... is invalid for use as a
+    // NON_PIXEL_SHADER_RESOURCE|PIXEL_SHADER_RESOURCE" without this.
+    D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
 };
 
 enum class ViewType { SRV, UAV, RTV, DSV };
@@ -246,6 +413,15 @@ struct TextureViewHandle {
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = {};
     DXGI_FORMAT                 format    = DXGI_FORMAT_UNKNOWN;
     ViewType                    viewType  = ViewType::SRV;
+
+    // Back-reference to the owning TextureHandle, used by beginRenderPass()/
+    // RenderPassEncoder::end() to read/update TextureHandle::currentState
+    // and insert resource-state barriers. Left null for views that don't
+    // wrap a Device::createTexture()-created texture — e.g. the swapchain's
+    // own backbuffer view from getSwapchainTextureView(), which manages its
+    // PRESENT<->RENDER_TARGET transition separately and must NOT be
+    // transitioned to a shader-resource state.
+    TextureHandle* sourceHandle = nullptr;
 };
 
 struct ShaderModuleHandle {
@@ -272,6 +448,14 @@ struct BindGroupLayoutHandle {
 struct BindGroupHandle {
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle     = {};
     D3D12_GPU_DESCRIPTOR_HANDLE samplerHandle = {};
+
+    // srvHeap slot indices this bind group's non-sampler entries consumed
+    // (CBV/SRV/AS — samplers reuse the Sampler's own permanent slot, never
+    // allocate one here) — freed (deferred, via srvPendingFreeSlots) in
+    // BindGroup::~BindGroup(). See DeviceData::srvPendingFreeSlots' doc
+    // comment in common.hpp for why this can't be immediate.
+    std::vector<UINT> srvSlotIndices;
+    DeviceData*        deviceData = nullptr;
 };
 
 struct PipelineLayoutHandle {
@@ -338,10 +522,23 @@ struct RenderPassEncoderHandle {
     D3D12_PRIMITIVE_TOPOLOGY   topology   = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     // Vertex strides per slot — copied from the pipeline on setPipeline()
     std::vector<UINT>          vertexStrides;
+    // Whether setPipeline() has run SetGraphicsRootSignature() on cmdList yet.
+    // SetGraphicsRootDescriptorTable() is undefined behavior (observed as an
+    // access violation, not a clean validation error) if no root signature has
+    // ever been set on the command list -- callers that call setBindGroup()
+    // before setPipeline() (or a pass with no pipeline at all) must no-op
+    // instead of issuing the call.
+    bool                       hasRootSignature = false;
     // Occlusion query state (populated from BeginRenderPassDescriptor::occlusionQuerySet)
     ID3D12QueryHeap*           queryHeap        = nullptr;
     D3D12_QUERY_TYPE           queryType        = D3D12_QUERY_TYPE_OCCLUSION;
     uint32_t                   activeQueryIndex = 0;
+    // Color-attachment textures transitioned to RENDER_TARGET by
+    // beginRenderPass() (only those with a non-null TextureViewHandle::
+    // sourceHandle — i.e. not the swapchain backbuffer) — transitioned to a
+    // shader-readable state in end(). See TextureHandle::currentState's doc
+    // comment.
+    std::vector<TextureHandle*> colorAttachmentTextures;
 };
 
 struct ComputePassEncoderHandle {
