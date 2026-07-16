@@ -60,6 +60,21 @@
       contexts work; `VK_KHR_portability_enumeration` is now enabled when available.
 - [x] **[Linux/Vulkan]** `renderTarget` usage added `DEPTH_STENCIL_ATTACHMENT` to color formats —
       now only adds depth/stencil usage for depth/stencil formats.
+- [x] **[Android/Vulkan]** `build-android` CI job failing on all 4 ABIs (caught via the
+      `arm64-v8a` job log, session 2026-07-16): `ld.lld: error: undefined symbol:
+      vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR` in `src/vulkan/device.cpp`'s
+      `createDevice()`. Root cause: the header declares the prototype (so it compiles
+      fine), but Android's `libvulkan.so` only statically exports core Vulkan symbols —
+      every other KHR extension function in this file (dynamic rendering, acceleration
+      structure, ray tracing pipeline) is already resolved dynamically via
+      `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr` into a `pfn*` pointer; the
+      cooperative-matrix properties query (added in the `Feature::cooperativeMatrix`
+      work) was the one call site that skipped that pattern and called the symbol
+      directly. Fixed by resolving `pfnGetCoopMatProps` via `vkGetInstanceProcAddr`
+      before use. **Verified by reproducing the exact CI failure locally**: configured
+      and built with the same NDK (27.0.12077973), `ANDROID_ABI=arm64-v8a`,
+      `ANDROID_PLATFORM=android-28` as the CI job — confirmed the undefined-symbol link
+      error with the old code, then confirmed a clean link after the fix.
 
 ## Missing implementations — Vulkan/Android
 

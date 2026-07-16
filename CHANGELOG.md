@@ -22,6 +22,8 @@ All notable changes to campello_gpu are documented here.
 
 - **[Vulkan] `Device::getFeatures()` missing `Feature::raytracing`** — only `Adapter::getFeatures()` inserted it, even though `DeviceData::rayTracingEnabled` was already tracked and available in that function; every Vulkan ray tracing integration test was silently skipping as a result.
 
+- **[Android/Vulkan] Build failure on all 4 ABIs** — `ld.lld: error: undefined symbol: vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`. Android's `libvulkan.so` only statically exports core Vulkan symbols; every other KHR extension function in `device.cpp` is already resolved dynamically via `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr`, but the cooperative-matrix properties query called this one directly. Fixed by resolving it the same way. Caught via CI job log inspection and reproduced/verified locally by building against the real Android NDK toolchain before and after the fix.
+
 ## [0.18.0] - 2026-07-04
 
 ### Added

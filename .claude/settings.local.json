@@ -77,7 +77,9 @@
       "Bash(git commit -m ' *)",
       "WebFetch(domain:metalbyexample.com)",
       "Bash(clang++ -std=c++20 -fsyntax-only -I inc -I __TRACKED_VAR__/usr/include -I __TRACKED_VAR__/usr/include/aarch64-linux-android -DVK_USE_PLATFORM_ANDROID_KHR src/vulkan/adapter.cpp)",
-      "Bash(DYLD_LIBRARY_PATH=. /tmp/check_features)"
+      "Bash(DYLD_LIBRARY_PATH=. /tmp/check_features)",
+      "WebFetch(domain:productionresultssa11.blob.core.windows.net)",
+      "Bash(git stash *)"
     ]
   }
 }

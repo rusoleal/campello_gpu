@@ -631,15 +631,22 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     // than after vkCreateDevice.
     std::vector<VkCooperativeMatrixPropertiesKHR> coopMatProperties;
     if (coopMatSupported) {
-        uint32_t coopMatCount = 0;
-        vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(gpu, &coopMatCount, nullptr);
-        if (coopMatCount > 0) {
-            coopMatProperties.resize(coopMatCount);
-            for (auto &p : coopMatProperties) {
-                p.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
-                p.pNext = nullptr;
+        // Extension functions are not guaranteed to be statically-exported symbols
+        // (they aren't on Android's libvulkan.so) — must be resolved dynamically,
+        // same as every other KHR function in this file.
+        auto pfnGetCoopMatProps = (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)
+            vkGetInstanceProcAddr(getInstance(), "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
+        if (pfnGetCoopMatProps) {
+            uint32_t coopMatCount = 0;
+            pfnGetCoopMatProps(gpu, &coopMatCount, nullptr);
+            if (coopMatCount > 0) {
+                coopMatProperties.resize(coopMatCount);
+                for (auto &p : coopMatProperties) {
+                    p.sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR;
+                    p.pNext = nullptr;
+                }
+                pfnGetCoopMatProps(gpu, &coopMatCount, coopMatProperties.data());
             }
-            vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR(gpu, &coopMatCount, coopMatProperties.data());
         }
     }
 
