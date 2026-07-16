@@ -4,27 +4,6 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
-### Added
-
-- **[DirectX 12] Debug tooling** — `_DEBUG`-only D3D12 validation layer + `ID3D12InfoQueue` wiring, polled once per `Device::submit()` (`ID3D12InfoQueue1::RegisterMessageCallback` isn't supported on all driver stacks, e.g. older Intel iGPU drivers).
-
-### Fixed
-
-- **[DirectX 12] `srvHeap` / `rtvExtraHeap` descriptor slot leak** — slots were only ever incremented, never reclaimed even after the owning `BindGroup`/`Texture` was destroyed — fatal for callers that create fresh bind groups or render targets per frame. `BindGroup::~BindGroup()` and `Texture::~Texture()` now push freed slots onto a pending list, merged into the reusable free list after `Device::submit()`'s `waitForGpu()` (GPU descriptor tables are read at execution time, not recording time), guarded by a mutex since these destructors can run on a background thread.
-- **[DirectX 12] Texture SRV staging heap** — `Device::createTexture()`'s pre-baked SRV previously lived in the same shader-visible `srvHeap` that `createBindGroup()` later copies from via `CopyDescriptorsSimple`, which D3D12 forbids (a shader-visible heap's CPU handle cannot be a copy source). Moved to a new non-shader-visible staging heap.
-- **[DirectX 12] Root signature could not mix sampler and resource ranges** — `createUniversalRootSignature()` built one descriptor table per `BindGroupLayout`, mixing `SAMPLER` and `CBV/SRV/UAV` ranges in the same table, which D3D12 forbids. Now emits two tables (`[resource, sampler]`) per layout, matching `setBindGroup()`'s existing `[index, index+1]` convention.
-- **[DirectX 12] `createRenderPipeline()` ignored the caller's `PipelineLayout`** — always built a hardcoded fixed PBR/IBL SRV-only root signature, so no render pipeline could ever bind a uniform buffer. Now builds the root signature from `descriptor.layout`, matching `createComputePipeline()`.
-- **[DirectX 12] Missing resource-state barriers for offscreen render targets used as shader resources** — D3D12 has no implicit state tracking; a texture rendered to and then sampled (blur/composite passes) needs an explicit transition between the two uses. `beginRenderPass()`/`RenderPassEncoder::end()` now transition color attachments between `RENDER_TARGET` and a shader-readable state via a new `TextureHandle::currentState` field.
-- **[DirectX 12] `RenderPassEncoder::setBindGroup()` crash when called before `setPipeline()`** — called `SetGraphicsRootDescriptorTable` with no root signature ever set on the command list, undefined behavior per the D3D12 spec, observed as a hard access violation rather than a validation error. Now guarded by `RenderPassEncoderHandle::hasRootSignature`, set by `setPipeline()`.
-- **[DirectX 12] `createBottomLevelAccelerationStructure()` / `createTopLevelAccelerationStructure()` crash on non-RT hardware** — only checked that the `ID3D12Device5` interface existed (an API/runtime-version check, unrelated to hardware capability), not `D3D12_FEATURE_DATA_D3D12_OPTIONS5::RaytracingTier` (the actual check `getFeatures()` already uses). Now returns `nullptr` early when the raytracing tier is unsupported, instead of crashing.
-
-### Tests
-
-- `Fence.DidFailIsFalseAfterSuccessfulSubmission` — exercises `Fence::didFail()` / `failureReason()` (added in 0.19.0) against a real successful submission on real hardware.
-- `Device.GetCooperativeMatrixPropertiesDoesNotThrow`, `Device.GetCooperativeMatrixPropertiesEmptyWhenFeatureAbsent`, `Device.CooperativeMatrixFeatureNotReportedOnDirectX` — exercise `Device::getCooperativeMatrixProperties()` (added in 0.19.0).
-- Fixed `CommandEncoder.CopyTextureToTextureMipLevels` — was copying a 64x64 region into a 32x32 mip-1 destination, out of bounds per the D3D12 debug layer.
-- Fixed the `RenderPassEncoder` test helper `makeRTView()` — returned a `TextureView` after letting its source `Texture` (and D3D12 resource) be destroyed, a use-after-free newly exposed by the resource-state tracking above.
-
 ## [0.19.0] - 2026-07-16
 
 ### Added
@@ -37,6 +16,8 @@ All notable changes to campello_gpu are documented here.
 
 - **[Vulkan/Metal/DirectX/WebGPU] `Feature::fp16`, [Vulkan/Metal/DirectX] `Feature::subgroupOperations`** — two new boolean capability flags. `fp16`: Vulkan `shaderFloat16` (queried and actually enabled at device creation), Metal (unconditional — native MSL `half` type on every device), DirectX `Native16BitShaderOpsSupported`, WebGPU `shader-f16`. `subgroupOperations`: Vulkan subgroup basic+ballot+arithmetic support in the compute stage, Metal gated on `MTL::GPUFamilyApple6` (same bar as `cooperativeMatrix`), DirectX `WaveOps`. Not queried on WebGPU — Emscripten SDK 3.1.74's bundled `webgpu.h` doesn't define `WGPUFeatureName_Subgroups` yet, even though the feature itself has shipped in Chrome since version 134; see `TODO.md`.
 
+- **[DirectX 12] Debug tooling** — `_DEBUG`-only D3D12 validation layer + `ID3D12InfoQueue` wiring, polled once per `Device::submit()` (`ID3D12InfoQueue1::RegisterMessageCallback` isn't supported on all driver stacks, e.g. older Intel iGPU drivers).
+
 ### Fixed
 
 - **[Vulkan] `Fence::wait()` / `isSignaled()`** — only checked `VK_SUCCESS`, so a lost device was treated as "never signaled," letting callers spin/hang forever. Now also detects `VK_ERROR_DEVICE_LOST`.
@@ -46,6 +27,27 @@ All notable changes to campello_gpu are documented here.
 - **[Android/Vulkan] Build failure on all 4 ABIs** — `ld.lld: error: undefined symbol: vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR`. Android's `libvulkan.so` only statically exports core Vulkan symbols; every other KHR extension function in `device.cpp` is already resolved dynamically via `vkGetInstanceProcAddr`/`vkGetDeviceProcAddr`, but the cooperative-matrix properties query called this one directly. Fixed by resolving it the same way. Caught via CI job log inspection and reproduced/verified locally by building against the real Android NDK toolchain before and after the fix.
 
 - **[WebGPU] Build failure (`build-wasm`)** — `error: use of undeclared identifier 'WGPUFeatureName_Subgroups'`. Emscripten SDK 3.1.74's bundled `webgpu.h` does not define this enumerator (confirmed by fetching the header at that exact SDK tag). Fixed by not querying `Feature::subgroupOperations` on this backend. Caught via CI job log inspection and reproduced/verified locally by installing the exact CI Emscripten version and building before and after the fix.
+
+- **[DirectX 12] `srvHeap` / `rtvExtraHeap` descriptor slot leak** — slots were only ever incremented, never reclaimed even after the owning `BindGroup`/`Texture` was destroyed — fatal for callers that create fresh bind groups or render targets per frame. `BindGroup::~BindGroup()` and `Texture::~Texture()` now push freed slots onto a pending list, merged into the reusable free list after `Device::submit()`'s `waitForGpu()` (GPU descriptor tables are read at execution time, not recording time), guarded by a mutex since these destructors can run on a background thread.
+
+- **[DirectX 12] Texture SRV staging heap** — `Device::createTexture()`'s pre-baked SRV previously lived in the same shader-visible `srvHeap` that `createBindGroup()` later copies from via `CopyDescriptorsSimple`, which D3D12 forbids (a shader-visible heap's CPU handle cannot be a copy source). Moved to a new non-shader-visible staging heap.
+
+- **[DirectX 12] Root signature could not mix sampler and resource ranges** — `createUniversalRootSignature()` built one descriptor table per `BindGroupLayout`, mixing `SAMPLER` and `CBV/SRV/UAV` ranges in the same table, which D3D12 forbids. Now emits two tables (`[resource, sampler]`) per layout, matching `setBindGroup()`'s existing `[index, index+1]` convention.
+
+- **[DirectX 12] `createRenderPipeline()` ignored the caller's `PipelineLayout`** — always built a hardcoded fixed PBR/IBL SRV-only root signature, so no render pipeline could ever bind a uniform buffer. Now builds the root signature from `descriptor.layout`, matching `createComputePipeline()`.
+
+- **[DirectX 12] Missing resource-state barriers for offscreen render targets used as shader resources** — D3D12 has no implicit state tracking; a texture rendered to and then sampled (blur/composite passes) needs an explicit transition between the two uses. `beginRenderPass()`/`RenderPassEncoder::end()` now transition color attachments between `RENDER_TARGET` and a shader-readable state via a new `TextureHandle::currentState` field.
+
+- **[DirectX 12] `RenderPassEncoder::setBindGroup()` crash when called before `setPipeline()`** — called `SetGraphicsRootDescriptorTable` with no root signature ever set on the command list, undefined behavior per the D3D12 spec, observed as a hard access violation rather than a validation error. Now guarded by `RenderPassEncoderHandle::hasRootSignature`, set by `setPipeline()`.
+
+- **[DirectX 12] `createBottomLevelAccelerationStructure()` / `createTopLevelAccelerationStructure()` crash on non-RT hardware** — only checked that the `ID3D12Device5` interface existed (an API/runtime-version check, unrelated to hardware capability), not `D3D12_FEATURE_DATA_D3D12_OPTIONS5::RaytracingTier` (the actual check `getFeatures()` already uses). Now returns `nullptr` early when the raytracing tier is unsupported, instead of crashing.
+
+### Tests
+
+- `Fence.DidFailIsFalseAfterSuccessfulSubmission` — exercises `Fence::didFail()` / `failureReason()` against a real successful submission on real hardware.
+- `Device.GetCooperativeMatrixPropertiesDoesNotThrow`, `Device.GetCooperativeMatrixPropertiesEmptyWhenFeatureAbsent`, `Device.CooperativeMatrixFeatureNotReportedOnDirectX` — exercise `Device::getCooperativeMatrixProperties()`.
+- Fixed `CommandEncoder.CopyTextureToTextureMipLevels` — was copying a 64x64 region into a 32x32 mip-1 destination, out of bounds per the D3D12 debug layer.
+- Fixed the `RenderPassEncoder` test helper `makeRTView()` — returned a `TextureView` after letting its source `Texture` (and D3D12 resource) be destroyed, a use-after-free newly exposed by the resource-state tracking above.
 
 ## [0.18.0] - 2026-07-04
 
