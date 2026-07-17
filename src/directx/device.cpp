@@ -273,10 +273,10 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
             D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
     }
 
-    // RTV heap for user render targets (CPU-only, 64 slots)
+    // RTV heap for user render targets (CPU-only, DeviceData::kRtvExtraHeapCapacity slots)
     {
         D3D12_DESCRIPTOR_HEAP_DESC hd = {};
-        hd.NumDescriptors = 64;
+        hd.NumDescriptors = DeviceData::kRtvExtraHeapCapacity;
         hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&data->rtvExtraHeap));
@@ -998,7 +998,15 @@ std::shared_ptr<Texture> Device::createTexture(
             dev->CreateDepthStencilView(resource, nullptr, handle->dsvHandle);
         } else {
             handle->rtvExtraIndex = d->allocRtvExtraIndex();
-            handle->rtvHandle     = d->rtvExtraCpuAt(handle->rtvExtraIndex);
+            if (handle->rtvExtraIndex == static_cast<UINT>(-1)) {
+                // rtvExtraHeap exhausted (see allocRtvExtraIndex()'s doc
+                // comment) — fail the texture creation instead of writing
+                // an RTV past the heap's backing storage.
+                delete handle;
+                resource->Release();
+                return nullptr;
+            }
+            handle->rtvHandle = d->rtvExtraCpuAt(handle->rtvExtraIndex);
             dev->CreateRenderTargetView(resource, nullptr, handle->rtvHandle);
         }
     }

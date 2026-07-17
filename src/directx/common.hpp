@@ -55,7 +55,11 @@ struct DeviceData {
     UINT                    samplerDescSize   = 0;
     UINT                    samplerOffset     = 0;
 
-    // CPU-only RTV heap for user render targets (non-swapchain)
+    // CPU-only RTV heap for user render targets (non-swapchain). See
+    // kRtvExtraHeapCapacity's doc comment — allocRtvExtraIndex() bounds-checks
+    // against it rather than trusting recycling to always keep the live
+    // working set under the heap's actual descriptor count.
+    static constexpr UINT   kRtvExtraHeapCapacity = 1024;
     ID3D12DescriptorHeap*   rtvExtraHeap      = nullptr;
     UINT                    rtvExtraDescSize  = 0;
     UINT                    rtvExtraOffset    = 0;
@@ -196,7 +200,19 @@ struct DeviceData {
         return h;
     }
 
-    // Thread-safe — mirrors allocSrvIndex().
+    // Thread-safe — mirrors allocSrvIndex(). Returns UINT(-1) if the heap is
+    // exhausted (rtvExtraOffset would reach kRtvExtraHeapCapacity) rather than
+    // handing out an index rtvExtraCpuAt() would compute a CPU handle past
+    // the heap's actual backing storage for — a real CreateRenderTargetView
+    // call at such a handle corrupts adjacent D3D12 runtime memory instead of
+    // failing cleanly (confirmed via a full minidump: D3D12SDKLayers!
+    // ReportCorruption from inside Device::createTexture()'s
+    // CreateRenderTargetView call). Recycling only makes a freed slot
+    // reusable after the *next* Device::submit()'s waitForGpu(), so a single
+    // frame that creates more than kRtvExtraHeapCapacity distinct new
+    // render-target textures before ever submitting can still exhaust this —
+    // this check turns that into a clean allocation failure instead of
+    // silent memory corruption.
     UINT allocRtvExtraIndex() {
         std::lock_guard<std::mutex> lock(rtvExtraMutex);
         if (!rtvExtraFreeSlots.empty()) {
@@ -204,6 +220,7 @@ struct DeviceData {
             rtvExtraFreeSlots.pop_back();
             return idx;
         }
+        if (rtvExtraOffset >= kRtvExtraHeapCapacity) return static_cast<UINT>(-1);
         return rtvExtraOffset++;
     }
 
