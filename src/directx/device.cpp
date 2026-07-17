@@ -43,9 +43,11 @@ using namespace systems::leal::campello_gpu;
 #ifdef _DEBUG
 // Drains and prints every pending D3D12 debug-layer message (see
 // DeviceData::infoQueue's doc comment for why this polls instead of using
-// ID3D12InfoQueue1's callback). Called once per submit() — the CPU already
-// blocks on waitForGpu() there, so messages from this frame's GPU work are
-// guaranteed available by the time this runs.
+// ID3D12InfoQueue1's callback). Called once per submit() — best-effort:
+// submit() no longer blocks until the GPU is idle (see
+// DeviceData::beginFrameRing()'s doc comment), so messages from THIS
+// frame's GPU work may not be queued yet; this still drains whatever has
+// accumulated from prior frames' work.
 static void drainDebugMessages(DeviceData* d) {
     if (!d->infoQueue) return;
     UINT64 n = d->infoQueue->GetNumStoredMessages();
@@ -1571,14 +1573,57 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
 
-    ID3D12CommandAllocator* alloc = nullptr;
-    if (FAILED(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                            IID_PPV_ARGS(&alloc)))) return nullptr;
+    // Frame-in-flight ring rotation — see DeviceData::beginFrameRing()'s
+    // doc comment for the full design/correctness rationale. Must run
+    // before any GPU work for the new frame is recorded.
+    UINT gen = d->beginFrameRing();
 
-    ID3D12GraphicsCommandList* list = nullptr;
-    if (FAILED(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                       alloc, nullptr, IID_PPV_ARGS(&list)))) {
-        alloc->Release(); return nullptr;
+    // Reclaim this ring slot's D3D12 command allocator/list/query-heap/
+    // readback-buffer for reuse (Reset() instead of Create()) rather than
+    // paying for fresh CreateCommandAllocator/CreateCommandList/
+    // CreateQueryHeap/CreateCommittedResource driver calls every frame —
+    // measured at ~3ms/frame of avoidable CPU-side overhead on top of
+    // beginFrameRing()'s own fence wait. beginFrameRing()'s wait above
+    // just confirmed the GPU is done with whatever this slot last
+    // submitted, which is exactly the precondition
+    // ID3D12CommandAllocator::Reset() requires.
+    //
+    // The retiring CommandBuffer's D3D12 objects are stolen (not copied)
+    // out of its handle — its own fields are nulled so its destructor,
+    // which runs when `retiring` goes out of scope below, releases only
+    // stagingResources (genuinely per-frame, not pooled) and not these 4
+    // objects, avoiding a double free. This hand-off happens here (in
+    // Device::createCommandEncoder(), not DeviceData::beginFrameRing())
+    // because only Device/CommandEncoder have friend access to
+    // CommandBuffer::native.
+    ID3D12CommandAllocator*    alloc          = nullptr;
+    ID3D12GraphicsCommandList* list           = nullptr;
+    ID3D12QueryHeap*           timestampHeap  = nullptr;
+    ID3D12Resource*            readbackBuffer = nullptr;
+
+    if (auto retiring = std::move(d->genCommandBuffer[gen])) {
+        auto* cbh = static_cast<CommandBufferHandle*>(retiring->native);
+        alloc          = cbh->allocator;
+        list           = cbh->cmdList;
+        timestampHeap  = cbh->timestampQueryHeap;
+        readbackBuffer = cbh->timestampReadbackBuffer;
+        cbh->allocator               = nullptr;
+        cbh->cmdList                 = nullptr;
+        cbh->timestampQueryHeap      = nullptr;
+        cbh->timestampReadbackBuffer = nullptr;
+    }
+
+    if (alloc && list) {
+        if (FAILED(alloc->Reset())) return nullptr;
+        if (FAILED(list->Reset(alloc, nullptr))) return nullptr;
+    } else {
+        // First-ever use of this ring slot — nothing to reclaim yet.
+        if (FAILED(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                IID_PPV_ARGS(&alloc)))) return nullptr;
+        if (FAILED(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                           alloc, nullptr, IID_PPV_ARGS(&list)))) {
+            alloc->Release(); return nullptr;
+        }
     }
 
     // Set shader-visible heaps for this command list
@@ -1596,34 +1641,36 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
         list->ResourceBarrier(1, &barrier);
     }
 
-    // Create timestamp query resources for GPU timing
-    ID3D12QueryHeap* timestampHeap = nullptr;
-    ID3D12Resource* readbackBuffer = nullptr;
-    
-    D3D12_QUERY_HEAP_DESC queryHeapDesc = {};
-    queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-    queryHeapDesc.Count = 2;  // Start and end timestamps
-    queryHeapDesc.NodeMask = 0;
-    
-    if (SUCCEEDED(dev->CreateQueryHeap(&queryHeapDesc, IID_PPV_ARGS(&timestampHeap)))) {
-        // Create readback buffer for query results
-        D3D12_HEAP_PROPERTIES heapProps = {};
-        heapProps.Type = D3D12_HEAP_TYPE_READBACK;
-        
-        D3D12_RESOURCE_DESC bufferDesc = {};
-        bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        bufferDesc.Width = 2 * sizeof(uint64_t);  // Two timestamps
-        bufferDesc.Height = 1;
-        bufferDesc.DepthOrArraySize = 1;
-        bufferDesc.MipLevels = 1;
-        bufferDesc.SampleDesc.Count = 1;
-        bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        
-        dev->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
-                                     D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                     IID_PPV_ARGS(&readbackBuffer));
+    // Timestamp query resources for GPU timing — reused as-is when
+    // reclaimed above (EndQuery()/ResolveQueryData() overwrite their
+    // contents fresh every frame, no Reset() needed), created fresh only
+    // on this ring slot's first use.
+    if (!timestampHeap) {
+        D3D12_QUERY_HEAP_DESC queryHeapDesc = {};
+        queryHeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        queryHeapDesc.Count = 2;  // Start and end timestamps
+        queryHeapDesc.NodeMask = 0;
+
+        if (SUCCEEDED(dev->CreateQueryHeap(&queryHeapDesc, IID_PPV_ARGS(&timestampHeap)))) {
+            // Create readback buffer for query results
+            D3D12_HEAP_PROPERTIES heapProps = {};
+            heapProps.Type = D3D12_HEAP_TYPE_READBACK;
+
+            D3D12_RESOURCE_DESC bufferDesc = {};
+            bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            bufferDesc.Width = 2 * sizeof(uint64_t);  // Two timestamps
+            bufferDesc.Height = 1;
+            bufferDesc.DepthOrArraySize = 1;
+            bufferDesc.MipLevels = 1;
+            bufferDesc.SampleDesc.Count = 1;
+            bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+            dev->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc,
+                                         D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                         IID_PPV_ARGS(&readbackBuffer));
+        }
     }
-    
+
     // Get timestamp frequency (ticks per second)
     uint64_t freq = 0;
     d->queue->GetTimestampFrequency(&freq);
@@ -1656,17 +1703,25 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         d->frameIndex = d->swapChain->GetCurrentBackBufferIndex();
     }
 
-    d->waitForGpu();
-
-    // Safe to reclaim now: waitForGpu() guarantees every draw call that
-    // could have referenced these slots' old contents has finished
-    // executing. See DeviceData::srvPendingFreeSlots' doc comment — this is
-    // NOT done in the other submit() overload below, which doesn't block on
-    // waitForGpu().
-    d->recycleSrvSlots();
-    d->recycleRtvExtraSlots();
+    // Signal (don't wait) — this frame's fence value is recorded against
+    // its ring slot; beginFrameRing() waits for it, and reclaims this
+    // generation's pending descriptor-heap slots, once this same slot comes
+    // back around (kFramesInFlight submits from now). See
+    // DeviceData::beginFrameRing()'s doc comment for the full design.
+    // genCommandBuffer keeps this CommandBuffer's D3D12 command
+    // list/allocator/staging resources alive until then — releasing them
+    // while the GPU may still be executing from them is undefined behavior.
+    ++d->fenceValue;
+    d->queue->Signal(d->fence, d->fenceValue);
+    UINT gen = d->currentFrameGen.load();
+    d->genFenceValue[gen]   = d->fenceValue;
+    d->genCommandBuffer[gen] = std::move(commandBuffer);
 
 #ifdef _DEBUG
+    // Best-effort: submit() no longer blocks until the GPU is done, so
+    // messages from THIS specific submission may not be ready yet — still
+    // drains whatever's accumulated from prior work (mirrors the other
+    // submit() overload below).
     drainDebugMessages(d);
 #endif
     d->commandsSubmitted++;

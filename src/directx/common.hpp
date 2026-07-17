@@ -4,15 +4,18 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
+#include <array>
 #include <vector>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/texture_type.hpp>
 #include <campello_gpu/constants/texture_usage.hpp>
 #include <campello_gpu/metrics.hpp>
+#include <campello_gpu/command_buffer.hpp>
 
 namespace systems::leal::campello_gpu {
 
@@ -32,6 +35,34 @@ struct DeviceData {
     ID3D12DescriptorHeap*   rtvHeap           = nullptr;   // swapchain RTVs
     UINT                    rtvDescSize       = 0;
     UINT                    frameIndex        = 0;
+
+    // Frame-in-flight ring. Tied explicitly to kFrameCount (rather than an
+    // independent constant) since there's no benefit to pipelining deeper
+    // than the swapchain itself can buffer — see beginFrameRing()'s doc
+    // comment for the full design rationale.
+    static constexpr UINT      kFramesInFlight = kFrameCount;
+    // Which ring slot the frame CURRENTLY being recorded belongs to. Atomic
+    // because freeSrvSlots()/freeRtvExtraSlots() (called from BindGroup/
+    // Texture destructors, which can run on a background thread — see
+    // srvMutex's doc comment below) read it to decide which generation's
+    // pending-free list to push into, concurrently with beginFrameRing()
+    // advancing it on the main/raster thread. A slightly-stale read is
+    // still safe here (see beginFrameRing()'s doc comment) — this just
+    // needs to avoid a torn/undefined-behavior read, not a perfectly
+    // up-to-date one.
+    std::atomic<UINT>          currentFrameGen{0};
+    // The device-global fenceValue that ring slot i's PREVIOUS occupant
+    // frame was signaled with in Device::submit() — 0 means that slot has
+    // never been used yet (nothing to wait for).
+    UINT64                     genFenceValue[kFramesInFlight] = {};
+    // Keeps each generation's CommandBuffer (and therefore its D3D12
+    // command list/allocator/staging resources — see CommandBuffer's
+    // destructor) alive until beginFrameRing() confirms the GPU has
+    // finished with it, kFramesInFlight submits later. Releasing a
+    // CommandBuffer while the GPU may still be executing from it is
+    // undefined behavior; this is what prevents that now that submit()
+    // no longer blocks until the GPU is idle.
+    std::shared_ptr<CommandBuffer> genCommandBuffer[kFramesInFlight];
 
     // Persistent shader-visible CBV/SRV/UAV heap (textures, buffers)
     ID3D12DescriptorHeap*   srvHeap           = nullptr;
@@ -90,11 +121,24 @@ struct DeviceData {
     // srvPendingFreeSlots (NOT srvFreeSlots directly — the command list
     // that referenced them may not have executed yet, since GPU descriptor
     // tables are read by the GPU at *execution* time, not at recording
-    // time, so reusing a slot within the same still-being-recorded frame
-    // could corrupt an earlier draw call in that same frame). Device::submit()
-    // merges pending into the real free list only after waitForGpu(), by
-    // which point every draw call that could have referenced the old
-    // contents has definitely finished executing.
+    // time, so reusing a slot too early could corrupt a still-executing
+    // draw call).
+    //
+    // Generation-partitioned (one pending vector per frame-in-flight ring
+    // slot, indexed by currentFrameGen at push time) rather than a single
+    // shared pending list: with beginFrameRing() giving the CPU a frame of
+    // slack to record ahead of the GPU (see device.cpp's
+    // createCommandEncoder()/Device::submit()), a resource can drop its
+    // last reference while the IMMEDIATELY PRECEDING frame's GPU work —
+    // not yet confirmed done, that's the whole point of the overlap — may
+    // still be reading that exact slot. A single shared pending list
+    // drained on a fixed "wait for the frame from kFramesInFlight submits
+    // ago" schedule would let that freed slot be reused while the
+    // preceding frame is still executing. Partitioning by generation and
+    // draining ONLY that generation's list once ITS OWN fence is confirmed
+    // signaled (in beginFrameRing()) closes that hole — see
+    // beginFrameRing()'s doc comment for the full reasoning, checked
+    // against a concrete frame-number trace.
     //
     // Guarded by srvMutex: campello_widgets' image loading pipeline runs a
     // background thread pool (ImageLoader) whose tasks own shared_ptr<Texture>/
@@ -109,7 +153,7 @@ struct DeviceData {
     // the signature of a race rather than a deterministic resource leak).
     std::mutex              srvMutex;
     std::vector<UINT>      srvFreeSlots;
-    std::vector<UINT>      srvPendingFreeSlots;
+    std::array<std::vector<UINT>, kFramesInFlight> srvPendingFreeSlots;
 
     D3D12_CPU_DESCRIPTOR_HANDLE srvCpuAt(UINT idx) const {
         D3D12_CPU_DESCRIPTOR_HANDLE h = srvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -130,20 +174,25 @@ struct DeviceData {
         return srvOffset++;
     }
 
-    // Thread-safe — see srvMutex's doc comment above.
+    // Thread-safe — see srvMutex's doc comment above. Attributes the free to
+    // whichever generation is "current" right now (see currentFrameGen's
+    // doc comment for why a slightly-stale read here is still safe).
     void freeSrvSlots(const std::vector<UINT>& indices) {
         if (indices.empty()) return;
         std::lock_guard<std::mutex> lock(srvMutex);
-        srvPendingFreeSlots.insert(srvPendingFreeSlots.end(), indices.begin(), indices.end());
+        auto& pending = srvPendingFreeSlots[currentFrameGen.load()];
+        pending.insert(pending.end(), indices.begin(), indices.end());
     }
 
-    // Thread-safe — see srvMutex's doc comment above. Called once per
-    // Device::submit() after waitForGpu().
-    void recycleSrvSlots() {
+    // Thread-safe — see srvMutex's doc comment above. Called from
+    // beginFrameRing() once generation `gen`'s own fence is confirmed
+    // signaled — NOT once per submit() the way it used to be.
+    void recycleSrvSlots(UINT gen) {
         std::lock_guard<std::mutex> lock(srvMutex);
-        if (srvPendingFreeSlots.empty()) return;
-        srvFreeSlots.insert(srvFreeSlots.end(), srvPendingFreeSlots.begin(), srvPendingFreeSlots.end());
-        srvPendingFreeSlots.clear();
+        auto& pending = srvPendingFreeSlots[gen];
+        if (pending.empty()) return;
+        srvFreeSlots.insert(srvFreeSlots.end(), pending.begin(), pending.end());
+        pending.clear();
     }
 
     // Allocate one SRV slot; returns the CPU handle for it.
@@ -179,20 +228,21 @@ struct DeviceData {
     UINT samplerCurrentIdx() const { return samplerOffset == 0 ? 0 : samplerOffset - 1; }
 
     // rtvExtraHeap slot reclamation — same rationale and lifecycle as
-    // srvFreeSlots/srvPendingFreeSlots above (see that doc comment for the
-    // full explanation of the deferred-free-until-after-waitForGpu()
-    // pattern). Before this, allocRtvExtraIndex() only ever incremented
-    // rtvExtraOffset — fatal for rtvExtraHeap's mere 64 slots given
-    // campello_widgets' D3DDrawBackend::OffscreenTexturePool creates a new
-    // render-target Texture (permanently consuming one slot each) for every
-    // distinct ClipRRect/ClipOval/ShaderMask/BackdropFilter offscreen size
-    // encountered across a session — confirmed via a full minidump showing
-    // D3D12SDKLayers!ReportCorruption raised from inside
+    // srvFreeSlots/srvPendingFreeSlots above, including the generation
+    // partitioning (see that doc comment for the full explanation of why a
+    // single shared pending list isn't safe once beginFrameRing() gives the
+    // CPU a frame of slack ahead of the GPU). Before this, allocRtvExtraIndex()
+    // only ever incremented rtvExtraOffset — fatal for rtvExtraHeap's mere 64
+    // slots given campello_widgets' D3DDrawBackend::OffscreenTexturePool
+    // creates a new render-target Texture (permanently consuming one slot
+    // each) for every distinct ClipRRect/ClipOval/ShaderMask/BackdropFilter
+    // offscreen size encountered across a session — confirmed via a full
+    // minidump showing D3D12SDKLayers!ReportCorruption raised from inside
     // Device::createTexture()'s CreateRenderTargetView call, reached via
     // OffscreenTexturePool::acquire() -> Renderer::applyClipShape().
     std::mutex        rtvExtraMutex;
     std::vector<UINT> rtvExtraFreeSlots;
-    std::vector<UINT> rtvExtraPendingFreeSlots;
+    std::array<std::vector<UINT>, kFramesInFlight> rtvExtraPendingFreeSlots;
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvExtraCpuAt(UINT idx) const {
         D3D12_CPU_DESCRIPTOR_HANDLE h = rtvExtraHeap->GetCPUDescriptorHandleForHeapStart();
@@ -208,11 +258,12 @@ struct DeviceData {
     // failing cleanly (confirmed via a full minidump: D3D12SDKLayers!
     // ReportCorruption from inside Device::createTexture()'s
     // CreateRenderTargetView call). Recycling only makes a freed slot
-    // reusable after the *next* Device::submit()'s waitForGpu(), so a single
-    // frame that creates more than kRtvExtraHeapCapacity distinct new
-    // render-target textures before ever submitting can still exhaust this —
-    // this check turns that into a clean allocation failure instead of
-    // silent memory corruption.
+    // reusable once beginFrameRing() confirms its generation's fence has
+    // signaled (kFramesInFlight submits later), so a single frame that
+    // creates more than kRtvExtraHeapCapacity distinct new render-target
+    // textures before ever submitting can still exhaust this — this check
+    // turns that into a clean allocation failure instead of silent memory
+    // corruption.
     UINT allocRtvExtraIndex() {
         std::lock_guard<std::mutex> lock(rtvExtraMutex);
         if (!rtvExtraFreeSlots.empty()) {
@@ -229,20 +280,24 @@ struct DeviceData {
     // why), so this needs the same protection even though today's offscreen
     // render targets are only ever created/destroyed on the main thread —
     // future-proofing against that changing is cheap and matches the
-    // existing SRV pattern exactly.
+    // existing SRV pattern exactly. Attributes the free to whichever
+    // generation is "current" right now — see currentFrameGen's doc comment.
     void freeRtvExtraSlots(const std::vector<UINT>& indices) {
         if (indices.empty()) return;
         std::lock_guard<std::mutex> lock(rtvExtraMutex);
-        rtvExtraPendingFreeSlots.insert(rtvExtraPendingFreeSlots.end(), indices.begin(), indices.end());
+        auto& pending = rtvExtraPendingFreeSlots[currentFrameGen.load()];
+        pending.insert(pending.end(), indices.begin(), indices.end());
     }
 
-    // Thread-safe — mirrors recycleSrvSlots(). Called once per
-    // Device::submit() after waitForGpu().
-    void recycleRtvExtraSlots() {
+    // Thread-safe — mirrors recycleSrvSlots(gen). Called from
+    // beginFrameRing() once generation `gen`'s own fence is confirmed
+    // signaled.
+    void recycleRtvExtraSlots(UINT gen) {
         std::lock_guard<std::mutex> lock(rtvExtraMutex);
-        if (rtvExtraPendingFreeSlots.empty()) return;
-        rtvExtraFreeSlots.insert(rtvExtraFreeSlots.end(), rtvExtraPendingFreeSlots.begin(), rtvExtraPendingFreeSlots.end());
-        rtvExtraPendingFreeSlots.clear();
+        auto& pending = rtvExtraPendingFreeSlots[gen];
+        if (pending.empty()) return;
+        rtvExtraFreeSlots.insert(rtvExtraFreeSlots.end(), pending.begin(), pending.end());
+        pending.clear();
     }
 
     // Convenience wrapper for transient, single-command-list-recording RTV
@@ -366,6 +421,78 @@ struct DeviceData {
             fence->SetEventOnCompletion(fenceValue, fenceEvent);
             WaitForSingleObject(fenceEvent, INFINITE);
         }
+    }
+
+    // Blocks the CPU until the device-global fence reaches `value` — unlike
+    // waitForGpu(), does NOT itself signal a new value; it waits for one a
+    // caller already signaled earlier (via Device::submit()). value == 0 is
+    // the "never submitted" sentinel (see genFenceValue's doc comment) and
+    // returns immediately.
+    void waitForFenceValue(UINT64 value) {
+        if (!fence || !fenceEvent || value == 0) return;
+        if (fence->GetCompletedValue() < value) {
+            fence->SetEventOnCompletion(value, fenceEvent);
+            WaitForSingleObject(fenceEvent, INFINITE);
+        }
+    }
+
+    // Called once per frame, at the very start of Device::createCommandEncoder(),
+    // before any GPU work for the new frame is recorded. Rotates the
+    // frame-in-flight ring.
+    //
+    // Design: Device::submit() used to call waitForGpu() (block until the
+    // ENTIRE GPU queue drains) after every single frame. Combined with a
+    // vsync-gated Present(1,0), this fully serialized the CPU and GPU —
+    // the CPU could never start recording frame N+1 until frame N had
+    // completely finished executing AND presented, so any normal per-frame
+    // GPU execution-time variance (routine on integrated GPUs) had no slack
+    // to absorb and directly caused a missed vblank, stalling the whole
+    // pipeline for a full extra ~16.6ms. Confirmed via campello_widgets'
+    // own raster sub-phase timing: CPU-side command encoding stayed ~3ms
+    // across both "good" (~9-13ms total) and "bad" (~35-85ms total) frames
+    // for the *same* recorded work — the entire swing was inside submit().
+    //
+    // Fix: give the CPU exactly kFramesInFlight-1 frame(s) of slack, matching
+    // the existing kFrameCount-deep swapchain (no benefit pipelining deeper
+    // than the swapchain itself can buffer). Instead of waiting for
+    // "everything" after every submit, wait only for the SPECIFIC frame that
+    // last occupied the ring slot we're about to reuse — normally already
+    // long finished by the time we get back around to it.
+    //
+    // Correctness (this is the part that's easy to get subtly wrong — see
+    // srvPendingFreeSlots' doc comment for the full argument): a naive
+    // version of this that keeps a single shared pending-free list drained
+    // on this same "wait for kFramesInFlight-ago" schedule is NOT safe. A
+    // resource can drop its last reference (e.g. BindGroup/Texture
+    // destructors running on an ImageLoader worker thread) while the
+    // IMMEDIATELY PRECEDING frame's GPU work — one ring rotation ago, not
+    // yet confirmed done — may still be reading that exact descriptor slot.
+    // The fix is generation-partitioned pending lists: a free is attributed
+    // to whichever generation is "current" at the moment it happens, and
+    // that generation's own list is only ever drained here, once THAT
+    // generation's own fence is confirmed signaled. Traced through with
+    // concrete frame numbers (ring slots alternating 0,1,0,1... as frames
+    // 0,1,2,3... are recorded) to confirm every free is held for at least
+    // one full ring rotation before its slot can be reused, regardless of
+    // which generation it was attributed to.
+    //
+    // Returns the ring slot (`nextGen`) that is now current, i.e. the one
+    // Device::createCommandEncoder() should build this frame's encoder
+    // for. Deliberately does NOT reset genCommandBuffer[nextGen] itself —
+    // unlike this method, Device::createCommandEncoder() has friend access
+    // to CommandBuffer::native, and reclaims that retiring CommandBuffer's
+    // D3D12 command allocator/list/query-heap/readback-buffer for reuse
+    // (Reset() instead of Create()) before releasing it. The fence wait
+    // above is what makes that reuse safe: ID3D12CommandAllocator::Reset()
+    // requires the GPU to be confirmed done with every command list
+    // recorded from it, which is exactly what this wait just established.
+    UINT beginFrameRing() {
+        UINT nextGen = (currentFrameGen.load() + 1) % kFramesInFlight;
+        waitForFenceValue(genFenceValue[nextGen]);
+        recycleSrvSlots(nextGen);
+        recycleRtvExtraSlots(nextGen);
+        currentFrameGen.store(nextGen);
+        return nextGen;
     }
 };
 

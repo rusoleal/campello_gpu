@@ -9,7 +9,11 @@ CommandBuffer::~CommandBuffer() {
     if (!native) return;
     auto* h = static_cast<CommandBufferHandle*>(native);
     // Release upload-heap staging buffers created during command recording (e.g. TLAS instance data).
-    // Device::submit() calls waitForGpu() before returning, so GPU work is complete at this point.
+    // Device::submit() no longer blocks until the GPU is idle — this
+    // CommandBuffer is instead kept alive via DeviceData::genCommandBuffer[]
+    // until DeviceData::beginFrameRing() confirms its frame's fence has
+    // signaled (see that doc comment in common.hpp), which is what
+    // guarantees GPU work is complete by the time this destructor runs.
     for (auto* res : h->stagingResources)
         if (res) res->Release();
     if (h->cmdList)   h->cmdList->Release();

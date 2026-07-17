@@ -486,6 +486,20 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
 
     ID3D12DescriptorHeap* heaps[] = { d->srvHeap, d->samplerHeap };
 
+    // Tracks, per subresource, whether this loop has already transitioned it
+    // once. Every subresource's FIRST transition in this function must use
+    // the texture's actual current state (createTexture() creates any
+    // renderTarget-usage texture already in RENDER_TARGET, not COMMON, for
+    // ALL subresources at once — see Device::createTexture()) rather than a
+    // hardcoded COMMON, or the debug layer flags a before-state mismatch
+    // (confirmed: "before=COMMON... does not match... RENDER_TARGET" for
+    // every subresource of a renderTarget-usage texture, since every one of
+    // them is a first touch: mip 0 as src once, every other mip as dst
+    // once). Every SUBSEQUENT transition of an already-touched subresource
+    // correctly uses COMMON, since each iteration below restores both
+    // subresources it touches back to COMMON before returning.
+    std::vector<bool> subresourceTouched(tex->mipLevels, false);
+
     for (uint32_t mip = 1; mip < tex->mipLevels; mip++) {
         uint32_t srcMip = mip - 1;
         uint32_t dstW = std::max(1u, tex->width >> mip);
@@ -494,20 +508,40 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         UINT srcSubresource = CalcSubresource(srcMip, 0, 0, tex->mipLevels, tex->depthOrLayers);
         UINT dstSubresource = CalcSubresource(mip, 0, 0, tex->mipLevels, tex->depthOrLayers);
 
-        // Barriers: COMMON -> required states
-        D3D12_RESOURCE_BARRIER barriers[2] = {};
-        barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barriers[0].Transition.pResource = tex->resource;
-        barriers[0].Transition.Subresource = srcSubresource;
-        barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-        barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        const D3D12_RESOURCE_STATES srcBeforeState =
+            subresourceTouched[srcMip] ? D3D12_RESOURCE_STATE_COMMON : tex->currentState;
+        const D3D12_RESOURCE_STATES dstBeforeState =
+            subresourceTouched[mip] ? D3D12_RESOURCE_STATE_COMMON : tex->currentState;
+        subresourceTouched[srcMip] = true;
+        subresourceTouched[mip]    = true;
 
-        barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barriers[1].Transition.pResource = tex->resource;
-        barriers[1].Transition.Subresource = dstSubresource;
-        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        h->cmdList->ResourceBarrier(2, barriers);
+        // D3D12 forbids (flagged as invalid by the debug layer) a transition
+        // barrier whose StateBefore equals StateAfter — a real case here: a
+        // renderTarget-usage texture's untouched subresources start in
+        // RENDER_TARGET (its creation-time state, see currentState's doc
+        // comment above), which is also exactly the state this dst barrier
+        // would transition TO, making it a same-state no-op transition on
+        // first touch. Build the barrier list dynamically and skip any
+        // that don't represent a real state change.
+        D3D12_RESOURCE_BARRIER barriers[2] = {};
+        UINT barrierCount = 0;
+        if (srcBeforeState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+            auto& b = barriers[barrierCount++];
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource   = tex->resource;
+            b.Transition.Subresource = srcSubresource;
+            b.Transition.StateBefore = srcBeforeState;
+            b.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        }
+        if (dstBeforeState != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+            auto& b = barriers[barrierCount++];
+            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.pResource   = tex->resource;
+            b.Transition.Subresource = dstSubresource;
+            b.Transition.StateBefore = dstBeforeState;
+            b.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        }
+        if (barrierCount > 0) h->cmdList->ResourceBarrier(barrierCount, barriers);
 
         // Allocate temporary descriptors. Capture the index explicitly
         // rather than assuming srvOffset - 1 — allocSrvIndex() may now
@@ -558,13 +592,35 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         h->cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         h->cmdList->DrawInstanced(3, 1, 0, 0);
 
-        // Barriers: restore to COMMON
-        barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-        h->cmdList->ResourceBarrier(2, barriers);
+        // Barriers: restore to COMMON. Always both, and always a real
+        // transition (RENDER_TARGET/PIXEL_SHADER_RESOURCE -> COMMON is never
+        // degenerate) — a fresh, fully-specified pair, NOT a reuse of the
+        // `barriers` array from the "into" step above: that array may have
+        // left one slot zero-initialized (pResource == nullptr) when its
+        // corresponding "into" transition was skipped as degenerate, and
+        // reusing it here while only overwriting StateBefore/StateAfter
+        // would emit a barrier with a null resource pointer (confirmed via
+        // the debug layer: "ResourceBarrier: NULL pointer specified").
+        D3D12_RESOURCE_BARRIER restoreBarriers[2] = {};
+        restoreBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        restoreBarriers[0].Transition.pResource   = tex->resource;
+        restoreBarriers[0].Transition.Subresource = srcSubresource;
+        restoreBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        restoreBarriers[0].Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+        restoreBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        restoreBarriers[1].Transition.pResource   = tex->resource;
+        restoreBarriers[1].Transition.Subresource = dstSubresource;
+        restoreBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        restoreBarriers[1].Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+        h->cmdList->ResourceBarrier(2, restoreBarriers);
     }
+
+    // Every subresource this loop touched (0 through mipLevels-1) ends at
+    // COMMON — update the tracked state to match reality, or a later
+    // beginRenderPass()/RenderPassEncoder::end() use of this texture would
+    // transition it starting from the stale pre-generateMipmaps() state,
+    // hitting the same before-state-mismatch this function itself just had.
+    tex->currentState = D3D12_RESOURCE_STATE_COMMON;
     return true;
 }
 

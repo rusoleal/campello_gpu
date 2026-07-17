@@ -204,11 +204,17 @@ bool Texture::upload(uint64_t /*offset*/, uint64_t length, void* data) {
         alloc->Release(); uploadBuf->Release(); return false;
     }
 
-    // Transition texture COMMON → COPY_DEST
+    // Transition texture to COPY_DEST from its actual current state — NOT a
+    // hardcoded COMMON. createTexture() creates any renderTarget-usage
+    // texture already in RENDER_TARGET (not COMMON) for all subresources at
+    // once (see Device::createTexture()); declaring "before=COMMON" for such
+    // a texture's first use is a real before-state mismatch the debug layer
+    // flags (same class of bug found and fixed in
+    // CommandEncoder::generateMipmaps() — see its doc comment).
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource   = h->resource;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateBefore = h->currentState;
     barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     list->ResourceBarrier(1, &barrier);
@@ -224,10 +230,15 @@ bool Texture::upload(uint64_t /*offset*/, uint64_t length, void* data) {
     src.PlacedFootprint = footprint;
     list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 
-    // Transition COPY_DEST → COMMON
+    // Transition COPY_DEST → COMMON, and keep the tracked state in sync —
+    // otherwise a later use of this texture (e.g. generateMipmaps(),
+    // beginRenderPass()) would transition it starting from the stale
+    // pre-upload() state, hitting the same before-state mismatch this
+    // function just avoided.
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
     list->ResourceBarrier(1, &barrier);
+    h->currentState = D3D12_RESOURCE_STATE_COMMON;
 
     if (FAILED(list->Close())) {
         list->Release(); alloc->Release(); uploadBuf->Release(); return false;

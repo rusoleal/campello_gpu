@@ -394,8 +394,15 @@ TEST(CommandEncoder, GenerateMipmapsDoesNotCrash) {
     EXPECT_TRUE(encoder->generateMipmaps(tex));
 
     auto cmdBuf = encoder->finish();
-    EXPECT_NE(cmdBuf, nullptr);
+    ASSERT_NE(cmdBuf, nullptr);
     device->submit(cmdBuf);
+    // Device::submit() executes asynchronously (see its doc comment) and
+    // only guarantees the commandBuffer object itself is safe to release
+    // afterward — `tex` is a separate resource still referenced by
+    // in-flight GPU work at this point. Without this wait, `tex`'s
+    // destructor (at the end of this scope) can final-release the
+    // underlying D3D12 resource while the GPU is still using it.
+    device->waitForIdle();
 }
 
 // ---------------------------------------------------------------------------
