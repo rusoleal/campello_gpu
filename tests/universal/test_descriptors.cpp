@@ -105,3 +105,54 @@ TEST(QuerySetDescriptor, ZeroCountIsValid) {
     QuerySetDescriptor desc{.count = 0, .type = QuerySetType::occlusion};
     EXPECT_EQ(desc.count, 0u);
 }
+
+// ---------------------------------------------------------------------------
+// PushConstantRange / PipelineLayoutDescriptor
+// ---------------------------------------------------------------------------
+
+TEST(PushConstantRange, CanBeConstructed) {
+    PushConstantRange range{
+        .stages = ShaderStage::vertex,
+        .offset = 16,
+        .size   = 32,
+    };
+    EXPECT_EQ(range.stages, ShaderStage::vertex);
+    EXPECT_EQ(range.offset, 16u);
+    EXPECT_EQ(range.size, 32u);
+}
+
+TEST(PushConstantRange, OffsetAndSizeDefaultToZero) {
+    PushConstantRange range{.stages = ShaderStage::fragment};
+    EXPECT_EQ(range.offset, 0u);
+    EXPECT_EQ(range.size, 0u);
+}
+
+TEST(PipelineLayoutDescriptor, DefaultHasNoPushConstantRanges) {
+    PipelineLayoutDescriptor desc{};
+    EXPECT_TRUE(desc.bindGroupLayouts.empty());
+    EXPECT_TRUE(desc.pushConstantRanges.empty());
+}
+
+TEST(PipelineLayoutDescriptor, CanAddPushConstantRange) {
+    PipelineLayoutDescriptor desc{};
+    desc.pushConstantRanges.push_back({
+        .stages = ShaderStage::vertex,
+        .offset = 0,
+        .size   = 64,
+    });
+    ASSERT_EQ(desc.pushConstantRanges.size(), 1u);
+    EXPECT_EQ(desc.pushConstantRanges[0].stages, ShaderStage::vertex);
+    EXPECT_EQ(desc.pushConstantRanges[0].offset, 0u);
+    EXPECT_EQ(desc.pushConstantRanges[0].size, 64u);
+}
+
+TEST(PipelineLayoutDescriptor, CanAddMultipleNonOverlappingRanges) {
+    // A common pattern: one range per stage, back to back.
+    PipelineLayoutDescriptor desc{};
+    desc.pushConstantRanges.push_back({.stages = ShaderStage::vertex,   .offset = 0,  .size = 16});
+    desc.pushConstantRanges.push_back({.stages = ShaderStage::fragment, .offset = 16, .size = 16});
+    ASSERT_EQ(desc.pushConstantRanges.size(), 2u);
+    EXPECT_EQ(desc.pushConstantRanges[0].stages, ShaderStage::vertex);
+    EXPECT_EQ(desc.pushConstantRanges[1].stages, ShaderStage::fragment);
+    EXPECT_EQ(desc.pushConstantRanges[1].offset, 16u);
+}

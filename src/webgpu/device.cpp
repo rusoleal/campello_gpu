@@ -982,6 +982,12 @@ std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     return std::shared_ptr<TextureView>(new TextureView(handle));
 }
 
+PixelFormat Device::getSwapchainPixelFormat() const noexcept {
+    auto* deviceData = static_cast<WebGPUDeviceData*>(native);
+    if (!deviceData->swapchain) return PixelFormat::invalid;
+    return wgpuFormatToPixelFormat(deviceData->surfaceFormat);
+}
+
 std::string systems::leal::campello_gpu::getVersion() {
     return Device::getEngineVersion();
 }

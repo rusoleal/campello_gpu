@@ -21,7 +21,7 @@ Texture::Texture(void *pd) {
 
 Texture::~Texture() {
     auto handle = (TextureHandle *)native;
-    
+
     // Phase 2: Update memory tracking
     if (handle->deviceData) {
         handle->deviceData->textureCount--;
@@ -47,19 +47,31 @@ bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
     // Write data into the host-visible staging buffer.
     if (!handle->buffer->upload(offset, length, data)) return false;
 
-    // Now copy from the staging buffer into the VkImage via a one-shot command buffer.
+    // Now copy from the staging buffer into the VkImage via a one-shot
+    // command buffer. VkCommandPool requires external synchronization —
+    // every operation touching it or a command buffer allocated from it
+    // (allocate, record, submit, free) must not run concurrently with any
+    // other thread's use of the SAME pool. Texture::upload() can run on a
+    // background thread (e.g. ImageLoader's worker pool) while the main
+    // raster thread is simultaneously allocating/recording from this same
+    // deviceData->commandPool via Device::createCommandEncoder() — an
+    // earlier version of this function only held gpu_mutex around the
+    // allocate and the submit+free steps, leaving the entire record
+    // (vkBeginCommandBuffer..vkEndCommandBuffer) section unlocked and
+    // racing against the raster thread (caught via Vulkan's validation
+    // layer as UNASSIGNED-Threading-MultipleThreads-Write). Hold one lock
+    // for the whole allocate-record-submit-wait-free sequence instead.
+    std::unique_lock<std::mutex> lock;
+    if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
+
     VkCommandBufferAllocateInfo cbAllocInfo{};
     cbAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cbAllocInfo.commandPool        = handle->commandPool;
     cbAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbAllocInfo.commandBufferCount = 1;
     VkCommandBuffer cmd;
-    {
-        std::unique_lock<std::mutex> lock;
-        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
-        if (vkAllocateCommandBuffers(handle->device, &cbAllocInfo, &cmd) != VK_SUCCESS)
-            return false;
-    }
+    if (vkAllocateCommandBuffers(handle->device, &cbAllocInfo, &cmd) != VK_SUCCESS)
+        return false;
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -138,14 +150,12 @@ bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
     submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers    = &cmd;
-    {
-        std::unique_lock<std::mutex> lock;
-        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
-        vkQueueSubmit(handle->graphicsQueue, 1, &submitInfo, fence);
-        vkWaitForFences(handle->device, 1, &fence, VK_TRUE, UINT64_MAX);
-        vkDestroyFence(handle->device, fence, nullptr);
-        vkFreeCommandBuffers(handle->device, handle->commandPool, 1, &cmd);
-    }
+    // Still holding the single lock acquired at the top of this function —
+    // see its comment for why the whole sequence must stay serialized.
+    vkQueueSubmit(handle->graphicsQueue, 1, &submitInfo, fence);
+    vkWaitForFences(handle->device, 1, &fence, VK_TRUE, UINT64_MAX);
+    vkDestroyFence(handle->device, fence, nullptr);
+    vkFreeCommandBuffers(handle->device, handle->commandPool, 1, &cmd);
 
     return true;
 }
@@ -288,21 +298,24 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
     }
     vkBindBufferMemory(handle->device, readbackBuffer, readbackMemory, 0);
 
-    // Allocate a one-shot command buffer.
+    // Allocate a one-shot command buffer. Single lock held across the whole
+    // allocate-record-submit-free sequence — see Texture::upload()'s
+    // comment on the same pattern for why splitting it (as this used to)
+    // races against the main raster thread's own use of this same
+    // deviceData->commandPool.
+    std::unique_lock<std::mutex> lock;
+    if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
+
     VkCommandBufferAllocateInfo cbAllocInfo{};
     cbAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cbAllocInfo.commandPool        = handle->commandPool;
     cbAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbAllocInfo.commandBufferCount = 1;
     VkCommandBuffer cmd;
-    {
-        std::unique_lock<std::mutex> lock;
-        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
-        if (vkAllocateCommandBuffers(handle->device, &cbAllocInfo, &cmd) != VK_SUCCESS) {
-            vkFreeMemory(handle->device, readbackMemory, nullptr);
-            vkDestroyBuffer(handle->device, readbackBuffer, nullptr);
-            return false;
-        }
+    if (vkAllocateCommandBuffers(handle->device, &cbAllocInfo, &cmd) != VK_SUCCESS) {
+        vkFreeMemory(handle->device, readbackMemory, nullptr);
+        vkDestroyBuffer(handle->device, readbackBuffer, nullptr);
+        return false;
     }
 
     VkCommandBufferBeginInfo beginInfo{};
@@ -369,11 +382,8 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
     submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers    = &cmd;
-    {
-        std::unique_lock<std::mutex> lock;
-        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
-        vkQueueSubmit(handle->graphicsQueue, 1, &submitInfo, fence);
-    }
+    // Still holding the single lock acquired above.
+    vkQueueSubmit(handle->graphicsQueue, 1, &submitInfo, fence);
     vkWaitForFences(handle->device, 1, &fence, VK_TRUE, UINT64_MAX);
     vkDestroyFence(handle->device, fence, nullptr);
 
@@ -383,12 +393,9 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
     memcpy(data, p, length);
     vkUnmapMemory(handle->device, readbackMemory);
 
-    // Cleanup.
-    {
-        std::unique_lock<std::mutex> lock;
-        if (handle->deviceData) lock = std::unique_lock<std::mutex>(handle->deviceData->gpu_mutex);
-        vkFreeCommandBuffers(handle->device, handle->commandPool, 1, &cmd);
-    }
+    vkFreeCommandBuffers(handle->device, handle->commandPool, 1, &cmd);
+    lock.unlock();
+
     vkFreeMemory(handle->device, readbackMemory, nullptr);
     vkDestroyBuffer(handle->device, readbackBuffer, nullptr);
 

@@ -127,6 +127,13 @@ void RenderPassEncoder::setIndexBuffer(std::shared_ptr<Buffer> buffer,
     data->indexOffset = (NS::UInteger)offset;
 }
 
+void RenderPassEncoder::setPushConstants(ShaderStage, uint32_t, uint32_t, const void*) {
+    // No-op — Metal has no push-constant concept; small per-draw data is
+    // bound through a plain vertex buffer slot instead (cheap there, since
+    // Metal's argument buffers don't need a descriptor allocation
+    // regardless). See this method's doc comment in render_pass_encoder.hpp.
+}
+
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     auto *data   = static_cast<MetalRenderEncoderData *>(native);
     auto *enc    = data->encoder;

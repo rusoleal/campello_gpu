@@ -17,6 +17,7 @@ namespace systems::leal::campello_gpu
         VkQueue                  graphicsQueue;
         VkSemaphore              imageAvailableSemaphore;
         VkSemaphore              renderFinishedSemaphore;
+        uint32_t                 frameGen = 0; ///< Frames-in-flight ring slot — see DeviceData::beginFrameRing().
         std::vector<VkImage>     swapchainImages;
         std::vector<VkImageView> swapchainImageViews;
         uint32_t                 currentImageIndex;       ///< Set by beginRenderPass after acquire.

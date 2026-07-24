@@ -366,6 +366,56 @@ TEST(RenderPassEncoder, FullPassWithColorAttachmentProducesCommandBuffer) {
 // setBindGroup
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// setPushConstants
+// ---------------------------------------------------------------------------
+//
+// Real render pipelines need backend-specific shader bytecode (MSL/SPIR-V/
+// HLSL) that this cross-platform suite cannot compile, so — matching the
+// Draw*DoesNotCrash tests above — these exercise setPushConstants() without
+// a bound pipeline. On Vulkan this hits the `pipelineLayout == VK_NULL_HANDLE`
+// guard in RenderPassEncoder::setPushConstants(); on Metal/D3D12/WebGPU it
+// hits their no-op stubs. Either way, the call must never crash.
+
+TEST(RenderPassEncoder, SetPushConstantsDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    float values[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    EXPECT_NO_THROW(pass->setPushConstants(ShaderStage::vertex, 0, sizeof(values), values));
+}
+
+TEST(RenderPassEncoder, SetPushConstantsWithNonZeroOffsetDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    uint32_t value = 42;
+    EXPECT_NO_THROW(pass->setPushConstants(ShaderStage::fragment, 16, sizeof(value), &value));
+}
+
+TEST(RenderPassEncoder, SetPushConstantsWithNullDataDoesNotCrash) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+    auto pass = encoder->beginRenderPass(BeginRenderPassDescriptor{});
+    ASSERT_NE(pass, nullptr);
+
+    // Guarded in every backend implementation: null data or zero size is a no-op.
+    EXPECT_NO_THROW(pass->setPushConstants(ShaderStage::vertex, 0, 0, nullptr));
+}
+
 TEST(RenderPassEncoder, SetBindGroupWithNullDoesNotCrash) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device on this platform";

@@ -127,6 +127,13 @@ void RenderPassEncoder::setIndexBuffer(std::shared_ptr<Buffer> buffer,
     h->cmdList->IASetIndexBuffer(&h->ibv);
 }
 
+void RenderPassEncoder::setPushConstants(ShaderStage, uint32_t, uint32_t, const void*) {
+    // No-op — not yet wired to D3D12 root constants (its equivalent
+    // concept). Nothing in this codebase calls setPushConstants() on the
+    // D3D12 backend today; add a real SetGraphicsRoot32BitConstants()
+    // implementation here if/when a D3D12 caller needs it.
+}
+
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     if (!native || !pipeline || !pipeline->native) return;
     auto* h   = static_cast<RenderPassEncoderHandle*>(native);

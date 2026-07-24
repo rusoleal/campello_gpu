@@ -15,6 +15,7 @@ namespace systems::leal::campello_gpu {
         VkQueue         graphicsQueue;
         VkSwapchainKHR  swapchain;
         uint32_t        currentImageIndex;
+        uint32_t        frameGen = 0; ///< Frames-in-flight ring slot — see DeviceData::beginFrameRing().
         bool            hasSwapchain; ///< False if the pass did not render to the swapchain.
         // Staging buffers allocated during command recording (e.g. TLAS instance uploads).
         // Freed after the command buffer is submitted and GPU work finishes.

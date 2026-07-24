@@ -140,6 +140,26 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
                              offsetCount, offsets);
 }
 
+void RenderPassEncoder::setPushConstants(ShaderStage stages, uint32_t offset, uint32_t size, const void* pushData) {
+    if (!native) return;
+    if (!pushData || size == 0) return;
+    auto data = (RenderPassEncoderHandle *)native;
+    if (data->commandBuffer == VK_NULL_HANDLE) return;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
+
+    VkShaderStageFlags stageFlags = 0;
+    if ((int)stages & (int)ShaderStage::vertex)        stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
+    if ((int)stages & (int)ShaderStage::fragment)      stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+    if ((int)stages & (int)ShaderStage::compute)       stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+    if ((int)stages & (int)ShaderStage::rayGeneration) stageFlags |= VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    if ((int)stages & (int)ShaderStage::miss)          stageFlags |= VK_SHADER_STAGE_MISS_BIT_KHR;
+    if ((int)stages & (int)ShaderStage::closestHit)    stageFlags |= VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+    if ((int)stages & (int)ShaderStage::anyHit)        stageFlags |= VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    if ((int)stages & (int)ShaderStage::intersection)  stageFlags |= VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+
+    vkCmdPushConstants(data->commandBuffer, data->pipelineLayout, stageFlags, offset, size, pushData);
+}
+
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     if (!native) return;
     if (!pipeline) return;

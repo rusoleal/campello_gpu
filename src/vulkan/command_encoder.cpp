@@ -118,10 +118,13 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
 
         if (!data->swapchainImageAcquired) {
             // First beginRenderPass this frame: acquire the swapchain image.
+            // Bounded timeout, not UINT64_MAX — see DeviceData::
+            // beginFrameRing()'s doc comment; VK_TIMEOUT here just means
+            // "skip this frame", same as a beginFrameRing() timeout.
             uint32_t imageIndex = 0;
 
             VkResult acquireResult = vkAcquireNextImageKHR(
-                data->device, data->swapchain, UINT64_MAX,
+                data->device, data->swapchain, DeviceData::kWaitTimeoutNs,
                 data->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
 
             if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -135,10 +138,46 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             }
 
             data->currentImageIndex = imageIndex;
+            // Mark the image acquired as soon as the acquire semaphore is
+            // actually signaled, not only once the whole block below
+            // (images-in-flight wait included) succeeds. finish() reads
+            // this to decide whether the resulting command buffer owns a
+            // pending swapchain image that MUST be submitted (even with an
+            // empty render pass) to consume that semaphore and signal this
+            // frame-ring slot's fence — see the caller-side comment in
+            // Renderer::rasterFrame() for why silently dropping it here
+            // deadlocks the whole ring.
+            data->swapchainImageAcquired = true;
             if (data->deviceData) {
                 data->deviceData->currentImageIndex = imageIndex;
+
+                // "Images in flight" — see DeviceData::imagesInFlight's doc
+                // comment. The swapchain has more images than
+                // kFramesInFlight ring slots, so this specific image may
+                // still be owned by an older frame than the one
+                // beginFrameRing() (in Device::createCommandEncoder(),
+                // already run for this frame by this point) just confirmed
+                // done via the ring-slot fence — that fence alone doesn't
+                // prove THIS image is free. Wait for its actual owner too.
+                if (imageIndex < data->deviceData->imagesInFlight.size()) {
+                    VkFence owner = data->deviceData->imagesInFlight[imageIndex];
+                    if (owner != VK_NULL_HANDLE) {
+                        // Bounded timeout — see DeviceData::beginFrameRing()'s
+                        // doc comment. A timeout here just means bailing out
+                        // of this frame rather than hanging indefinitely;
+                        // deliberately not overwriting imagesInFlight[imageIndex]
+                        // below in that case, so the next attempt re-waits on
+                        // the same (still real) owner instead of silently
+                        // dropping track of it.
+                        if (vkWaitForFences(data->device, 1, &owner, VK_TRUE,
+                                            DeviceData::kWaitTimeoutNs) != VK_SUCCESS) {
+                            return nullptr;
+                        }
+                    }
+                    data->deviceData->imagesInFlight[imageIndex] =
+                        data->deviceData->inFlightFences[data->frameGen];
+                }
             }
-            data->swapchainImageAcquired = true;
         }
 
         firstImage   = data->swapchainImages[data->currentImageIndex];
@@ -149,6 +188,8 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             // On the first pass this frame the image starts in UNDEFINED layout.
             // On a restarted pass (e.g. after an offscreen sub-pass), render_pass_encoder::end()
             // has already transitioned the image to PRESENT_SRC_KHR — use that as oldLayout.
+            // The restarted pass uses loadOp::load, so the barrier must make prior color writes
+            // visible and stall color output until the load/read can proceed safely.
             const bool firstPass = descriptor.colorAttachments.empty()
                                    || descriptor.colorAttachments[0].loadOp == LoadOp::clear;
             VkImageMemoryBarrier barrier{};
@@ -160,11 +201,14 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.image               = firstImage;
             barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-            barrier.srcAccessMask       = VK_ACCESS_NONE;
-            barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.srcAccessMask       = firstPass ? VK_ACCESS_NONE
+                                                    : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                                          | (firstPass ? VK_ACCESS_NONE
+                                                       : VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
             vkCmdPipelineBarrier(data->commandBuffer,
                                  firstPass ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                           : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                           : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                  0, 0, nullptr, 0, nullptr, 1, &barrier);
         }
@@ -760,7 +804,14 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbHandle->graphicsQueue      = data->graphicsQueue;
     cbHandle->swapchain          = data->swapchain;
     cbHandle->currentImageIndex  = data->currentImageIndex;
-    cbHandle->hasSwapchain       = (data->swapchain != VK_NULL_HANDLE);
+    cbHandle->frameGen           = data->frameGen;
+    // Only true once vkAcquireNextImageKHR actually signaled the acquire
+    // semaphore for THIS command buffer — see the swapchainImageAcquired
+    // comment in beginRenderPass() above. A bare `swapchain != VK_NULL_HANDLE`
+    // check here would make Device::submit() wait on an acquire semaphore
+    // that was never signaled (acquire failed) and hang forever.
+    cbHandle->hasSwapchain       = (data->swapchain != VK_NULL_HANDLE)
+                                 && data->swapchainImageAcquired;
     cbHandle->stagingBuffers          = std::move(data->stagingBuffers);
     cbHandle->stagingMemories         = std::move(data->stagingMemories);
     cbHandle->transientRenderPasses   = std::move(data->transientRenderPasses);

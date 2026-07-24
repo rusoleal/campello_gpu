@@ -5,6 +5,7 @@
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/bind_group.hpp>
 #include <campello_gpu/constants/index_format.hpp>
+#include <campello_gpu/constants/shader_stage.hpp>
 #include <campello_gpu/render_pipeline.hpp>
 
 namespace systems::leal::campello_gpu
@@ -130,6 +131,35 @@ namespace systems::leal::campello_gpu
                           const std::vector<uint32_t> &dynamicOffsets = {},
                           uint64_t dynamicOffsetsStart = 0,
                           uint64_t dynamicOffsetsLength = 0);
+
+        /**
+         * @brief Updates a small range of inline per-draw data directly in
+         * command-buffer state, without going through a bound buffer or
+         * descriptor set.
+         *
+         * Must be called after `setPipeline()` — it writes into the
+         * currently-bound pipeline's layout (see `PipelineLayoutDescriptor::
+         * pushConstantRanges`), which must declare a range covering
+         * `[offset, offset+size)` for the given `stages`. `size` must be
+         * within the backend's guaranteed minimum (128 bytes on Vulkan,
+         * across all ranges combined).
+         *
+         * No-op on backends that don't model this concept (e.g. Metal,
+         * which binds equivalent small per-draw data through a plain
+         * vertex buffer slot instead — cheaper there, since Metal's
+         * argument buffers don't need a descriptor allocation regardless).
+         * Vulkan is the primary beneficiary: it currently has no other way
+         * to update small per-draw-varying data (e.g. a transform + color)
+         * without allocating a fresh descriptor set for it, unlike Metal/
+         * D3D12's separate small-constant-data paths — see
+         * `PushConstantRange`'s doc comment.
+         *
+         * @param stages Which shader stage(s) will read this data.
+         * @param offset Byte offset within the pipeline layout's combined push-constant block.
+         * @param size   Byte size of `data` to copy in.
+         * @param data   Pointer to at least `size` bytes of source data.
+         */
+        void setPushConstants(ShaderStage stages, uint32_t offset, uint32_t size, const void* data);
 
         /**
          * @brief Sets the render pipeline for subsequent draw calls.

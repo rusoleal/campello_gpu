@@ -1830,6 +1830,15 @@ std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     return std::shared_ptr<TextureView>(new TextureView(vh));
 }
 
+PixelFormat Device::getSwapchainPixelFormat() const noexcept {
+    auto* d = static_cast<DeviceData*>(native);
+    if (!d->swapChain) return PixelFormat::invalid;
+    // Fixed at creation time -- see the DXGI_SWAP_CHAIN_DESC1::Format
+    // assignment in createDevice() above; there is no fallback path here
+    // the way Vulkan has for BGRA8 vs RGBA8, so this is always correct.
+    return PixelFormat::rgba8unorm;
+}
+
 // -----------------------------------------------------------------------
 // Ray tracing helpers
 // -----------------------------------------------------------------------

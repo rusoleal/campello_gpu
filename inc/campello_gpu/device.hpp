@@ -596,6 +596,26 @@ namespace systems::leal::campello_gpu
          *         swapchain is present.
          */
         std::shared_ptr<TextureView> getSwapchainTextureView();
+
+        /**
+         * @brief Returns the pixel format this device's swapchain was actually
+         *        created with.
+         *
+         * Not every backend/surface combination supports every format —
+         * Metal always uses BGRA8, but a given Vulkan surface may only
+         * expose RGBA8 (no BGRA8 variant at all), and the device silently
+         * falls back accordingly at swapchain-creation time. Callers that
+         * create their own textures meant to be render-pass-compatible
+         * with this device's swapchain pipelines (e.g. offscreen
+         * composite targets) must use this format rather than assuming
+         * BGRA8 — a mismatched format there is legal separately but makes
+         * every pipeline built against the swapchain format incompatible
+         * with a render pass targeting the mismatched texture.
+         *
+         * @return The swapchain's pixel format, or `PixelFormat::invalid`
+         *         if this device has no swapchain (headless/offscreen-only).
+         */
+        PixelFormat getSwapchainPixelFormat() const noexcept;
     };
 
     /**

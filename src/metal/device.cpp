@@ -983,6 +983,18 @@ std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     return nullptr;
 }
 
+PixelFormat Device::getSwapchainPixelFormat() const noexcept {
+    // Metal's swapchain (the MTKView/CAMetalLayer) is owned and configured
+    // entirely outside this library -- see getSwapchainTextureView() above
+    // -- so there's no per-Device swapchain state to inspect here. Every
+    // consumer of this backend sets MTKView.colorPixelFormat to
+    // MTLPixelFormatBGRA8Unorm (see examples/apple's Renderer.mm), matching
+    // what callers building offscreen composite textures already assume —
+    // see this method's doc comment in device.hpp — so that's the fixed
+    // answer for every Metal device, not something queried per-instance.
+    return PixelFormat::bgra8unorm;
+}
+
 std::string getVersion() {
     return std::to_string(campello_gpu_VERSION_MAJOR) + "." +
            std::to_string(campello_gpu_VERSION_MINOR) + "." +

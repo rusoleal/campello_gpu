@@ -398,10 +398,21 @@ Device::~Device()
         // Wait for all GPU work to finish before tearing down.
         vkDeviceWaitIdle(deviceData->device);
 
-        if (deviceData->renderFinishedSemaphore != VK_NULL_HANDLE)
-            vkDestroySemaphore(deviceData->device, deviceData->renderFinishedSemaphore, nullptr);
-        if (deviceData->imageAvailableSemaphore != VK_NULL_HANDLE)
-            vkDestroySemaphore(deviceData->device, deviceData->imageAvailableSemaphore, nullptr);
+        // Release each ring slot's retained CommandBuffer now that
+        // vkDeviceWaitIdle above confirms the GPU is done with all of them.
+        for (auto& cb : deviceData->genCommandBuffer)
+            cb.reset();
+
+        for (auto sem : deviceData->renderFinishedSemaphores) {
+            if (sem != VK_NULL_HANDLE)
+                vkDestroySemaphore(deviceData->device, sem, nullptr);
+        }
+        for (uint32_t i = 0; i < DeviceData::kFramesInFlight; i++) {
+            if (deviceData->imageAvailableSemaphores[i] != VK_NULL_HANDLE)
+                vkDestroySemaphore(deviceData->device, deviceData->imageAvailableSemaphores[i], nullptr);
+            if (deviceData->inFlightFences[i] != VK_NULL_HANDLE)
+                vkDestroyFence(deviceData->device, deviceData->inFlightFences[i], nullptr);
+        }
 
         for (auto fb : deviceData->swapchainFramebuffers)
             vkDestroyFramebuffer(deviceData->device, fb, nullptr);
@@ -419,10 +430,13 @@ Device::~Device()
         if (deviceData->surface != VK_NULL_HANDLE)
             vkDestroySurfaceKHR(getInstance(), deviceData->surface, nullptr);
 
-        if (deviceData->descriptorPool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(deviceData->device, deviceData->descriptorPool, nullptr);
+        for (auto pool : deviceData->descriptorPools) {
+            if (pool != VK_NULL_HANDLE)
+                vkDestroyDescriptorPool(deviceData->device, pool, nullptr);
+        }
 
         vkDestroyCommandPool(deviceData->device, deviceData->commandPool, nullptr);
+        vkDestroyCommandPool(deviceData->device, deviceData->uploadCommandPool, nullptr);
         vkDestroyDevice(deviceData->device, nullptr);
         delete deviceData;
     }
@@ -788,15 +802,37 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
                 count = std::min(count, surfaceCapabilities.maxImageCount);
             swapchainData.minImageCount = count;
         }
-        // Prefer BGRA8/RGBA8 UNORM (linear) for consistency with the Metal backend
-        // and with the UNORM pixel format used by campello_widgets for offscreen
-        // textures.  Fall back to the first available format if UNORM is absent.
+        // Strictly prefer BGRA8_UNORM, falling back to RGBA8_UNORM only if the
+        // surface doesn't offer it at all — NOT "whichever of the two comes
+        // first in the list". Renderer clients (campello_widgets included)
+        // hardcode GPU::PixelFormat::bgra8unorm for offscreen textures
+        // (composited shadows, clip shapes, etc.) rather than querying this
+        // device for its chosen swapchain format, matching what the Metal
+        // backend always uses. When a surface's format list happens to
+        // report RGBA8_UNORM before BGRA8_UNORM (seen in practice on at
+        // least one real Android/Adreno device), taking "whichever comes
+        // first" chose RGBA8 here while offscreen textures stayed BGRA8 —
+        // every pipeline built against this chosen format then became
+        // render-pass-incompatible with offscreen composites, corrupting
+        // their output (VUID-vkCmdDraw-renderPass-02684: attachment format
+        // mismatch) while ordinary direct-to-swapchain draws, unaffected,
+        // rendered fine — exactly the "some content renders correctly,
+        // some doesn't" pattern this bug produced.
         chosenFormat = surfaceFormats[0];
         for (const auto &sf : surfaceFormats) {
-            if ((sf.format == VK_FORMAT_B8G8R8A8_UNORM || sf.format == VK_FORMAT_R8G8B8A8_UNORM)
+            if (sf.format == VK_FORMAT_B8G8R8A8_UNORM
                 && sf.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
                 chosenFormat = sf;
                 break;
+            }
+        }
+        if (chosenFormat.format != VK_FORMAT_B8G8R8A8_UNORM) {
+            for (const auto &sf : surfaceFormats) {
+                if (sf.format == VK_FORMAT_R8G8B8A8_UNORM
+                    && sf.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                    chosenFormat = sf;
+                    break;
+                }
             }
         }
         swapchainData.imageFormat = chosenFormat.format;
@@ -821,7 +857,22 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         swapchainData.imageArrayLayers = 1;
         swapchainData.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         swapchainData.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        swapchainData.preTransform = surfaceCapabilities.currentTransform;
+        // Setting preTransform to currentTransform tells the compositor "my
+        // swapchain images are already pre-rotated to match the display" —
+        // but nothing in this renderer actually rotates its content to
+        // compensate (no pre-rotation matrix applied anywhere in the draw
+        // path). When currentTransform is non-identity (e.g. a device
+        // that's currently landscape, or an Android WSI quirk that reports
+        // a rotated transform even in portrait), the compositor then
+        // presents genuinely-unrotated content as if it were rotated,
+        // showing the whole UI sideways/misaligned. Requesting IDENTITY
+        // instead makes the compositor perform any needed rotation itself
+        // — a small, acceptable compositor-side cost in exchange for
+        // always receiving correctly-oriented frames from this renderer.
+        swapchainData.preTransform =
+            (surfaceCapabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+                ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                : surfaceCapabilities.currentTransform;
         // Pick the first composite alpha mode that the surface actually supports.
         {
             const VkCompositeAlphaFlagBitsKHR preferred[] = {
@@ -912,30 +963,56 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     VkCommandPool commandPool;
     vkCreateCommandPool(toReturn, &commandPoolDescriptor, nullptr, &commandPool);
 
-    // Create a general-purpose descriptor pool.
+    // Separate pool for Texture::upload()/download() — see
+    // DeviceData::uploadCommandPool's doc comment for why this must not be
+    // shared with the main render path's commandPool.
+    VkCommandPool uploadCommandPool;
+    vkCreateCommandPool(toReturn, &commandPoolDescriptor, nullptr, &uploadCommandPool);
+
+    // Create one descriptor pool per frames-in-flight ring slot — see
+    // DeviceData::descriptorPools' doc comment for why a single pool isn't
+    // enough. Sized generously (a busy UI frame here has been observed
+    // with 150+ draw calls, each allocating its own descriptor set) since
+    // each pool is reset every kFramesInFlight submits, not just once at
+    // startup.
+    constexpr uint32_t kDescriptorsPerPool = 4096;
     VkDescriptorPoolSize poolSizes[] = {
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,              100 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,              100 },
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,               100 },
-        { VK_DESCRIPTOR_TYPE_SAMPLER,                     100 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,               100 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,      100 },
-        { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,  100 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,              kDescriptorsPerPool },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,              kDescriptorsPerPool },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,               kDescriptorsPerPool },
+        { VK_DESCRIPTOR_TYPE_SAMPLER,                     kDescriptorsPerPool },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,               kDescriptorsPerPool },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,      kDescriptorsPerPool },
+        { VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,  kDescriptorsPerPool },
     };
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets       = 100;
+    poolInfo.maxSets       = kDescriptorsPerPool;
     poolInfo.poolSizeCount = rtSupported ? 7 : 6;
     poolInfo.pPoolSizes    = poolSizes;
-    VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    vkCreateDescriptorPool(toReturn, &poolInfo, nullptr, &descriptorPool);
+    VkDescriptorPool descriptorPools[DeviceData::kFramesInFlight] = {};
+    for (uint32_t i = 0; i < DeviceData::kFramesInFlight; i++) {
+        vkCreateDescriptorPool(toReturn, &poolInfo, nullptr, &descriptorPools[i]);
+    }
 
-    // Create sync primitives for swapchain acquire/present.
+    // Create per-frames-in-flight sync primitives for swapchain acquire/
+    // present — see DeviceData::kFramesInFlight's doc comment for why these
+    // must be per-slot rather than a single shared pair.
     VkSemaphoreCreateInfo semInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-    VkSemaphore imageAvailableSemaphore = VK_NULL_HANDLE;
-    VkSemaphore renderFinishedSemaphore = VK_NULL_HANDLE;
-    vkCreateSemaphore(toReturn, &semInfo, nullptr, &imageAvailableSemaphore);
-    vkCreateSemaphore(toReturn, &semInfo, nullptr, &renderFinishedSemaphore);
+    VkFenceCreateInfo fenceInfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    VkSemaphore imageAvailableSemaphores[DeviceData::kFramesInFlight] = {};
+    VkFence     inFlightFences[DeviceData::kFramesInFlight] = {};
+    for (uint32_t i = 0; i < DeviceData::kFramesInFlight; i++) {
+        vkCreateSemaphore(toReturn, &semInfo, nullptr, &imageAvailableSemaphores[i]);
+        vkCreateFence(toReturn, &fenceInfo, nullptr, &inFlightFences[i]);
+    }
+    // renderFinishedSemaphores is sized per swapchain image, not per ring
+    // slot — see its doc comment in common.hpp.
+    std::vector<VkSemaphore> renderFinishedSemaphores(swapchainImages.size(), VK_NULL_HANDLE);
+    for (auto& sem : renderFinishedSemaphores) {
+        vkCreateSemaphore(toReturn, &semInfo, nullptr, &sem);
+    }
 
     auto deviceData = new DeviceData();
     deviceData->device = toReturn;
@@ -950,11 +1027,16 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->imageExtent              = imageExtent;
     deviceData->swapchainImages          = swapchainImages;
     deviceData->swapchainImageViews      = swapchainImageViews;
+    deviceData->imagesInFlight.assign(swapchainImages.size(), VK_NULL_HANDLE);
     deviceData->surfaceFormat            = surfaceFormats.empty() ? VkSurfaceFormatKHR{} : chosenFormat;
     deviceData->commandPool              = commandPool;
-    deviceData->descriptorPool           = descriptorPool;
-    deviceData->imageAvailableSemaphore  = imageAvailableSemaphore;
-    deviceData->renderFinishedSemaphore  = renderFinishedSemaphore;
+    deviceData->uploadCommandPool        = uploadCommandPool;
+    deviceData->renderFinishedSemaphores = std::move(renderFinishedSemaphores);
+    for (uint32_t i = 0; i < DeviceData::kFramesInFlight; i++) {
+        deviceData->imageAvailableSemaphores[i] = imageAvailableSemaphores[i];
+        deviceData->inFlightFences[i]           = inFlightFences[i];
+        deviceData->descriptorPools[i]          = descriptorPools[i];
+    }
     deviceData->queueFamilyIndex         = static_cast<uint32_t>(queueFamilyIndex);
     deviceData->currentImageIndex        = 0;
 #ifdef __ANDROID__
@@ -1107,7 +1189,7 @@ std::shared_ptr<Texture> Device::createTexture(
     auto toReturn = new TextureHandle();
     toReturn->device         = deviceData->device;
     toReturn->physicalDevice = deviceData->physicalDevice;
-    toReturn->commandPool    = deviceData->commandPool;
+    toReturn->commandPool    = deviceData->uploadCommandPool;
     toReturn->graphicsQueue  = deviceData->graphicsQueue;
     toReturn->buffer         = buffer;
     toReturn->image          = image;
@@ -2025,6 +2107,18 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
 
     auto deviceData = (DeviceData *)this->native;
 
+    // Frame-in-flight ring rotation — see DeviceData::beginFrameRing()'s
+    // doc comment for the full design/correctness rationale. Must run
+    // before any GPU work for the new frame is recorded.
+    uint32_t gen = deviceData->beginFrameRing();
+    if (gen == DeviceData::kInvalidGen) {
+        // Timed out waiting for this ring slot's prior GPU work — see
+        // beginFrameRing()'s doc comment. Skip this frame; the caller
+        // (Renderer::rasterFrame(), via RasterThread on platforms that use
+        // it) just tries again on the next vsync instead of hanging.
+        return nullptr;
+    }
+
     VkCommandBufferAllocateInfo info = {};
     info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     info.pNext = nullptr;
@@ -2034,7 +2128,8 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     {
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
-        if (vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer) != VK_SUCCESS) {
+        VkResult allocResult = vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer);
+        if (allocResult != VK_SUCCESS) {
             return nullptr;
         }
     }
@@ -2046,8 +2141,14 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     toReturn->imageExtent               = deviceData->imageExtent;
     toReturn->swapchain                 = deviceData->swapchain;
     toReturn->graphicsQueue             = deviceData->graphicsQueue;
-    toReturn->imageAvailableSemaphore   = deviceData->imageAvailableSemaphore;
-    toReturn->renderFinishedSemaphore   = deviceData->renderFinishedSemaphore;
+    toReturn->imageAvailableSemaphore   = deviceData->imageAvailableSemaphores[gen];
+    // renderFinishedSemaphore is intentionally left unset here: it's now
+    // indexed by swapchain image, not frame-ring slot, and the image index
+    // isn't known until acquire (in beginRenderPass()) — see its doc
+    // comment in common.hpp. Device::submit() reads it directly from
+    // deviceData using cbHandle->currentImageIndex instead of going through
+    // this (otherwise-unused) handle field.
+    toReturn->frameGen                  = gen;
     toReturn->swapchainImages           = deviceData->swapchainImages;
     toReturn->swapchainImageViews       = deviceData->swapchainImageViews;
     toReturn->currentImageIndex         = 0;
@@ -2246,12 +2347,32 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
         }
     }
 
+    std::vector<VkPushConstantRange> pushRanges;
+    pushRanges.reserve(descriptor.pushConstantRanges.size());
+    for (const auto& r : descriptor.pushConstantRanges) {
+        VkShaderStageFlags stageFlags = 0;
+        if ((int)r.stages & (int)ShaderStage::vertex)        stageFlags |= VK_SHADER_STAGE_VERTEX_BIT;
+        if ((int)r.stages & (int)ShaderStage::fragment)      stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT;
+        if ((int)r.stages & (int)ShaderStage::compute)       stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+        if ((int)r.stages & (int)ShaderStage::rayGeneration) stageFlags |= VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        if ((int)r.stages & (int)ShaderStage::miss)          stageFlags |= VK_SHADER_STAGE_MISS_BIT_KHR;
+        if ((int)r.stages & (int)ShaderStage::closestHit)    stageFlags |= VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+        if ((int)r.stages & (int)ShaderStage::anyHit)        stageFlags |= VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+        if ((int)r.stages & (int)ShaderStage::intersection)  stageFlags |= VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+
+        VkPushConstantRange vr{};
+        vr.stageFlags = stageFlags;
+        vr.offset     = r.offset;
+        vr.size       = r.size;
+        pushRanges.push_back(vr);
+    }
+
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(layouts.size());
     pipelineLayoutInfo.pSetLayouts = layouts.empty() ? nullptr : layouts.data();
-    pipelineLayoutInfo.pushConstantRangeCount = 0;
-    pipelineLayoutInfo.pPushConstantRanges = nullptr;
+    pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(pushRanges.size());
+    pipelineLayoutInfo.pPushConstantRanges = pushRanges.empty() ? nullptr : pushRanges.data();
 
     VkPipelineLayout pipelineLayout;
     if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
@@ -2273,9 +2394,16 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
     // Get the VkDescriptorSetLayout from the layout handle.
     auto layoutHandle = (BindGroupLayoutHandle *)descriptor.layout->native;
 
+    // Allocated from the CURRENT frame's ring-slot pool — see
+    // descriptorPools' doc comment in common.hpp. Every caller of
+    // createBindGroup() runs during that frame's own recording (draw
+    // methods called from Renderer::rasterFrame(), after
+    // createCommandEncoder() has already set currentFrameGen for this
+    // frame), so this always resolves to the pool for the frame actually
+    // being built right now.
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool     = deviceData->descriptorPool;
+    allocInfo.descriptorPool     = deviceData->descriptorPools[deviceData->currentFrameGen];
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts        = &layoutHandle->layout;
 
@@ -2401,7 +2529,15 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
     sci.imageArrayLayers = 1;
     sci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    sci.preTransform     = caps.currentTransform;
+    // See the identical reasoning at the initial swapchain creation site —
+    // this renderer never pre-rotates its content, so the swapchain must
+    // always request IDENTITY (falling back to currentTransform only if
+    // the surface genuinely doesn't support IDENTITY) or a rotated/resized
+    // device shows sideways/misaligned content after recreation too.
+    sci.preTransform =
+        (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+            ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+            : caps.currentTransform;
     {
         const VkCompositeAlphaFlagBitsKHR preferred[] = {
             VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -2434,6 +2570,25 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
     deviceData->swapchainImages.resize(imageCount);
     vkGetSwapchainImagesKHR(deviceData->device, newSwapchain, &imageCount,
                             deviceData->swapchainImages.data());
+    // New images are unowned by any in-flight frame — see imagesInFlight's
+    // doc comment. vkDeviceWaitIdle above already confirmed nothing from
+    // the old swapchain is still executing, so it's safe to just reset
+    // rather than carry any old entries forward.
+    deviceData->imagesInFlight.assign(imageCount, VK_NULL_HANDLE);
+
+    // renderFinishedSemaphores is sized per swapchain image (see its doc
+    // comment in common.hpp) — rebuild it to match the new image count.
+    // Safe to destroy the old ones outright: vkDeviceWaitIdle above already
+    // confirmed nothing is still using them.
+    for (auto sem : deviceData->renderFinishedSemaphores) {
+        if (sem != VK_NULL_HANDLE)
+            vkDestroySemaphore(deviceData->device, sem, nullptr);
+    }
+    deviceData->renderFinishedSemaphores.assign(imageCount, VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo rfSemInfo{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    for (auto& sem : deviceData->renderFinishedSemaphores) {
+        vkCreateSemaphore(deviceData->device, &rfSemInfo, nullptr, &sem);
+    }
 
     // Recreate image views.
     deviceData->swapchainImageViews.resize(imageCount);
@@ -2494,10 +2649,36 @@ extern "C" void campello_gpu_wayland_resize(uint32_t w, uint32_t h)
 #endif
 }
 
+// Non-blocking by design — see DeviceData::beginFrameRing()'s doc comment
+// and kFramesInFlight's doc comment in common.hpp for the full rationale.
+// Historically this called vkQueueWaitIdle unconditionally, forcing a full
+// CPU<->GPU synchronization on literally every frame regardless of platform
+// (unlike the Metal and DirectX12 backends, both already fully async here —
+// see Metal's Device::submit() just committing the command buffer, and
+// DirectX12's frames-in-flight ring). Under sustained GPU-side load (e.g.
+// a fast ListView fling forcing many offscreen composite passes per frame),
+// that wait-for-everything stalled whichever thread called submit() — which
+// on Android, before this and the RasterThread wiring, was the same thread
+// that also serviced input and vsync callbacks, freezing the whole app.
+//
+// Correctness now instead rests on: (1) per-ring-slot semaphores (Vulkan
+// requires distinct semaphores per in-flight frame), (2) signaling
+// inFlightFences[gen] here instead of waiting on it, and (3) retaining
+// `commandBuffer` in genCommandBuffer[gen] so the GPU resources it
+// references (command buffer, staging buffers, transient framebuffers)
+// stay alive until beginFrameRing() confirms this same slot's fence has
+// signaled, kFramesInFlight submits from now.
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 
     auto deviceData = (DeviceData *)this->native;
     auto cbHandle   = (CommandBufferHandle *)commandBuffer->native;
+    const uint32_t gen = cbHandle->frameGen;
+    // renderFinishedSemaphores is indexed by swapchain image, not frame-ring
+    // slot — see its doc comment in common.hpp.
+    VkSemaphore* renderFinished = cbHandle->hasSwapchain &&
+            cbHandle->currentImageIndex < deviceData->renderFinishedSemaphores.size()
+        ? &deviceData->renderFinishedSemaphores[cbHandle->currentImageIndex]
+        : nullptr;
 
     // waitStage must outlive vkQueueSubmit; declared outside the if block to
     // avoid a dangling pointer from pWaitDstStageMask.
@@ -2508,25 +2689,33 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers    = &cbHandle->commandBuffer;
 
-    if (cbHandle->hasSwapchain) {
+    if (renderFinished) {
         submitInfo.waitSemaphoreCount   = 1;
-        submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphore;
+        submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphores[gen];
         submitInfo.pWaitDstStageMask    = &waitStage;
         submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
+        submitInfo.pSignalSemaphores    = renderFinished;
     }
 
     {
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
-        if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+        // Reset right before use, not in beginFrameRing() — see its comment
+        // for why resetting this fence earlier (before beginRenderPass()'s
+        // images-in-flight check had a chance to observe it still signaled)
+        // created a permanent self-deadlock whenever the swapchain image
+        // count is a multiple of kFramesInFlight.
+        vkResetFences(deviceData->device, 1, &deviceData->inFlightFences[gen]);
+        VkResult submitResult = vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo,
+                                               deviceData->inFlightFences[gen]);
+        if (submitResult != VK_SUCCESS) {
             return;
         }
 
-        if (cbHandle->hasSwapchain) {
+        if (renderFinished) {
             VkPresentInfoKHR presentInfo{};
             presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
             presentInfo.waitSemaphoreCount = 1;
-            presentInfo.pWaitSemaphores    = &deviceData->renderFinishedSemaphore;
+            presentInfo.pWaitSemaphores    = renderFinished;
             presentInfo.swapchainCount     = 1;
             presentInfo.pSwapchains        = &deviceData->swapchain;
             presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
@@ -2535,10 +2724,11 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
                 recreateSwapchain(deviceData);
             }
         }
-
-        // Wait for the frame to finish before the caller can reuse the command buffer.
-        vkQueueWaitIdle(deviceData->graphicsQueue);
     }
+
+    // Keep this frame's resources alive until beginFrameRing() confirms the
+    // GPU is done with them (see this function's doc comment above).
+    deviceData->genCommandBuffer[gen] = std::move(commandBuffer);
     deviceData->commandsSubmitted++;
 }
 
@@ -2548,6 +2738,13 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     auto deviceData = (DeviceData *)this->native;
     auto cbHandle   = (CommandBufferHandle *)commandBuffer->native;
     auto fenceData  = signalFence ? (VulkanFenceData *)signalFence->native : nullptr;
+    const uint32_t gen = cbHandle->frameGen;
+    // renderFinishedSemaphores is indexed by swapchain image, not frame-ring
+    // slot — see its doc comment in common.hpp.
+    VkSemaphore* renderFinished = cbHandle->hasSwapchain &&
+            cbHandle->currentImageIndex < deviceData->renderFinishedSemaphores.size()
+        ? &deviceData->renderFinishedSemaphores[cbHandle->currentImageIndex]
+        : nullptr;
 
     // Reset fence before reuse (required by Vulkan binary fences).
     if (fenceData) {
@@ -2561,12 +2758,12 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers    = &cbHandle->commandBuffer;
 
-    if (cbHandle->hasSwapchain) {
+    if (renderFinished) {
         submitInfo.waitSemaphoreCount   = 1;
-        submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphore;
+        submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphores[gen];
         submitInfo.pWaitDstStageMask    = &waitStage;
         submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores    = &deviceData->renderFinishedSemaphore;
+        submitInfo.pSignalSemaphores    = renderFinished;
     }
 
     VkFence submitFence = fenceData ? fenceData->fence : VK_NULL_HANDLE;
@@ -2576,11 +2773,11 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
             return;
         }
 
-        if (cbHandle->hasSwapchain) {
+        if (renderFinished) {
             VkPresentInfoKHR presentInfo{};
             presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
             presentInfo.waitSemaphoreCount = 1;
-            presentInfo.pWaitSemaphores    = &deviceData->renderFinishedSemaphore;
+            presentInfo.pWaitSemaphores    = renderFinished;
             presentInfo.swapchainCount     = 1;
             presentInfo.pSwapchains        = &deviceData->swapchain;
             presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
@@ -2627,6 +2824,13 @@ std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     // vkAcquireNextImageKHR. Use TextureView::fromNative() with the
     // VkImageView for the current image instead.
     return nullptr;
+}
+
+PixelFormat Device::getSwapchainPixelFormat() const noexcept {
+    auto deviceData = (DeviceData *)this->native;
+    if (!deviceData || deviceData->surfaceFormat.format == VK_FORMAT_UNDEFINED)
+        return PixelFormat::invalid;
+    return nativeToPixelFormat(deviceData->surfaceFormat.format);
 }
 
 std::string systems::leal::campello_gpu::getVersion()
