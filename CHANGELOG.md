@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-24
+
 ### Added
 
 - **`PushConstantRange` / `PipelineLayoutDescriptor::pushConstantRanges` / `RenderPassEncoder::setPushConstants()`** — lets callers update a small range of inline per-draw data (a handful of floats, e.g. a transform + color) directly in command-buffer state, without allocating a fresh descriptor set/bind group just to update a few bytes. Vulkan is the primary beneficiary and gets a real implementation (`vkCmdPushConstants`, wired into `vkCreatePipelineLayout` via the new `pushConstantRanges`); Metal, DirectX 12, and WebGPU each get an explicit no-op stub, since none of them need this concept the same way — Metal/D3D12 have their own cheaper small-constant-data paths, WebGPU has no stable equivalent yet.
