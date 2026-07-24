@@ -51,9 +51,12 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Linux Vulkan build + tests.
-  # Builds the full campello_gpu shared library and runs universal tests.
-  # Integration tests are compiled and executed via Mesa lavapipe (software
-  # Vulkan) when available, otherwise they are compile-only.
+  # Builds the full campello_gpu shared library and runs the full test suite
+  # (universal + integration) against Mesa lavapipe (software Vulkan), with
+  # the Khronos validation layer enabled so synchronization/threading bugs
+  # (e.g. concurrent VkCommandPool use) surface as validation errors instead
+  # of relying on lavapipe happening to crash or produce visibly wrong
+  # output. Integration test failures gate this job.
   # ---------------------------------------------------------------------------
   build-linux-vulkan:
     name: Build check (Linux / Vulkan)
@@ -63,10 +66,10 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
 
       - name: Configure
-        run: cmake -B build -DBUILD_TESTS=ON -DBUILD_INTEGRATION_TESTS=ON
+        run: cmake -B build -DBUILD_TESTS=ON -DBUILD_INTEGRATION_TESTS=ON -DCAMPELLO_GPU_VALIDATION=ON
 
       - name: Build library
         run: cmake --build build --target campello_gpu
@@ -82,7 +85,7 @@ jobs:
       - name: Run integration tests (lavapipe)
         run: |
           export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          ctest --test-dir build --output-on-failure -R campello_gpu_integration_tests || true
+          ctest --test-dir build --output-on-failure -R campello_gpu_integration_tests
 
   # ---------------------------------------------------------------------------
   # Metal integration tests — macOS only.

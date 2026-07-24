@@ -52,14 +52,17 @@ if(BUILD_INTEGRATION_TESTS)
         platform/test_render_pass_encoder.cpp
         platform/test_compute_pass_encoder.cpp
         platform/test_raytracing.cpp
+        platform/test_frame_ring.cpp
     )
     target_include_directories(campello_gpu_integration_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/inc
         ${CMAKE_BINARY_DIR}
     )
+    find_package(Threads REQUIRED)
     target_link_libraries(campello_gpu_integration_tests
         campello_gpu
         GTest::gtest_main
+        Threads::Threads
     )
     set_target_properties(campello_gpu_integration_tests PROPERTIES
         CXX_STANDARD 20
