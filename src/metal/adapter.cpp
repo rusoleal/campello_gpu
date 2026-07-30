@@ -5,6 +5,12 @@ using namespace systems::leal::campello_gpu;
 
 Adapter::Adapter() : native(nullptr) {}
 
+Adapter::~Adapter() {
+    if (native != nullptr) {
+        static_cast<MTL::Device *>(native)->release();
+    }
+}
+
 std::set<Feature> Adapter::getFeatures() {
     std::set<Feature> toReturn;
     if (native == nullptr) return toReturn;

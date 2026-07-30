@@ -421,6 +421,9 @@ Device::~Device()
         if (deviceData->swapchainRenderPassClear != VK_NULL_HANDLE)
             vkDestroyRenderPass(deviceData->device, deviceData->swapchainRenderPassClear, nullptr);
 
+        for (auto& [key, rp] : deviceData->offscreenRenderPassCache)
+            vkDestroyRenderPass(deviceData->device, rp, nullptr);
+
         for (auto iv : deviceData->swapchainImageViews)
             vkDestroyImageView(deviceData->device, iv, nullptr);
 
@@ -889,7 +892,10 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
                 }
             }
         }
-        swapchainData.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        // MAILBOX is the deliberate default — see choosePresentMode()'s
+        // doc comment for why. Falls back to FIFO automatically if the
+        // surface doesn't support it.
+        swapchainData.presentMode = choosePresentMode(gpu, surface, VK_PRESENT_MODE_MAILBOX_KHR);
         swapchainData.clipped = true;
         swapchainData.oldSwapchain = 0;
         // Use the resolved swapchainData.imageExtent (may differ from
@@ -1018,6 +1024,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->device = toReturn;
     vkGetDeviceQueue(toReturn, queueFamilyIndex, 0, &deviceData->graphicsQueue);
     deviceData->physicalDevice           = gpu;
+    vkGetPhysicalDeviceMemoryProperties(gpu, &deviceData->memoryProperties);
     deviceData->rayTracingEnabled        = rtSupported;
     deviceData->cooperativeMatrixEnabled = coopMatSupported;
     deviceData->cooperativeMatrixProperties = std::move(coopMatProperties);
@@ -1092,7 +1099,9 @@ std::shared_ptr<Texture> Device::createTexture(
     }
 
     // create buffer
-    auto buffer = createBuffer(bufferSize, BufferUsage::copySrc);
+    // Texture::upload() maps this staging buffer directly, so keep it host-visible.
+    auto buffer = createBuffer(bufferSize,
+        static_cast<BufferUsage>((int)BufferUsage::copySrc | (int)BufferUsage::mapWrite));
 
     VkImageUsageFlags imageUsage = 0;
     if ((int)usageMode & (int)TextureUsage::copySrc)
@@ -1248,6 +1257,9 @@ uint32_t findMemoryType(uint32_t typeFilter, VkPhysicalDeviceMemoryProperties &m
 std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
 {
 
+    const bool needsHostVisible = ((int)usage & (int)BufferUsage::mapRead) ||
+                                  ((int)usage & (int)BufferUsage::mapWrite);
+
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
@@ -1269,6 +1281,11 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
     if ((int)usage & (int)BufferUsage::accelerationStructureStorage)
         vkUsage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
                  | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    // Device-local buffers need transfer usage so Buffer::upload/download can
+    // copy through a staging buffer.
+    if (!needsHostVisible) {
+        vkUsage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    }
     bufferInfo.usage = vkUsage;
 
     auto deviceData = (DeviceData *)this->native;
@@ -1282,10 +1299,34 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
     VkMemoryRequirements bufferRequirements;
     vkGetBufferMemoryRequirements(deviceData->device, bufferHandle, &bufferRequirements);
 
-    VkPhysicalDeviceMemoryProperties memProperties;
-    vkGetPhysicalDeviceMemoryProperties(deviceData->physicalDevice, &memProperties);
+    // Cached once at device creation (see createDefaultDevice()) — a
+    // physical device's memory types never change, and this is called
+    // fresh on every single draw call's vertex buffer on this backend
+    // (no pooling yet — see DeviceData::memoryProperties' doc comment).
+    const VkPhysicalDeviceMemoryProperties& memProperties = deviceData->memoryProperties;
 
-    auto memoryType = findMemoryType(bufferRequirements.memoryTypeBits, memProperties, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    uint32_t memoryType = UINT32_MAX;
+    if (!needsHostVisible) {
+        // Prefer device-local memory that is still host-visible (typical UMA/mobile).
+        memoryType = findMemoryTypeIndex(bufferRequirements.memoryTypeBits, memProperties,
+                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        if (memoryType == UINT32_MAX) {
+            // Discrete-style path: pure device-local memory.
+            memoryType = findMemoryTypeIndex(bufferRequirements.memoryTypeBits, memProperties,
+                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        }
+    }
+    if (memoryType == UINT32_MAX) {
+        // Final fallback for mappable buffers or when device-local is unavailable.
+        memoryType = findMemoryTypeIndex(bufferRequirements.memoryTypeBits, memProperties,
+                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
+    if (memoryType == UINT32_MAX) {
+        vkDestroyBuffer(deviceData->device, bufferHandle, nullptr);
+        return nullptr;
+    }
 
     const bool needsBda = ((int)usage & (int)BufferUsage::accelerationStructureInput) ||
                           ((int)usage & (int)BufferUsage::accelerationStructureStorage);
@@ -1308,13 +1349,19 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage)
 
     vkBindBufferMemory(deviceData->device, bufferHandle, memoryHandle, 0);
 
+    const VkMemoryPropertyFlags allocatedFlags = memProperties.memoryTypes[memoryType].propertyFlags;
+
     BufferHandle *toReturn = new BufferHandle();
-    toReturn->device = deviceData->device;
-    toReturn->buffer = bufferHandle;
-    toReturn->memory = memoryHandle;
-    toReturn->size   = size;
-    toReturn->allocatedSize = bufferRequirements.size;
-    toReturn->deviceData = deviceData;
+    toReturn->device         = deviceData->device;
+    toReturn->buffer         = bufferHandle;
+    toReturn->memory         = memoryHandle;
+    toReturn->size           = size;
+    toReturn->allocatedSize  = bufferRequirements.size;
+    toReturn->deviceData     = deviceData;
+    toReturn->commandPool    = deviceData->uploadCommandPool;
+    toReturn->graphicsQueue  = deviceData->graphicsQueue;
+    toReturn->isDeviceLocal  = (allocatedFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    toReturn->isHostVisible  = (allocatedFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
 
     deviceData->bufferCount++;
     
@@ -2550,7 +2597,11 @@ void systems::leal::campello_gpu::recreateSwapchain(DeviceData *deviceData) {
             if (caps.supportedCompositeAlpha & flag) { sci.compositeAlpha = flag; break; }
         }
     }
-    sci.presentMode      = VK_PRESENT_MODE_FIFO_KHR;
+    // See the identical choosePresentMode() call at the initial swapchain
+    // creation site — MAILBOX is the deliberate default, falls back to
+    // FIFO automatically if unsupported.
+    sci.presentMode      = choosePresentMode(
+        deviceData->physicalDevice, deviceData->surface, VK_PRESENT_MODE_MAILBOX_KHR);
     sci.clipped          = VK_TRUE;
     sci.oldSwapchain     = deviceData->swapchain; // hand old swapchain to driver for reuse
 
@@ -2720,7 +2771,38 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
             presentInfo.pSwapchains        = &deviceData->swapchain;
             presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
             VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
-            if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+            // VK_SUBOPTIMAL_KHR is advisory, not an error — the spec is
+            // explicit that the swapchain "can still be used to
+            // successfully present to the surface". Recreating on it
+            // unconditionally (as this used to) is only correct if the
+            // recreation actually converges on a swapchain that stops
+            // reporting SUBOPTIMAL; it does not here — this renderer
+            // deliberately never pre-rotates content, so it always
+            // requests preTransform=IDENTITY whenever the surface's
+            // supportedTransforms includes it (see recreateSwapchain()),
+            // regardless of the surface's actual currentTransform. On a
+            // physically-rotated display (e.g. a tablet in landscape
+            // whose currentTransform is ROTATE_90, confirmed via
+            // vkGetPhysicalDeviceSurfaceCapabilitiesKHR on a real Adreno
+            // device) that mismatch is permanent, not transient — every
+            // single present comes back SUBOPTIMAL forever, so
+            // recreating on it destroyed and rebuilt the entire
+            // swapchain (plus every swapchain image, via vkDeviceWaitIdle
+            // + fresh buffer allocations through the platform's Gralloc
+            // HAL) on literally every frame. Confirmed via a real
+            // Perfetto trace: this was costing ~25-30ms/frame — the
+            // dominant cost by far, dwarfing actual GPU execution time
+            // (~10ms) and CPU draw-list encoding (~10-20ms) combined —
+            // and explained an observed ~3x vsync-callback throttle
+            // (SurfaceFlinger backs off delivering vsync to an app whose
+            // buffer queue can't keep up). Compositing already correctly
+            // presents IDENTITY-transformed content on a rotated
+            // display (confirmed visually) — it's just not the
+            // *optimal* path GPU-side, which SUBOPTIMAL is telling us,
+            // not something that needs fixing every frame. Only
+            // VK_ERROR_OUT_OF_DATE_KHR is truly mandatory (the swapchain
+            // is no longer usable at all, e.g. after an actual resize).
+            if (result == VK_ERROR_OUT_OF_DATE_KHR) {
                 recreateSwapchain(deviceData);
             }
         }
@@ -2783,7 +2865,38 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
             presentInfo.pImageIndices      = &cbHandle->currentImageIndex;
 
             VkResult result = vkQueuePresentKHR(deviceData->graphicsQueue, &presentInfo);
-            if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+            // VK_SUBOPTIMAL_KHR is advisory, not an error — the spec is
+            // explicit that the swapchain "can still be used to
+            // successfully present to the surface". Recreating on it
+            // unconditionally (as this used to) is only correct if the
+            // recreation actually converges on a swapchain that stops
+            // reporting SUBOPTIMAL; it does not here — this renderer
+            // deliberately never pre-rotates content, so it always
+            // requests preTransform=IDENTITY whenever the surface's
+            // supportedTransforms includes it (see recreateSwapchain()),
+            // regardless of the surface's actual currentTransform. On a
+            // physically-rotated display (e.g. a tablet in landscape
+            // whose currentTransform is ROTATE_90, confirmed via
+            // vkGetPhysicalDeviceSurfaceCapabilitiesKHR on a real Adreno
+            // device) that mismatch is permanent, not transient — every
+            // single present comes back SUBOPTIMAL forever, so
+            // recreating on it destroyed and rebuilt the entire
+            // swapchain (plus every swapchain image, via vkDeviceWaitIdle
+            // + fresh buffer allocations through the platform's Gralloc
+            // HAL) on literally every frame. Confirmed via a real
+            // Perfetto trace: this was costing ~25-30ms/frame — the
+            // dominant cost by far, dwarfing actual GPU execution time
+            // (~10ms) and CPU draw-list encoding (~10-20ms) combined —
+            // and explained an observed ~3x vsync-callback throttle
+            // (SurfaceFlinger backs off delivering vsync to an app whose
+            // buffer queue can't keep up). Compositing already correctly
+            // presents IDENTITY-transformed content on a rotated
+            // display (confirmed visually) — it's just not the
+            // *optimal* path GPU-side, which SUBOPTIMAL is telling us,
+            // not something that needs fixing every frame. Only
+            // VK_ERROR_OUT_OF_DATE_KHR is truly mandatory (the swapchain
+            // is no longer usable at all, e.g. after an actual resize).
+            if (result == VK_ERROR_OUT_OF_DATE_KHR) {
                 recreateSwapchain(deviceData);
             }
         }

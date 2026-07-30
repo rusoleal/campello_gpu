@@ -1,4 +1,5 @@
 #include "Metal.hpp"
+#include "common.hpp"
 #include <campello_gpu/buffer.hpp>
 #include "buffer_handle.hpp"
 
@@ -29,6 +30,7 @@ uint64_t Buffer::getLength() {
 }
 
 bool Buffer::upload(uint64_t offset, uint64_t size, void *data) {
+    MetalAutoreleasePool pool;
     auto handle = (MetalBufferHandle *)native;
     uint8_t *dst = (uint8_t *)(handle->buffer->contents());
     memcpy(dst+offset,data, size);
@@ -39,6 +41,7 @@ bool Buffer::upload(uint64_t offset, uint64_t size, void *data) {
 
 bool Buffer::download(uint64_t offset, uint64_t length, void *data) {
     if (!native || !data) return false;
+    MetalAutoreleasePool pool;
     auto handle = (MetalBufferHandle *)native;
     auto *buf = handle->buffer;
 

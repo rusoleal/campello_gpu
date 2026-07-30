@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.20.0)
+project(campello_gpu VERSION 0.21.0)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -11,6 +11,66 @@ include(GNUInstallDirs)
 include_directories(inc)
 
 configure_file(src/campello_gpu_config.h.in campello_gpu_config.h)
+
+# ---------------------------------------------------------------------------
+# Sanitizer build profiles
+#
+# Build with one of these custom build types to enable sanitizers:
+#
+#   ASan  — AddressSanitizer + UndefinedBehaviorSanitizer
+#           cmake -S . -B build_asan -DCMAKE_BUILD_TYPE=ASan
+#           cmake --build build_asan
+#           ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build_asan
+#
+#   LSan  — LeakSanitizer (Linux/GCC/Clang; limited support on Apple Clang)
+#           cmake -S . -B build_lsan -DCMAKE_BUILD_TYPE=LSan
+#
+#   UBSan — UndefinedBehaviorSanitizer only (fastest sanitizer job)
+#           cmake -S . -B build_ubsan -DCMAKE_BUILD_TYPE=UBSan
+#
+# Use lsan_suppressions.txt to filter driver/runtime false positives:
+#
+#   ASAN_OPTIONS=detect_leaks=1 \
+#   LSAN_OPTIONS=suppressions=lsan_suppressions.txt:print_suppressions=0 \
+#       ctest --test-dir build_asan
+#
+# Notes:
+#   - Do not combine ASan with TSan; they are mutually exclusive.
+#   - ASan/LSan will not catch Objective-C autorelease leaks on macOS;
+#     use Xcode Instruments → Allocations for those.
+#   - MSVC uses different flags; these profiles are disabled there.
+# ---------------------------------------------------------------------------
+if(NOT MSVC)
+    set(CMAKE_CXX_FLAGS_ASAN
+        "-fsanitize=address,undefined -fno-omit-frame-pointer -O1 -g"
+        CACHE STRING "C++ flags for ASan builds" FORCE)
+    set(CMAKE_C_FLAGS_ASAN
+        "-fsanitize=address,undefined -fno-omit-frame-pointer -O1 -g"
+        CACHE STRING "C flags for ASan builds" FORCE)
+    set(CMAKE_EXE_LINKER_FLAGS_ASAN
+        "-fsanitize=address,undefined"
+        CACHE STRING "Linker flags for ASan builds" FORCE)
+
+    set(CMAKE_CXX_FLAGS_LSAN
+        "-fsanitize=leak -fno-omit-frame-pointer -O1 -g"
+        CACHE STRING "C++ flags for LSan builds" FORCE)
+    set(CMAKE_C_FLAGS_LSAN
+        "-fsanitize=leak -fno-omit-frame-pointer -O1 -g"
+        CACHE STRING "C flags for LSan builds" FORCE)
+    set(CMAKE_EXE_LINKER_FLAGS_LSAN
+        "-fsanitize=leak"
+        CACHE STRING "Linker flags for LSan builds" FORCE)
+
+    set(CMAKE_CXX_FLAGS_UBSAN
+        "-fsanitize=undefined -fno-omit-frame-pointer -O1 -g"
+        CACHE STRING "C++ flags for UBSan builds" FORCE)
+    set(CMAKE_C_FLAGS_UBSAN
+        "-fsanitize=undefined -fno-omit-frame-pointer -O1 -g"
+        CACHE STRING "C flags for UBSan builds" FORCE)
+    set(CMAKE_EXE_LINKER_FLAGS_UBSAN
+        "-fsanitize=undefined"
+        CACHE STRING "Linker flags for UBSan builds" FORCE)
+endif()
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Android")
     include(android.cmake)

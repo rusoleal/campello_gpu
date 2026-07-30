@@ -22,6 +22,7 @@ struct MetalRenderEncoderData {
     MTL::Buffer               *indexBuffer;
     MTL::IndexType             indexType;
     NS::UInteger               indexOffset;
+    bool                       ended = false;
 
     // Pipeline state cache — avoids redundant setRenderPipelineState calls.
     MTL::RenderPipelineState  *currentPipelineState = nullptr;
@@ -50,6 +51,10 @@ RenderPassEncoder::RenderPassEncoder(void *pd) {
 RenderPassEncoder::~RenderPassEncoder() {
     if (native != nullptr) {
         auto *data = static_cast<MetalRenderEncoderData *>(native);
+        if (!data->ended) {
+            data->encoder->endEncoding();
+            data->ended = true;
+        }
         data->encoder->release();
         delete data;
     }
@@ -108,7 +113,11 @@ void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuff
 }
 
 void RenderPassEncoder::end() {
-    static_cast<MetalRenderEncoderData *>(native)->encoder->endEncoding();
+    auto *data = static_cast<MetalRenderEncoderData *>(native);
+    if (!data->ended) {
+        data->encoder->endEncoding();
+        data->ended = true;
+    }
 }
 
 void RenderPassEncoder::endOcclusionQuery() {

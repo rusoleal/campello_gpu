@@ -12,6 +12,7 @@ using namespace systems::leal::campello_gpu;
 struct MetalComputeEncoderData {
     MTL::ComputeCommandEncoder *encoder;
     MTL::ComputePipelineState  *currentPipeline;
+    bool                        ended = false;
 
     MetalComputeEncoderData(MTL::ComputeCommandEncoder *enc)
         : encoder(enc), currentPipeline(nullptr) {}
@@ -26,6 +27,10 @@ ComputePassEncoder::ComputePassEncoder(void *pd) {
 ComputePassEncoder::~ComputePassEncoder() {
     if (native != nullptr) {
         auto *data = static_cast<MetalComputeEncoderData *>(native);
+        if (!data->ended) {
+            data->encoder->endEncoding();
+            data->ended = true;
+        }
         data->encoder->release();
         delete data;
     }
@@ -54,7 +59,11 @@ void ComputePassEncoder::dispatchWorkgroupsIndirect(std::shared_ptr<Buffer> indi
 }
 
 void ComputePassEncoder::end() {
-    static_cast<MetalComputeEncoderData *>(native)->encoder->endEncoding();
+    auto *data = static_cast<MetalComputeEncoderData *>(native);
+    if (!data->ended) {
+        data->encoder->endEncoding();
+        data->ended = true;
+    }
 }
 
 void ComputePassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> bindGroup,

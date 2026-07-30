@@ -7,6 +7,13 @@ using namespace systems::leal::campello_gpu;
 
 Adapter::Adapter() : native(nullptr) {}
 
+Adapter::~Adapter() {
+    // native is an IDXGIAdapter1* whose reference Device::getAdapters()
+    // already owns (AddRef came from EnumAdapterByGpuPreference() — see
+    // that function's comment) but never released.
+    if (native) static_cast<IDXGIAdapter1*>(native)->Release();
+}
+
 std::set<Feature> Adapter::getFeatures() {
     std::set<Feature> features;
     if (!native) return features;

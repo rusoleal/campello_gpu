@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Metal.hpp"
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -15,6 +16,30 @@ namespace MTL {
 }
 
 namespace systems::leal::campello_gpu {
+
+/**
+ * @brief RAII wrapper around NSAutoreleasePool.
+ *
+ * The Metal-cpp wrapper follows Objective-C memory rules: methods whose names do
+ * not begin with alloc/new/copy return autoreleased objects. Public campello_gpu
+ * entry points instantiate this helper so those transient objects are drained
+ * before returning to the caller, preventing leaks when the caller has no active
+ * autorelease pool (background threads, dispatch queues, non-AppKit consumers).
+ */
+class MetalAutoreleasePool {
+    NS::AutoreleasePool *pool;
+public:
+    MetalAutoreleasePool()
+        : pool(NS::AutoreleasePool::alloc()->init()) {}
+    ~MetalAutoreleasePool() {
+        if (pool) pool->drain();
+    }
+
+    MetalAutoreleasePool(const MetalAutoreleasePool&) = delete;
+    MetalAutoreleasePool& operator=(const MetalAutoreleasePool&) = delete;
+    MetalAutoreleasePool(MetalAutoreleasePool&&) = delete;
+    MetalAutoreleasePool& operator=(MetalAutoreleasePool&&) = delete;
+};
 
 /**
  * @brief Metal-specific fence data — pure CPU-side synchronization.

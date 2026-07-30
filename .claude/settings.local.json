@@ -84,7 +84,14 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(curl -sI https://github.com)",
       "Bash(./emsdk install *)",
-      "Bash(./emsdk activate *)"
+      "Bash(./emsdk activate *)",
+      "Bash(git *)",
+      "Bash(./build_test/tests/campello_gpu_integration_tests --gtest_filter=\"*PushConstants*\")",
+      "Bash(awk -F: '{sum+=$2; print} END{print \"TOTAL:\", sum}')",
+      "Bash(cd *)",
+      "Bash(ctest --test-dir build_test3 --output-on-failure)",
+      "Bash(python3 -c \"import yaml, sys; yaml.safe_load\\(open\\('.github/workflows/ci.yml'\\)\\); print\\('YAML OK'\\)\")",
+      "Bash(python3 -c \"import json\")"
     ]
   }
 }

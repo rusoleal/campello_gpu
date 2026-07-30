@@ -279,15 +279,28 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
                                 : data->deviceData->swapchainRenderPassLoad;
             fb = data->deviceData->swapchainFramebuffers[data->currentImageIndex];
         } else {
-            // Transient render pass + framebuffer for offscreen or depth cases.
+            // Render pass for offscreen or depth cases — looked up from
+            // DeviceData::offscreenRenderPassCache rather than built fresh
+            // every call. See that field's doc comment: buildRenderPass()
+            // is a pure function of this key, so a cache hit is always
+            // functionally identical to what a fresh build would produce.
             VkImageLayout finalLayout = isSwapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            rp = buildRenderPass(data->device,
-                                 isSwapchain ? data->deviceData->surfaceFormat.format
-                                             : ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->format,
-                                 depthFormat,
-                                 colorLoadClear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
-                                 finalLayout);
+            VkFormat colorFormat = isSwapchain
+                ? data->deviceData->surfaceFormat.format
+                : ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->format;
+            VkAttachmentLoadOp colorLoadOp = colorLoadClear ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                                                             : VK_ATTACHMENT_LOAD_OP_LOAD;
+
+            const RenderPassKey rpKey{colorFormat, depthFormat, colorLoadOp, finalLayout};
+            auto& rpCache = data->deviceData->offscreenRenderPassCache;
+            auto  rpIt    = rpCache.find(rpKey);
+            if (rpIt != rpCache.end()) {
+                rp = rpIt->second;
+            } else {
+                rp = buildRenderPass(data->device, colorFormat, depthFormat, colorLoadOp, finalLayout);
+                rpCache.emplace(rpKey, rp);
+            }
 
             VkImageView attachments[2];
             uint32_t    attachCount = 0;
@@ -309,8 +322,14 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             fbInfo.layers          = 1;
             vkCreateFramebuffer(data->device, &fbInfo, nullptr, &fb);
 
-            // Defer destruction to CommandBuffer destructor.
-            data->transientRenderPasses.push_back(rp);
+            // The framebuffer is still per-(image view, extent) so it
+            // can't be reused across different offscreen textures — defer
+            // its destruction to the CommandBuffer destructor as before.
+            // The render pass, by contrast, is now owned by
+            // DeviceData::offscreenRenderPassCache (see above) and must
+            // NOT also be queued for per-command-buffer destruction, or
+            // the first frame to finish would destroy a handle every
+            // future frame still expects to find cached and valid.
             data->transientFramebuffers.push_back(fb);
         }
 

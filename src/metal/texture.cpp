@@ -1,4 +1,5 @@
 #include "Metal.hpp"
+#include "common.hpp"
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/texture_view.hpp>
 #include "texture_handle.hpp"
@@ -70,6 +71,7 @@ TextureUsage Texture::getUsage() {
 }
 
 bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
+    MetalAutoreleasePool pool;
     auto handle = (MetalTextureHandle *)native;
     auto *tex    = handle->texture;
     uint32_t w   = (uint32_t)tex->width();
@@ -89,36 +91,30 @@ bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
 
 bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint64_t length) {
     if (!native || !data || length == 0) return false;
+    MetalAutoreleasePool pool;
     auto handle = (MetalTextureHandle *)native;
+    if (!handle->deviceData) return false;
     auto *tex = handle->texture;
-    auto *device = tex->device();
-    if (!device) return false;
-
-    // Get the command queue from the device
-    auto *commandQueue = device->newCommandQueue();
+    auto *commandQueue = handle->deviceData->commandQueue;
     if (!commandQueue) return false;
 
     // Create a readback buffer
+    auto *device = tex->device();
+    if (!device) return false;
     auto *readbackBuf = device->newBuffer(length, MTL::ResourceStorageModeShared);
-    if (!readbackBuf) {
-        commandQueue->release();
-        return false;
-    }
+    if (!readbackBuf) return false;
 
     // Create a command buffer
     auto *cmdBuffer = commandQueue->commandBuffer();
     if (!cmdBuffer) {
         readbackBuf->release();
-        commandQueue->release();
         return false;
     }
 
     // Create a blit encoder
     auto *blitEncoder = cmdBuffer->blitCommandEncoder();
     if (!blitEncoder) {
-        cmdBuffer->release();
         readbackBuf->release();
-        commandQueue->release();
         return false;
     }
 
@@ -150,8 +146,6 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
     memcpy(data, readbackBuf->contents(), length);
 
     readbackBuf->release();
-    cmdBuffer->release();
-    commandQueue->release();
     return true;
 }
 
@@ -168,6 +162,7 @@ std::shared_ptr<TextureView> Texture::createView(
     uint32_t baseMipLevel,
     TextureType dimension) {
 
+    MetalAutoreleasePool pool;
     auto handle = (MetalTextureHandle *)native;
     auto *tex = handle->texture;
 

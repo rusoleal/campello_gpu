@@ -30,6 +30,8 @@ namespace systems::leal::campello_gpu
         Adapter();
 
     public:
+        ~Adapter();
+
         /**
          * @brief Returns the set of optional features supported by this adapter.
          *

@@ -10,6 +10,15 @@ using namespace systems::leal::campello_gpu;
 Adapter::Adapter() {
 }
 
+Adapter::~Adapter() {
+    // VkPhysicalDevice handles are enumerated from a VkInstance, not
+    // individually created/reference-counted objects — nothing to release
+    // here, unlike Metal's MTL::Device (explicitly retained in
+    // Device::getAdapters()) or DirectX's IDXGIAdapter1 (COM AddRef'd by
+    // EnumAdapterByGpuPreference()). This destructor exists only to satisfy
+    // the shared inc/campello_gpu/adapter.hpp declaration.
+}
+
 std::set<Feature> Adapter::getFeatures() {
     std::set<Feature> features;
     auto gpu = (VkPhysicalDevice)native;

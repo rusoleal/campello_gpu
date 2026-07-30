@@ -1,0 +1,76 @@
+# LeakSanitizer suppressions for campello_gpu
+#
+# Usage:
+#   ASAN_OPTIONS=detect_leaks=1 \
+#   LSAN_OPTIONS=suppressions=lsan_suppressions.txt:print_suppressions=0 \
+#       ctest --test-dir build_asan --output-on-failure
+#
+# These suppressions hide leaks allocated by graphics drivers, system runtimes,
+# and third-party loader layers — i.e. memory that campello_gpu cannot free.
+# Do NOT add project-owned allocations here; fix those instead.
+
+# -----------------------------------------------------------------------------
+# macOS system / Objective-C runtime
+# -----------------------------------------------------------------------------
+leak:libSystem*
+leak:libdispatch*
+leak:libobjc*
+leak:libcache*
+leak:CoreFoundation
+leak:Foundation
+
+# -----------------------------------------------------------------------------
+# Apple Metal driver / frameworks
+# -----------------------------------------------------------------------------
+leak:libMetal*
+leak:Metal*
+leak:MTL*
+leak:AGX*
+leak:IOGPU*
+leak:IOSurface*
+leak:libCoreImage*
+leak:libCVPixelBuffer*
+
+# -----------------------------------------------------------------------------
+# Vulkan loader / layers / drivers
+# -----------------------------------------------------------------------------
+leak:libvulkan*
+leak:libMoltenVK*
+leak:libVKLayer*
+leak:vulkan*
+leak:VkLayer*
+leak:libnvidia*
+leak:libamdvlk*
+leak:libswiftsader*
+
+# -----------------------------------------------------------------------------
+# DirectX / Windows graphics runtime (when running under WSL or cross-compiled)
+# -----------------------------------------------------------------------------
+leak:d3d11*
+leak:d3d12*
+leak:dxgi*
+leak:D3D12*
+leak:DXGI*
+
+# -----------------------------------------------------------------------------
+# WebGPU implementations (Dawn / wgpu-native)
+# -----------------------------------------------------------------------------
+leak:libdawn*
+leak:libwgpu*
+leak:dawn*
+leak:wgpu*
+
+# -----------------------------------------------------------------------------
+# Common third-party loaders and shader compilers
+# -----------------------------------------------------------------------------
+leak:libshaderc*
+leak:libSPIRV*
+leak:libspirv*
+leak:libglslang*
+
+# -----------------------------------------------------------------------------
+# Standard library / allocator internals
+# -----------------------------------------------------------------------------
+leak:libc.so*
+leak:libstdc++*
+leak:libc++*

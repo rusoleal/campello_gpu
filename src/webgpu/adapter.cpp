@@ -8,6 +8,10 @@ Adapter::Adapter() {
     native = nullptr;
 }
 
+Adapter::~Adapter() {
+    // native is always nullptr on this backend — nothing to release.
+}
+
 std::set<Feature> Adapter::getFeatures() {
     std::set<Feature> features;
     // WebGPU via Emscripten does not expose ray tracing.

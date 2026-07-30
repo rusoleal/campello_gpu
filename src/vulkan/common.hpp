@@ -4,6 +4,7 @@
 #include <atomic>
 #include <mutex>
 #include <memory>
+#include <unordered_map>
 #include <vulkan/vulkan.h>
 #ifdef __ANDROID__
 #include <android/native_window.h>
@@ -17,12 +18,124 @@
 
 namespace systems::leal::campello_gpu {
 
+    /**
+     * @brief Find a memory type matching the requested property flags.
+     * @return The memory type index, or UINT32_MAX if no match is found.
+     */
+    inline uint32_t findMemoryTypeIndex(uint32_t typeFilter,
+                                        const VkPhysicalDeviceMemoryProperties &memProperties,
+                                        VkMemoryPropertyFlags properties)
+    {
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+            if ((typeFilter & (1u << i)) &&
+                (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+        return UINT32_MAX;
+    }
+
+    /**
+     * @brief Picks `preferred` if the surface actually supports it, else
+     * falls back to VK_PRESENT_MODE_FIFO_KHR (the only present mode every
+     * Vulkan-conformant surface is required to support).
+     *
+     * Both Vulkan swapchain call sites request MAILBOX here as the
+     * deliberate default — see the CHANGELOG entry this shipped alongside.
+     * On a real device (Galaxy Tab S7 FE, Adreno 642L, traditional render
+     * pass fallback) this removed the entire `vkAcquireNextImageKHR` /
+     * "images in flight" fence wait cost (measured ~10ms/frame average,
+     * down to ~0.2ms), because that wait is really just CPU time spent
+     * blocked until the display has vsync'd — under FIFO, a frame that
+     * finished rendering early still has to sit and wait for the display
+     * to actually want it. MAILBOX lets the CPU/GPU move on immediately
+     * once a frame is submitted, always keeping only the most recent
+     * completed frame ready for the next vsync to pick up.
+     *
+     * This is NOT the classic "MAILBOX floods the GPU with wasted frames"
+     * scenario, and doesn't carry that scenario's battery cost: that
+     * pattern only happens with an unbounded render loop (nothing pacing
+     * how often a new frame is requested). campello_widgets' own frame
+     * requests are already vsync-gated by FrameScheduler/the platform's
+     * choreographer callback (see run_app.mm/run_app.cpp), independent of
+     * the swapchain's present mode — verified on-device: frame count
+     * stayed ~60/sec (matching the display's own refresh rate) whether
+     * FIFO or MAILBOX was active, never more. The remaining, smaller
+     * caveat is GPU clock-scaling behavior: some mobile GPU drivers'
+     * DVFS heuristics lean on a predictable vsync-anchored work rhythm to
+     * downclock confidently between frames, and MAILBOX's not-blocked-on-
+     * vsync submission timing can be less predictable for those
+     * heuristics — a real, driver-dependent effect, not something this
+     * repo has instrumented directly (no on-device power/clock-frequency
+     * measurement here, just Vulkan-level timing).
+     */
+    inline VkPresentModeKHR choosePresentMode(
+        VkPhysicalDevice gpu, VkSurfaceKHR surface, VkPresentModeKHR preferred)
+    {
+        if (preferred == VK_PRESENT_MODE_FIFO_KHR) return preferred;
+
+        uint32_t count = 0;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &count, nullptr);
+        if (count == 0) return VK_PRESENT_MODE_FIFO_KHR;
+
+        std::vector<VkPresentModeKHR> modes(count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &count, modes.data());
+        for (auto m : modes) {
+            if (m == preferred) return preferred;
+        }
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
+
     VkInstance getInstance();
+
+    /**
+     * @brief Key for caching the transient offscreen VkRenderPass objects
+     * built by buildRenderPass() — see DeviceData::offscreenRenderPassCache's
+     * doc comment for why this cache exists.
+     *
+     * buildRenderPass() is a pure function of these four values (no
+     * image-specific state), so any two calls with the same key produce
+     * functionally-identical render passes — safe to reuse indefinitely.
+     */
+    struct RenderPassKey {
+        VkFormat            colorFormat;
+        VkFormat            depthFormat;
+        VkAttachmentLoadOp  colorLoadOp;
+        VkImageLayout       colorFinalLayout;
+
+        bool operator==(const RenderPassKey& other) const noexcept {
+            return colorFormat == other.colorFormat &&
+                   depthFormat == other.depthFormat &&
+                   colorLoadOp == other.colorLoadOp &&
+                   colorFinalLayout == other.colorFinalLayout;
+        }
+    };
+
+    struct RenderPassKeyHash {
+        size_t operator()(const RenderPassKey& k) const noexcept {
+            size_t h = std::hash<int>{}((int)k.colorFormat);
+            h = h * 31 + std::hash<int>{}((int)k.depthFormat);
+            h = h * 31 + std::hash<int>{}((int)k.colorLoadOp);
+            h = h * 31 + std::hash<int>{}((int)k.colorFinalLayout);
+            return h;
+        }
+    };
 
     struct DeviceData {
         VkDevice                  device;
         VkQueue                   graphicsQueue;
         VkPhysicalDevice          physicalDevice;
+        // Populated once at device creation (see createDefaultDevice()) —
+        // a physical device's set of memory types/heaps and their property
+        // flags is fixed for its lifetime, so there is nothing to gain by
+        // re-querying vkGetPhysicalDeviceMemoryProperties() on every single
+        // Device::createBuffer() call. Found costing real per-draw-call
+        // overhead on Android/Adreno: vulkan_draw_backend.cpp calls
+        // createBuffer() fresh for every draw's vertex buffer (no pooling,
+        // unlike the Metal backend's UniformBufferPool — see
+        // campello_widgets' TODO.md for that follow-up), so this query ran
+        // once per draw call, not once per frame.
+        VkPhysicalDeviceMemoryProperties memoryProperties{};
         VkSurfaceKHR              surface;
         VkSwapchainKHR            swapchain;
         VkExtent2D                imageExtent;
@@ -65,7 +178,20 @@ namespace systems::leal::campello_gpu {
         // frame: reusing one while a previous submission that used it
         // hasn't been waited on is invalid, hence per-slot arrays instead
         // of the single pair this used to be.
-        static constexpr uint32_t kFramesInFlight = 2;
+        // 3 (not 2): with the swapchain's own minImageCount also forced to
+        // 3 (see recreateSwapchain()'s doc comment), matching depths lets
+        // the CPU get a full swapchain-image's worth of slack ahead of the
+        // GPU before beginFrameRing() ever blocks it — found reducing the
+        // real, measured CPU-side wait in CommandEncoder::beginRenderPass()
+        // (the "images in flight" fence wait — see its doc comment) on a
+        // real device (Galaxy Tab S7 FE, Adreno 642L, Vulkan 1.1 traditional
+        // render pass path): that wait is coupled to how far the GPU has
+        // fallen behind the CPU's submission rate, and one more ring slot
+        // gives the GPU a full extra frame to catch up before the CPU is
+        // forced to stop and wait for it, at the cost of one more frame of
+        // input-to-display latency and one more generation's worth of
+        // descriptor pools/fences/semaphores/retained command buffers.
+        static constexpr uint32_t kFramesInFlight = 3;
         VkSemaphore imageAvailableSemaphores[kFramesInFlight] = {};
         // Unlike imageAvailableSemaphores (needed *before* acquire tells us
         // which image we got, so it must be indexed by an independent
@@ -135,6 +261,28 @@ namespace systems::leal::campello_gpu {
         VkRenderPass               swapchainRenderPassClear = VK_NULL_HANDLE;
         VkRenderPass               swapchainRenderPassLoad  = VK_NULL_HANDLE;
         std::vector<VkFramebuffer> swapchainFramebuffers;
+
+        // Cache for buildRenderPass()'s output, keyed by its (pure-function)
+        // input parameters — see RenderPassKey's doc comment. Without this,
+        // command_encoder.cpp's offscreen/depth beginRenderPass() path
+        // called vkCreateRenderPass() fresh on every single offscreen
+        // composite (ClipRRect/ClipOval/ShaderMask/BoxShadow — everything
+        // that isn't the traditional render pass fallback's swapchain
+        // path, which already reuses swapchainRenderPassClear/Load). Found
+        // costing real per-frame time on Android/Adreno (a tile-based GPU,
+        // where render pass creation encodes tile/GMEM configuration, not
+        // just a lightweight descriptor object): with ~15-20 offscreen
+        // composites in a typical UI frame (campello_widgets' gallery app),
+        // this was ~15-20 redundant vkCreateRenderPass calls/frame despite
+        // only 1-2 *distinct* (format, loadOp) combinations ever actually
+        // occurring — the parameters are pure, so every one of those calls
+        // after the first was rebuilding an object functionally identical
+        // to one already cached here. These render passes reference no
+        // image/view state, so unlike swapchainFramebuffers (recreated on
+        // resize) or a texture's own transient framebuffer, entries here
+        // never need invalidating — only torn down at device destruction
+        // (see Device::~Device()).
+        std::unordered_map<RenderPassKey, VkRenderPass, RenderPassKeyHash> offscreenRenderPassCache;
 
         // Resource counters
         std::atomic<uint32_t> bufferCount{0};

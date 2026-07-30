@@ -184,6 +184,7 @@ Device::~Device() {
 }
 
 std::shared_ptr<Device> Device::createDefaultDevice(void *pd) {
+    MetalAutoreleasePool pool;
     auto *device = MTL::CreateSystemDefaultDevice();
     if (device == nullptr) return nullptr;
     std::cout << "Device::createDefaultDevice()" << std::endl;
@@ -191,6 +192,7 @@ std::shared_ptr<Device> Device::createDefaultDevice(void *pd) {
 }
 
 std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> adapter, void *pd) {
+    MetalAutoreleasePool pool;
     if (adapter == nullptr || adapter->native == nullptr) return nullptr;
     auto *mtlDevice = static_cast<MTL::Device *>(adapter->native);
     mtlDevice->retain();
@@ -198,10 +200,12 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> adapter, v
 }
 
 std::vector<std::shared_ptr<Adapter>> Device::getAdapters() {
+    MetalAutoreleasePool pool;
     std::vector<std::shared_ptr<Adapter>> toReturn;
     auto *devices = MTL::CopyAllDevices();
     for (NS::UInteger i = 0; i < devices->count(); ++i) {
         auto *mtlDevice = static_cast<MTL::Device *>(devices->object(i));
+        mtlDevice->retain();
         Adapter *adapter = new Adapter();
         adapter->native = mtlDevice;
         toReturn.push_back(std::shared_ptr<Adapter>(adapter));
@@ -211,10 +215,12 @@ std::vector<std::shared_ptr<Adapter>> Device::getAdapters() {
 }
 
 std::string Device::getName() {
+    MetalAutoreleasePool pool;
     return static_cast<MetalDeviceData *>(native)->device->name()->utf8String();
 }
 
 std::set<Feature> Device::getFeatures() {
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     std::set<Feature> toReturn;
     if (dev->supportsRaytracing())
@@ -260,6 +266,7 @@ std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties(
 }
 
 std::string Device::getEngineVersion() {
+    MetalAutoreleasePool pool;
     MTL::Device *d = MTL::CreateSystemDefaultDevice();
     if (!d) return "Metal";
     std::string result = "Metal";
@@ -278,6 +285,7 @@ std::string Device::getEngineVersion() {
 // ---------------------------------------------------------------------------
 
 DeviceMemoryInfo Device::getMemoryInfo() {
+    MetalAutoreleasePool pool;
     DeviceMemoryInfo info;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     
@@ -336,6 +344,7 @@ CommandStats Device::getCommandStats() {
 }
 
 Metrics Device::getMetrics() {
+    MetalAutoreleasePool pool;
     Metrics m;
     m.deviceMemory = getMemoryInfo();
     m.resources = getResourceCounters();
@@ -423,6 +432,7 @@ void Device::resetPassPerformanceStats() {
 }
 
 MemoryPressureLevel Device::getMemoryPressureLevel() {
+    MetalAutoreleasePool pool;
     auto *data = static_cast<MetalDeviceData *>(native);
     auto stats = getResourceMemoryStats();
     
@@ -465,6 +475,7 @@ void Device::setMemoryPressureCallback(MemoryPressureCallback callback) {
 }
 
 MemoryPressureLevel Device::checkMemoryPressure() {
+    MetalAutoreleasePool pool;
     auto *data = static_cast<MetalDeviceData *>(native);
     auto currentLevel = getMemoryPressureLevel();
     auto previousLevel = data->lastPressureLevel.exchange(currentLevel);
@@ -481,6 +492,7 @@ MemoryPressureLevel Device::checkMemoryPressure() {
 }
 
 MetricsWithTiming Device::getMetricsWithTiming() {
+    MetalAutoreleasePool pool;
     MetricsWithTiming m;
     m.deviceMemory = getMemoryInfo();
     m.resources = getResourceCounters();
@@ -499,6 +511,7 @@ std::shared_ptr<Texture> Device::createTexture(
     uint32_t width, uint32_t height, uint32_t depth,
     uint32_t mipLevels, uint32_t samples, TextureUsage usageMode) {
 
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     auto *pTextureDesc = MTL::TextureDescriptor::alloc()->init();
     pTextureDesc->setWidth(width);
@@ -600,6 +613,7 @@ std::shared_ptr<Texture> Device::createTexture(
 }
 
 std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     MTL::ResourceOptions options;
     const int u = static_cast<int>(usage);
@@ -643,6 +657,7 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
 }
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, uint64_t size) {
+    MetalAutoreleasePool pool;
     auto *data = new MetalShaderModuleData{ std::vector<uint8_t>(buffer, buffer + size) };
     
     auto *deviceData = static_cast<MetalDeviceData *>(native);
@@ -652,11 +667,13 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t *buffer, 
 }
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const char *wgslSource) {
+    MetalAutoreleasePool pool;
     (void)wgslSource;
     return nullptr; // WGSL not supported on Metal backend
 }
 
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     auto *pipelineDesc = MTL::RenderPipelineDescriptor::alloc()->init();
 
@@ -769,6 +786,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
 }
 
 std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipelineDescriptor &descriptor) {
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     if (!descriptor.compute.module) return nullptr;
 
@@ -804,6 +822,7 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
 }
 
 std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLayoutDescriptor &descriptor) {
+    MetalAutoreleasePool pool;
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->bindGroupLayoutCount++;
     auto *data = new MetalBindGroupLayoutData{ descriptor.entries };
@@ -811,6 +830,7 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
 }
 
 std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor) {
+    MetalAutoreleasePool pool;
     auto *data = new MetalBindGroupData{};
     data->entries = descriptor.entries;
     if (descriptor.layout && descriptor.layout->native) {
@@ -827,6 +847,7 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
 }
 
 std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayoutDescriptor &descriptor) {
+    MetalAutoreleasePool pool;
     // Metal uses implicit pipeline layout; no separate object is required.
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     auto *data = new MetalPipelineLayoutData();
@@ -836,6 +857,7 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
 }
 
 std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor &descriptor) {
+    MetalAutoreleasePool pool;
     auto *dev  = static_cast<MetalDeviceData *>(native)->device;
     auto *desc = MTL::SamplerDescriptor::alloc()->init();
 
@@ -863,6 +885,7 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor &descript
 }
 
 std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor &descriptor) {
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     // Use a shared buffer to store occlusion/timestamp query results (8 bytes per slot).
     auto *buffer = dev->newBuffer(
@@ -876,6 +899,7 @@ std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor &descr
 }
 
 std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
+    MetalAutoreleasePool pool;
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     auto *cmdBuffer  = deviceData->commandQueue->commandBuffer();
     if (!cmdBuffer) return nullptr;
@@ -884,16 +908,19 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
 }
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
+    MetalAutoreleasePool pool;
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     auto *cmdBuf     = static_cast<MTL::CommandBuffer *>(commandBuffer->native);
 
     // If a drawable was scheduled via scheduleNextPresent(), attach it to this
     // command buffer before committing.  Metal then presents the drawable at
     // the next vsync AFTER the GPU finishes, preventing "present before render"
-    // artefacts.  The pointer is cleared after each use.
+    // artefacts.  The drawable was retained by scheduleNextPresent(), so release
+    // it after attaching it to the command buffer.
     if (deviceData->pendingPresentDrawable) {
         auto *drawable = static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable);
         cmdBuf->presentDrawable(drawable);
+        drawable->release();
         deviceData->pendingPresentDrawable = nullptr;
     }
 
@@ -903,12 +930,14 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
                     std::shared_ptr<Fence> signalFence) {
+    MetalAutoreleasePool pool;
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     auto *cmdBuf     = static_cast<MTL::CommandBuffer *>(commandBuffer->native);
 
     if (deviceData->pendingPresentDrawable) {
         auto *drawable = static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable);
         cmdBuf->presentDrawable(drawable);
+        drawable->release();
         deviceData->pendingPresentDrawable = nullptr;
     }
 
@@ -952,11 +981,25 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
 }
 
 void Device::scheduleNextPresent(void* nativeDrawable) {
+    MetalAutoreleasePool pool;
     auto *deviceData = static_cast<MetalDeviceData *>(native);
-    deviceData->pendingPresentDrawable = nativeDrawable;
+
+    // Release any previously scheduled drawable that was not consumed.
+    if (deviceData->pendingPresentDrawable) {
+        static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable)->release();
+    }
+
+    if (nativeDrawable) {
+        auto *drawable = static_cast<MTL::Drawable *>(nativeDrawable);
+        drawable->retain();
+        deviceData->pendingPresentDrawable = drawable;
+    } else {
+        deviceData->pendingPresentDrawable = nullptr;
+    }
 }
 
 void Device::waitForIdle() {
+    MetalAutoreleasePool pool;
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     // Commit an empty sentinel command buffer on the same queue and wait for it.
     // Metal executes command buffers in order within a queue, so when this
@@ -973,6 +1016,7 @@ void Device::waitForIdle() {
 }
 
 std::shared_ptr<Fence> Device::createFence() {
+    MetalAutoreleasePool pool;
     auto *fenceData = new MetalFenceData();
     return std::shared_ptr<Fence>(new Fence(fenceData));
 }
@@ -1008,6 +1052,7 @@ std::string getVersion() {
 std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStructure(
     const BottomLevelAccelerationStructureDescriptor &descriptor)
 {
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     if (!dev->supportsRaytracing()) return nullptr;
     if (descriptor.geometries.empty()) return nullptr;
@@ -1039,6 +1084,7 @@ std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStru
 std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructure(
     const TopLevelAccelerationStructureDescriptor &descriptor)
 {
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     if (!dev->supportsRaytracing()) return nullptr;
     if (descriptor.instances.empty()) return nullptr;
@@ -1071,6 +1117,7 @@ std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructu
 std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
     const RayTracingPipelineDescriptor &descriptor)
 {
+    MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
     if (!dev->supportsRaytracing()) return nullptr;
     if (!descriptor.rayGeneration.module) return nullptr;

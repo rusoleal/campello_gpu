@@ -1,4 +1,5 @@
 #include "Metal.hpp"
+#include "common.hpp"
 #include "acceleration_structure_handle.hpp"
 #include "acceleration_structure_helpers.hpp"
 #include "buffer_handle.hpp"
@@ -26,6 +27,7 @@ CommandEncoder::~CommandEncoder() {
 }
 
 std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     auto *passDesc  = MTL::RenderPassDescriptor::alloc()->init();
 
@@ -84,6 +86,7 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(const BeginRe
 }
 
 std::shared_ptr<ComputePassEncoder> CommandEncoder::beginComputePass() {
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     auto *encoder   = cmdBuffer->computeCommandEncoder();
     if (!encoder) return nullptr;
@@ -91,6 +94,7 @@ std::shared_ptr<ComputePassEncoder> CommandEncoder::beginComputePass() {
 }
 
 void CommandEncoder::clearBuffer(std::shared_ptr<Buffer> buffer, uint64_t offset, uint64_t size) {
+    MetalAutoreleasePool pool;
     auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
     auto *blitEncoder = cmdBuffer->blitCommandEncoder();
     auto *bufferHandle = static_cast<MetalBufferHandle *>(buffer->native);
@@ -105,6 +109,7 @@ void CommandEncoder::copyBufferToBuffer(
     std::shared_ptr<Buffer> destination, uint64_t destinationOffset,
     uint64_t size) {
 
+    MetalAutoreleasePool pool;
     auto *cmdBuffer   = static_cast<MTL::CommandBuffer *>(native);
     auto *blitEncoder = cmdBuffer->blitCommandEncoder();
     auto *sourceHandle = static_cast<MetalBufferHandle *>(source->native);
@@ -125,6 +130,7 @@ void CommandEncoder::copyBufferToTexture(
     uint32_t                 arrayLayer)
 {
     if (!native || !source || !destination) return;
+    MetalAutoreleasePool pool;
     auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
     auto *bufHandle  = static_cast<MetalBufferHandle *>(source->native);
     auto *texHandle  = static_cast<MetalTextureHandle *>(destination->native);
@@ -163,6 +169,7 @@ void CommandEncoder::copyTextureToBuffer(
     uint64_t bytesPerRow)
 {
     if (!native || !source || !destination) return;
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     auto *texHandle = static_cast<MetalTextureHandle *>(source->native);
     auto *bufHandle = static_cast<MetalBufferHandle *>(destination->native);
@@ -209,6 +216,7 @@ void CommandEncoder::copyTextureToTexture(
     const Extent3D& extent)
 {
     if (!native || !source || !destination) return;
+    MetalAutoreleasePool pool;
 
     auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
     auto *srcHandle  = static_cast<MetalTextureHandle *>(source->native);
@@ -231,6 +239,7 @@ void CommandEncoder::copyTextureToTexture(
 
 bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
     if (!native || !texture || !texture->native) return false;
+    MetalAutoreleasePool pool;
     auto *cmdBuffer  = static_cast<MTL::CommandBuffer *>(native);
     auto *texHandle  = static_cast<MetalTextureHandle *>(texture->native);
     auto *blit       = cmdBuffer->blitCommandEncoder();
@@ -241,6 +250,7 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
 }
 
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     cmdBuffer->retain();
     return std::shared_ptr<CommandBuffer>(new CommandBuffer(cmdBuffer));
@@ -251,6 +261,7 @@ void CommandEncoder::resolveQuerySet(
     uint32_t firstQuery, uint32_t queryCount,
     std::shared_ptr<Buffer> destination, uint64_t destinationOffset) {
 
+    MetalAutoreleasePool pool;
     // Occlusion query results are already written to the QuerySet buffer by the GPU.
     // Copy the relevant region to the destination buffer.
     auto *cmdBuffer   = static_cast<MTL::CommandBuffer *>(native);
@@ -266,6 +277,7 @@ void CommandEncoder::resolveQuerySet(
 }
 
 void CommandEncoder::writeTimestamp(std::shared_ptr<QuerySet> querySet, uint32_t queryIndex) {
+    MetalAutoreleasePool pool;
     // Metal timestamp sampling requires MTL::CounterSampleBuffer configured on
     // the pass descriptor. Not implementable as a standalone command at this level.
 }
@@ -275,6 +287,7 @@ void CommandEncoder::writeTimestamp(std::shared_ptr<QuerySet> querySet, uint32_t
 // ---------------------------------------------------------------------------
 
 std::shared_ptr<RayTracingPassEncoder> CommandEncoder::beginRayTracingPass() {
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     auto *encoder   = cmdBuffer->computeCommandEncoder();
     if (!encoder) return nullptr;
@@ -287,6 +300,7 @@ void CommandEncoder::buildAccelerationStructure(
     std::shared_ptr<Buffer> scratchBuffer)
 {
     if (!dst || !scratchBuffer) return;
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
     if (!asEncoder) return;
@@ -313,6 +327,7 @@ void CommandEncoder::buildAccelerationStructure(
     std::shared_ptr<Buffer> scratchBuffer)
 {
     if (!dst || !scratchBuffer) return;
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
     if (!asEncoder) return;
@@ -346,6 +361,7 @@ void CommandEncoder::updateAccelerationStructure(
     std::shared_ptr<Buffer> scratchBuffer)
 {
     if (!src || !dst || !scratchBuffer) return;
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
     if (!asEncoder) return;
@@ -366,6 +382,7 @@ void CommandEncoder::copyAccelerationStructure(
     std::shared_ptr<AccelerationStructure> dst)
 {
     if (!src || !dst) return;
+    MetalAutoreleasePool pool;
     auto *cmdBuffer = static_cast<MTL::CommandBuffer *>(native);
     auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
     if (!asEncoder) return;

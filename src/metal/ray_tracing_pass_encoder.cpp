@@ -18,6 +18,7 @@ struct MetalRayTracingEncoderData {
     MTL::ComputeCommandEncoder *encoder;
     NS::UInteger                threadExecutionWidth         = 8;
     NS::UInteger                maxTotalThreadsPerThreadgroup = 64;
+    bool                        ended = false;
 
     explicit MetalRayTracingEncoderData(MTL::ComputeCommandEncoder *enc)
         : encoder(enc) {}
@@ -32,6 +33,10 @@ RayTracingPassEncoder::RayTracingPassEncoder(void *pd) {
 RayTracingPassEncoder::~RayTracingPassEncoder() {
     if (native != nullptr) {
         auto *d = static_cast<MetalRayTracingEncoderData *>(native);
+        if (!d->ended) {
+            d->encoder->endEncoding();
+            d->ended = true;
+        }
         d->encoder->release();
         delete d;
     }
@@ -104,5 +109,9 @@ void RayTracingPassEncoder::traceRays(uint32_t width, uint32_t height, uint32_t 
 }
 
 void RayTracingPassEncoder::end() {
-    static_cast<MetalRayTracingEncoderData *>(native)->encoder->endEncoding();
+    auto *d = static_cast<MetalRayTracingEncoderData *>(native);
+    if (!d->ended) {
+        d->encoder->endEncoding();
+        d->ended = true;
+    }
 }
