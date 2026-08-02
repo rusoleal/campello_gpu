@@ -3,6 +3,7 @@
 #include "acceleration_structure_handle.hpp"
 #include "bind_group_data.hpp"
 #include "buffer_handle.hpp"
+#include "texture_handle.hpp"
 #include <campello_gpu/ray_tracing_pass_encoder.hpp>
 #include <campello_gpu/ray_tracing_pipeline.hpp>
 #include <campello_gpu/bind_group.hpp>
@@ -78,8 +79,9 @@ void RayTracingPassEncoder::setBindGroup(uint32_t index,
         } else if (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource)) {
             const auto &texPtr = std::get<std::shared_ptr<Texture>>(entry.resource);
             if (!texPtr || !texPtr->native) continue;
-            auto *tex = static_cast<MTL::Texture *>(texPtr->native);
-            enc->setTexture(tex, entry.binding);
+            auto *texHandle = static_cast<MetalTextureHandle *>(texPtr->native);
+            if (!texHandle->texture) continue;
+            enc->setTexture(texHandle->texture, entry.binding);
         } else if (std::holds_alternative<std::shared_ptr<Sampler>>(entry.resource)) {
             const auto &sampPtr = std::get<std::shared_ptr<Sampler>>(entry.resource);
             if (!sampPtr || !sampPtr->native) continue;

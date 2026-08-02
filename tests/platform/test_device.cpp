@@ -17,12 +17,47 @@
 #include <campello_gpu/constants/texture_type.hpp>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/buffer_usage.hpp>
+#include <campello_gpu/constants/feature.hpp>
+
+#include <iostream>
 
 using namespace systems::leal::campello_gpu;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+static const char* featureName(Feature feature) {
+    switch (feature) {
+        case Feature::raytracing:                 return "raytracing";
+        case Feature::msaa32bit:                   return "msaa32bit";
+        case Feature::bcTextureCompression:        return "bcTextureCompression";
+        case Feature::etc2TextureCompression:      return "etc2TextureCompression";
+        case Feature::astcTextureCompression:      return "astcTextureCompression";
+        case Feature::depth24Stencil8PixelFormat:  return "depth24Stencil8PixelFormat";
+        case Feature::geometryShader:               return "geometryShader";
+        case Feature::cooperativeMatrix:           return "cooperativeMatrix";
+        case Feature::fp16:                        return "fp16";
+        case Feature::subgroupOperations:          return "subgroupOperations";
+    }
+    return "unknown";
+}
+
+// Every value in the Feature enum — kept in sync manually since the enum
+// offers no reflection. Used to report a supported/unsupported line for
+// each known feature, not just the ones the device happens to support.
+static const Feature kAllFeatures[] = {
+    Feature::raytracing,
+    Feature::msaa32bit,
+    Feature::bcTextureCompression,
+    Feature::etc2TextureCompression,
+    Feature::astcTextureCompression,
+    Feature::depth24Stencil8PixelFormat,
+    Feature::geometryShader,
+    Feature::cooperativeMatrix,
+    Feature::fp16,
+    Feature::subgroupOperations,
+};
 
 static std::shared_ptr<Device> tryCreateDevice() {
 #if defined(__ANDROID__)
@@ -88,6 +123,27 @@ TEST(Device, GetFeaturesDoesNotThrow) {
         GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
     }
     EXPECT_NO_THROW(device->getFeatures());
+}
+
+// Prints every known Feature alongside whether the current GPU supports it.
+// Not an assertion — the point is to surface the full feature matrix of
+// whatever hardware the test suite happens to run on.
+TEST(Device, PrintFeatures) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+
+    auto supported = device->getFeatures();
+
+    std::cout << "Device: " << device->getName() << "\n";
+    for (const auto& feature : kAllFeatures) {
+        bool isSupported = supported.count(feature) > 0;
+        std::cout << "  - " << featureName(feature) << ": "
+                   << (isSupported ? "supported" : "unsupported") << "\n";
+    }
+
+    SUCCEED();
 }
 
 // ---------------------------------------------------------------------------

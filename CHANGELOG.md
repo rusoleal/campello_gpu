@@ -4,6 +4,10 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **[Metal] `RayTracingPassEncoder::setBindGroup()` crashed whenever a texture was bound to a ray tracing pass** — it cast the `Texture`'s opaque `native` handle directly to `MTL::Texture*`, but on Metal that handle is actually a `MetalTextureHandle*` wrapper (the real `MTL::Texture*` plus allocation bookkeeping), same as `render_pass_encoder.cpp`, `command_encoder.cpp`, and `texture.cpp` already unwrap correctly — `ray_tracing_pass_encoder.cpp` was the one call site skipping that indirection. Found while building a ray tracing demo that binds an output storage texture for `rayGenMain` to write into: `setTexture:atIndex:` received a garbage pointer read from the wrong struct offset, faulting inside the AGX driver (`EXC_BAD_ACCESS` in `-[AGXG17FamilyComputeContext setTexture:atIndex:]`). Fixed by unwrapping through `MetalTextureHandle` like the other call sites; `tests/platform/test_raytracing.cpp` also gained broad coverage of BLAS/TLAS creation, build-flag variants, update/copy commands, and pipeline creation edge cases that weren't exercised before.
+
 ## [0.21.0] - 2026-07-30
 
 ### Added
