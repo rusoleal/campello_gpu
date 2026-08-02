@@ -6,6 +6,10 @@ All notable changes to campello_gpu are documented here.
 
 ## [0.21.1] - 2026-08-02
 
+### Added
+
+- **`examples/macos_offscreen/raytracing_scene` — headless Cornell box ray tracing demo** — standalone command-line example exercising campello_gpu's ray tracing API end to end: a 16:9 Cornell box with 12 procedurally-placed cubes/spheres (checkerboarded, sharing just 2 BLAS across 17 TLAS instances), hard shadows, and up to 3 chained mirror-reflection bounces off every surface. Includes an in-process benchmark mode (configurable iteration count and resolution) and a README with build instructions and sample timings.
+
 ### Fixed
 
 - **[Metal] `RayTracingPassEncoder::setBindGroup()` crashed whenever a texture was bound to a ray tracing pass** — it cast the `Texture`'s opaque `native` handle directly to `MTL::Texture*`, but on Metal that handle is actually a `MetalTextureHandle*` wrapper (the real `MTL::Texture*` plus allocation bookkeeping), same as `render_pass_encoder.cpp`, `command_encoder.cpp`, and `texture.cpp` already unwrap correctly — `ray_tracing_pass_encoder.cpp` was the one call site skipping that indirection. Found while building a ray tracing demo that binds an output storage texture for `rayGenMain` to write into: `setTexture:atIndex:` received a garbage pointer read from the wrong struct offset, faulting inside the AGX driver (`EXC_BAD_ACCESS` in `-[AGXG17FamilyComputeContext setTexture:atIndex:]`). Fixed by unwrapping through `MetalTextureHandle` like the other call sites; `tests/platform/test_raytracing.cpp` also gained broad coverage of BLAS/TLAS creation, build-flag variants, update/copy commands, and pipeline creation edge cases that weren't exercised before.
