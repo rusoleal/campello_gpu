@@ -35,6 +35,9 @@
 #include <campello_gpu/metrics.hpp>
 #include <campello_gpu/fence.hpp>
 #include <campello_gpu/cooperative_matrix_properties.hpp>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <campello_gpu/platform/linux_dmabuf.hpp>
+#endif
 
 namespace systems::leal::campello_gpu
 {
@@ -302,6 +305,27 @@ namespace systems::leal::campello_gpu
             uint32_t width, uint32_t height, uint32_t depth,
             uint32_t mipLevels, uint32_t samples,
             TextureUsage usageMode);
+
+#if defined(__linux__) && !defined(__ANDROID__)
+        /**
+         * @brief Creates a read-only `Texture` that wraps an externally-imported
+         * dma-buf, without copying — for compositing a Wayland client's buffer
+         * directly (see `DmaBufTextureDescriptor`'s doc comment).
+         *
+         * Linux/Vulkan only — this method does not exist on other backends,
+         * since dma-buf is a Linux kernel mechanism with no equivalent
+         * concept (or caller) on Metal/DirectX12/WebGPU.
+         *
+         * `campello_gpu` does not take ownership of any file descriptor in
+         * `descriptor` — see `DmaBufTextureDescriptor` for the exact contract.
+         *
+         * @param descriptor Buffer geometry, format, DRM modifier, and plane fds.
+         * @return A new `Texture`, or `nullptr` on failure (including when
+         *         `descriptor.planeCount != 1` — multi-planar import is not
+         *         yet implemented).
+         */
+        std::shared_ptr<Texture> createTextureFromDmaBuf(const DmaBufTextureDescriptor &descriptor);
+#endif
 
         /**
          * @brief Creates an uninitialised GPU buffer.

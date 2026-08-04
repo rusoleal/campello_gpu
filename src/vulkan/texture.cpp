@@ -44,6 +44,12 @@ Texture::~Texture() {
 bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
     auto handle = (TextureHandle *)native;
 
+    // Textures imported via Device::createTextureFromDmaBuf() have no CPU
+    // staging buffer (there's nothing to "upload" -- the memory is owned
+    // externally); download() still works since it allocates its own
+    // readback buffer independent of `handle->buffer`.
+    if (!handle->buffer) return false;
+
     // Write data into the host-visible staging buffer.
     if (!handle->buffer->upload(offset, length, data)) return false;
 

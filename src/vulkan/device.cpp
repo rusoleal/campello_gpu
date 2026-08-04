@@ -616,6 +616,9 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     // Detect extension availability.
     bool hasAS  = false, hasRTP = false, hasDHO = false, hasDynRender = false;
     bool hasCoopMat = false, hasFloat16Int8 = false;
+#if defined(__linux__) && !defined(__ANDROID__)
+    bool hasExternalMemoryFd = false, hasExternalMemoryDmaBuf = false, hasDrmFormatModifier = false;
+#endif
     for (const auto &e : availableExtensions) {
         if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)   == 0) hasAS       = true;
         if (strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)     == 0) hasRTP      = true;
@@ -623,8 +626,18 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         if (strcmp(e.extensionName, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME)        == 0) hasDynRender = true;
         if (strcmp(e.extensionName, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)       == 0) hasCoopMat     = true;
         if (strcmp(e.extensionName, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME)      == 0) hasFloat16Int8 = true;
+#if defined(__linux__) && !defined(__ANDROID__)
+        if (strcmp(e.extensionName, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)       == 0) hasExternalMemoryFd     = true;
+        if (strcmp(e.extensionName, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME)  == 0) hasExternalMemoryDmaBuf = true;
+        if (strcmp(e.extensionName, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) == 0) hasDrmFormatModifier   = true;
+#endif
     }
     const bool rtSupported = hasAS && hasRTP && hasDHO;
+#if defined(__linux__) && !defined(__ANDROID__)
+    // All three required together -- dma-buf import (Device::createTextureFromDmaBuf())
+    // is only usable when the whole chain is present.
+    const bool dmaBufImportSupported = hasExternalMemoryFd && hasExternalMemoryDmaBuf && hasDrmFormatModifier;
+#endif
     // VK_KHR_cooperative_matrix depends on VK_KHR_shader_float16_int8, which is core
     // as of Vulkan 1.2 — on a 1.2+ driver that dependency won't show up as an extension.
     const bool coopMatSupported = hasCoopMat && (hasFloat16Int8 || isVulkan12Plus);
@@ -696,6 +709,13 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         deviceExtensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
         deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     }
+#if defined(__linux__) && !defined(__ANDROID__)
+    if (dmaBufImportSupported) {
+        deviceExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+        deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+        deviceExtensions.push_back(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+    }
+#endif
     if (coopMatSupported) {
         deviceExtensions.push_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     }
@@ -1241,6 +1261,223 @@ std::shared_ptr<Texture> Device::createTexture(
     
     return std::shared_ptr<Texture>(new Texture(toReturn));
 }
+
+#if defined(__linux__) && !defined(__ANDROID__)
+// vkGetMemoryFdPropertiesKHR (VK_KHR_external_memory_fd) is not guaranteed to
+// be a statically-exported symbol -- loaded lazily the first time it's
+// needed, same pattern as loadRayTracingFunctions() above.
+static PFN_vkGetMemoryFdPropertiesKHR pfnGetMemoryFdPropertiesKHR = nullptr;
+
+std::shared_ptr<Texture> Device::createTextureFromDmaBuf(const DmaBufTextureDescriptor &descriptor)
+{
+    auto deviceData = (DeviceData *)this->native;
+
+    // Multi-planar dma-bufs (e.g. YUV video formats) aren't implemented yet --
+    // see DmaBufTextureDescriptor's doc comment.
+    if (descriptor.planeCount != 1 || descriptor.width == 0 || descriptor.height == 0)
+        return nullptr;
+
+    const DmaBufPlane &plane = descriptor.planes[0];
+    if (plane.fd < 0)
+        return nullptr;
+
+    if (!pfnGetMemoryFdPropertiesKHR) {
+        pfnGetMemoryFdPropertiesKHR = (PFN_vkGetMemoryFdPropertiesKHR)
+            vkGetDeviceProcAddr(deviceData->device, "vkGetMemoryFdPropertiesKHR");
+        // VK_KHR_external_memory_fd wasn't enabled at device creation (see
+        // dmaBufImportSupported in createDevice()) -- nothing to import into.
+        if (!pfnGetMemoryFdPropertiesKHR)
+            return nullptr;
+    }
+
+    VkImageUsageFlags imageUsage = 0;
+    if ((int)descriptor.usage & (int)TextureUsage::copySrc)        imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if ((int)descriptor.usage & (int)TextureUsage::copyDst)        imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if ((int)descriptor.usage & (int)TextureUsage::renderTarget)   imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((int)descriptor.usage & (int)TextureUsage::storageBinding) imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if ((int)descriptor.usage & (int)TextureUsage::textureBinding) imageUsage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+
+    VkSubresourceLayout planeLayout{};
+    planeLayout.offset   = plane.offset;
+    planeLayout.rowPitch = plane.stride;
+
+    // EXPLICIT (not LIST): the layout is already fixed by whoever exported
+    // this dma-buf (a Wayland client, via wlroots) -- we're describing an
+    // existing buffer, not asking the driver to choose a modifier for a new
+    // allocation.
+    VkImageDrmFormatModifierExplicitCreateInfoEXT modifierInfo{};
+    modifierInfo.sType                       = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
+    modifierInfo.drmFormatModifier            = descriptor.drmFormatModifier;
+    modifierInfo.drmFormatModifierPlaneCount  = 1;
+    modifierInfo.pPlaneLayouts                = &planeLayout;
+
+    VkExternalMemoryImageCreateInfo extImageInfo{};
+    extImageInfo.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    extImageInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    extImageInfo.pNext       = &modifierInfo;
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.pNext         = &extImageInfo;
+    imageInfo.imageType     = VK_IMAGE_TYPE_2D;
+    imageInfo.format        = pixelFormatToNative(descriptor.format);
+    imageInfo.extent        = {descriptor.width, descriptor.height, 1};
+    imageInfo.mipLevels     = 1;
+    imageInfo.arrayLayers   = 1;
+    imageInfo.samples       = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling        = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+    imageInfo.usage         = imageUsage;
+    imageInfo.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage image = VK_NULL_HANDLE;
+    if (vkCreateImage(deviceData->device, &imageInfo, nullptr, &image) != VK_SUCCESS)
+        return nullptr;
+
+    // Dedicated allocation: many drivers (RADV included) require or strongly
+    // expect imported dma-buf memory to be dedicated to a single image
+    // rather than suballocated -- query rather than assume, then chain
+    // VkMemoryDedicatedAllocateInfo below regardless (harmless when only
+    // "preferred", not required).
+    VkImageMemoryRequirementsInfo2 reqInfo2{};
+    reqInfo2.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
+    reqInfo2.image = image;
+
+    VkMemoryDedicatedRequirements dedicatedReqs{};
+    dedicatedReqs.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+
+    VkMemoryRequirements2 memReqs2{};
+    memReqs2.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+    memReqs2.pNext = &dedicatedReqs;
+
+    vkGetImageMemoryRequirements2(deviceData->device, &reqInfo2, &memReqs2);
+
+    // Which memory types this specific fd can actually be imported into --
+    // NOT the same set vkGetImageMemoryRequirements2() alone reports. A
+    // valid memory type index must be in both.
+    VkMemoryFdPropertiesKHR fdProps{};
+    fdProps.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
+    if (pfnGetMemoryFdPropertiesKHR(deviceData->device,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, plane.fd, &fdProps) != VK_SUCCESS) {
+        vkDestroyImage(deviceData->device, image, nullptr);
+        return nullptr;
+    }
+
+    uint32_t typeBits = memReqs2.memoryRequirements.memoryTypeBits & fdProps.memoryTypeBits;
+    // properties=0: the exporter dictated this allocation's memory type, not
+    // us -- there's no "preferred" property flag to ask for here, just "any
+    // type both sides agree is valid".
+    uint32_t memoryTypeIndex = findMemoryTypeIndex(typeBits, deviceData->memoryProperties, 0);
+    if (memoryTypeIndex == UINT32_MAX) {
+        vkDestroyImage(deviceData->device, image, nullptr);
+        return nullptr;
+    }
+
+    // NOTE on fd ownership: per DmaBufTextureDescriptor's doc comment,
+    // campello_gpu never closes plane.fd itself, regardless of whether this
+    // call succeeds or fails. The Vulkan driver dups its own reference to
+    // the underlying dma_buf during a successful import -- this is the
+    // real-world, Mesa/RADV-verified behavior specific to
+    // VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT (a refcounted kernel
+    // object designed for multiple simultaneous consumers), distinct from
+    // VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT, where the base Vulkan
+    // spec's "a successful import transfers ownership to the driver"
+    // language applies and the caller must NOT close it after import.
+    // Making campello_gpu never touch the fd's lifetime sidesteps needing
+    // to get that distinction right on every driver.
+    VkImportMemoryFdInfoKHR importInfo{};
+    importInfo.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    importInfo.fd         = plane.fd;
+
+    VkMemoryDedicatedAllocateInfo dedicatedAlloc{};
+    dedicatedAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+    dedicatedAlloc.image = image;
+    dedicatedAlloc.pNext = &importInfo;
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.pNext           = &dedicatedAlloc;
+    allocInfo.allocationSize  = memReqs2.memoryRequirements.size;
+    allocInfo.memoryTypeIndex = memoryTypeIndex;
+
+    VkDeviceMemory imageMemory = VK_NULL_HANDLE;
+    if (vkAllocateMemory(deviceData->device, &allocInfo, nullptr, &imageMemory) != VK_SUCCESS) {
+        vkDestroyImage(deviceData->device, image, nullptr);
+        return nullptr;
+    }
+
+    if (vkBindImageMemory(deviceData->device, image, imageMemory, 0) != VK_SUCCESS) {
+        vkFreeMemory(deviceData->device, imageMemory, nullptr);
+        vkDestroyImage(deviceData->device, image, nullptr);
+        return nullptr;
+    }
+
+    // Imported images arrive in VK_IMAGE_LAYOUT_UNDEFINED from Vulkan's point
+    // of view -- dma-buf carries no Vulkan layout metadata. Full correctness
+    // across the producer/consumer boundary also wants a
+    // VK_QUEUE_FAMILY_FOREIGN_EXT ownership-transfer barrier before
+    // sampling, since the client's own rendering happened in a separate
+    // Vulkan instance/queue context -- campello_gpu does not issue that
+    // automatically (it has no visibility into the exporter's side of that
+    // handshake), so the caller (compositor) must handle both the layout
+    // transition and the foreign-queue acquire barrier before sampling.
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType                           = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image                           = image;
+    viewInfo.viewType                        = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format                          = imageInfo.format;
+    viewInfo.subresourceRange.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel   = 0;
+    viewInfo.subresourceRange.levelCount     = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount     = 1;
+
+    VkImageView defaultView = VK_NULL_HANDLE;
+    if (vkCreateImageView(deviceData->device, &viewInfo, nullptr, &defaultView) != VK_SUCCESS) {
+        vkFreeMemory(deviceData->device, imageMemory, nullptr);
+        vkDestroyImage(deviceData->device, image, nullptr);
+        return nullptr;
+    }
+
+    auto toReturn = new TextureHandle();
+    toReturn->device         = deviceData->device;
+    toReturn->physicalDevice = deviceData->physicalDevice;
+    toReturn->commandPool    = deviceData->uploadCommandPool;
+    toReturn->graphicsQueue  = deviceData->graphicsQueue;
+    toReturn->buffer         = nullptr; // no CPU staging path -- see Texture::upload()'s guard
+    toReturn->image          = image;
+    toReturn->imageMemory    = imageMemory;
+    toReturn->defaultView    = defaultView;
+    toReturn->currentLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    toReturn->width          = descriptor.width;
+    toReturn->height         = descriptor.height;
+    toReturn->depth          = 1;
+    toReturn->arrayLayers    = 1;
+    toReturn->mipLevels      = 1;
+    toReturn->samples        = 1;
+    toReturn->pixelFormat    = descriptor.format;
+    toReturn->usage          = descriptor.usage;
+    toReturn->textureType    = TextureType::tt2d;
+    toReturn->deviceData     = deviceData;
+    toReturn->allocatedSize  = memReqs2.memoryRequirements.size;
+
+    deviceData->textureCount++;
+    uint64_t newTextureBytes = deviceData->textureBytes.fetch_add(toReturn->allocatedSize) + toReturn->allocatedSize;
+    uint64_t currentPeak = deviceData->peakTextureBytes.load();
+    while (newTextureBytes > currentPeak && !deviceData->peakTextureBytes.compare_exchange_weak(currentPeak, newTextureBytes)) {
+        // Retry if another thread updated the peak
+    }
+    uint64_t totalBytes = deviceData->bufferBytes.load() + deviceData->textureBytes.load() +
+                          deviceData->accelerationStructureBytes.load() + deviceData->querySetBytes.load();
+    uint64_t currentTotalPeak = deviceData->peakTotalBytes.load();
+    while (totalBytes > currentTotalPeak && !deviceData->peakTotalBytes.compare_exchange_weak(currentTotalPeak, totalBytes)) {
+        // Retry if another thread updated the peak
+    }
+
+    return std::shared_ptr<Texture>(new Texture(toReturn));
+}
+#endif // defined(__linux__) && !defined(__ANDROID__)
 
 uint32_t findMemoryType(uint32_t typeFilter, VkPhysicalDeviceMemoryProperties &memProperties, VkMemoryPropertyFlags properties)
 {
