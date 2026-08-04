@@ -618,6 +618,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     bool hasCoopMat = false, hasFloat16Int8 = false;
 #if defined(__linux__) && !defined(__ANDROID__)
     bool hasExternalMemoryFd = false, hasExternalMemoryDmaBuf = false, hasDrmFormatModifier = false;
+    bool hasPhysicalDeviceDrm = false;
 #endif
     for (const auto &e : availableExtensions) {
         if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)   == 0) hasAS       = true;
@@ -630,6 +631,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         if (strcmp(e.extensionName, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)       == 0) hasExternalMemoryFd     = true;
         if (strcmp(e.extensionName, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME)  == 0) hasExternalMemoryDmaBuf = true;
         if (strcmp(e.extensionName, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) == 0) hasDrmFormatModifier   = true;
+        if (strcmp(e.extensionName, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME)      == 0) hasPhysicalDeviceDrm   = true;
 #endif
     }
     const bool rtSupported = hasAS && hasRTP && hasDHO;
@@ -637,6 +639,31 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     // All three required together -- dma-buf import (Device::createTextureFromDmaBuf())
     // is only usable when the whole chain is present.
     const bool dmaBufImportSupported = hasExternalMemoryFd && hasExternalMemoryDmaBuf && hasDrmFormatModifier;
+
+    // VK_EXT_physical_device_drm has no associated functions/features to enable --
+    // it only adds the VkPhysicalDeviceDrmPropertiesEXT query struct -- but per spec
+    // that struct is only validly populated once the extension is enabled, so it
+    // still needs to be requested like any other (see deviceExtensions below).
+    // Queried here (physical-device level, before VkDevice exists) alongside
+    // cooperative-matrix properties for the same reason: fixed for this physical
+    // device's lifetime, no benefit to re-querying per Device::getDrmDeviceNode() call.
+    DrmDeviceNode drmDeviceNode{};
+    if (hasPhysicalDeviceDrm) {
+        VkPhysicalDeviceDrmPropertiesEXT drmProps{};
+        drmProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+        VkPhysicalDeviceProperties2 props2{};
+        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        props2.pNext = &drmProps;
+        vkGetPhysicalDeviceProperties2(gpu, &props2);
+
+        drmDeviceNode.valid       = true;
+        drmDeviceNode.hasPrimary  = drmProps.hasPrimary;
+        drmDeviceNode.primaryMajor = drmProps.primaryMajor;
+        drmDeviceNode.primaryMinor = drmProps.primaryMinor;
+        drmDeviceNode.hasRender   = drmProps.hasRender;
+        drmDeviceNode.renderMajor = drmProps.renderMajor;
+        drmDeviceNode.renderMinor = drmProps.renderMinor;
+    }
 #endif
     // VK_KHR_cooperative_matrix depends on VK_KHR_shader_float16_int8, which is core
     // as of Vulkan 1.2 — on a 1.2+ driver that dependency won't show up as an extension.
@@ -714,6 +741,9 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         deviceExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
         deviceExtensions.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
         deviceExtensions.push_back(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+    }
+    if (hasPhysicalDeviceDrm) {
+        deviceExtensions.push_back(VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME);
     }
 #endif
     if (coopMatSupported) {
@@ -1049,6 +1079,10 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->cooperativeMatrixEnabled = coopMatSupported;
     deviceData->cooperativeMatrixProperties = std::move(coopMatProperties);
     deviceData->fp16Enabled               = fp16Supported;
+#if defined(__linux__) && !defined(__ANDROID__)
+    deviceData->drmDeviceNode              = drmDeviceNode;
+    deviceData->dmaBufImportEnabled        = dmaBufImportSupported;
+#endif
     deviceData->surface                  = surface;
     deviceData->swapchain                = swapchain;
     deviceData->imageExtent              = imageExtent;
@@ -1476,6 +1510,59 @@ std::shared_ptr<Texture> Device::createTextureFromDmaBuf(const DmaBufTextureDesc
     }
 
     return std::shared_ptr<Texture>(new Texture(toReturn));
+}
+
+std::vector<DmaBufFormatModifier> Device::getSupportedDmaBufModifiers(
+    PixelFormat format, TextureUsage requiredUsage)
+{
+    auto deviceData = (DeviceData *)this->native;
+    std::vector<DmaBufFormatModifier> toReturn;
+
+    // See DeviceData::dmaBufImportEnabled's doc comment: don't rely on
+    // driver leniency for an extension-defined pNext struct when the
+    // extension itself wasn't enabled.
+    if (!deviceData->dmaBufImportEnabled)
+        return toReturn;
+
+    VkFormatFeatureFlags requiredFeatures = 0;
+    if ((int)requiredUsage & (int)TextureUsage::copySrc)        requiredFeatures |= VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+    if ((int)requiredUsage & (int)TextureUsage::copyDst)        requiredFeatures |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if ((int)requiredUsage & (int)TextureUsage::textureBinding) requiredFeatures |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+    if ((int)requiredUsage & (int)TextureUsage::storageBinding) requiredFeatures |= VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
+    if ((int)requiredUsage & (int)TextureUsage::renderTarget)   requiredFeatures |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+
+    VkFormat vkFormat = pixelFormatToNative(format);
+
+    VkDrmFormatModifierPropertiesListEXT modList{};
+    modList.sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT;
+
+    VkFormatProperties2 formatProps2{};
+    formatProps2.sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2;
+    formatProps2.pNext = &modList;
+
+    // First call: query just the count.
+    vkGetPhysicalDeviceFormatProperties2(deviceData->physicalDevice, vkFormat, &formatProps2);
+    if (modList.drmFormatModifierCount == 0)
+        return toReturn;
+
+    std::vector<VkDrmFormatModifierPropertiesEXT> mods(modList.drmFormatModifierCount);
+    modList.pDrmFormatModifierProperties = mods.data();
+    // Second call: same struct, now with storage to actually fill.
+    vkGetPhysicalDeviceFormatProperties2(deviceData->physicalDevice, vkFormat, &formatProps2);
+
+    toReturn.reserve(mods.size());
+    for (const auto &m : mods) {
+        if ((m.drmFormatModifierTilingFeatures & requiredFeatures) == requiredFeatures) {
+            toReturn.push_back(DmaBufFormatModifier{m.drmFormatModifier, m.drmFormatModifierPlaneCount});
+        }
+    }
+    return toReturn;
+}
+
+DrmDeviceNode Device::getDrmDeviceNode()
+{
+    auto deviceData = (DeviceData *)this->native;
+    return deviceData->drmDeviceNode;
 }
 #endif // defined(__linux__) && !defined(__ANDROID__)
 

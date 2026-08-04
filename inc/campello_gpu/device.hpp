@@ -325,6 +325,42 @@ namespace systems::leal::campello_gpu
          *         yet implemented).
          */
         std::shared_ptr<Texture> createTextureFromDmaBuf(const DmaBufTextureDescriptor &descriptor);
+
+        /**
+         * @brief Lists which DRM format modifiers this device can import (or
+         * render into, depending on `requiredUsage`) dma-bufs of `format` under.
+         *
+         * Intended for a Wayland compositor to answer wlroots'
+         * `get_render_formats()`/`get_dmabuf_texture_formats()` renderer
+         * queries — i.e. to tell wlroots' buffer allocator (typically GBM)
+         * which modifiers are actually usable here, before it allocates a
+         * buffer this device will then import via `createTextureFromDmaBuf()`.
+         *
+         * @param format        Pixel format to query.
+         * @param requiredUsage Usage the resulting texture needs to support;
+         *                      a modifier is only included if every bit set
+         *                      in this mask is actually usable together for
+         *                      it (e.g. `TextureUsage::renderTarget` for
+         *                      wlroots' render-target query, `textureBinding`
+         *                      for its texture/sampling query).
+         * @return Every supported modifier and its plane count, or empty if
+         *         `VK_EXT_image_drm_format_modifier` isn't available.
+         */
+        std::vector<DmaBufFormatModifier> getSupportedDmaBufModifiers(
+            PixelFormat format, TextureUsage requiredUsage);
+
+        /**
+         * @brief Identifies the `/dev/dri` device node this device's GPU
+         * corresponds to — for a compositor to confirm this Vulkan device is
+         * the same physical GPU as the display it's driving (wlroots'
+         * `get_drm_fd()` renderer query), by comparing major/minor device
+         * numbers against its own already-open DRM fd. campello_gpu never
+         * opens a DRM device file itself.
+         *
+         * @return `DrmDeviceNode` with `valid == false` if
+         *         `VK_EXT_physical_device_drm` isn't supported.
+         */
+        DrmDeviceNode getDrmDeviceNode();
 #endif
 
         /**

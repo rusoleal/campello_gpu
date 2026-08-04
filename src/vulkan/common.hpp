@@ -15,6 +15,9 @@
 #endif
 #include <campello_gpu/metrics.hpp>
 #include <campello_gpu/command_buffer.hpp>
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <campello_gpu/platform/linux_dmabuf.hpp>
+#endif
 
 namespace systems::leal::campello_gpu {
 
@@ -256,6 +259,24 @@ namespace systems::leal::campello_gpu {
         // actually enabled at device creation. Cached so Device::getFeatures()
         // reflects what was enabled, not just what the hardware could support.
         bool fp16Enabled = false;
+
+#if defined(__linux__) && !defined(__ANDROID__)
+        // Whether VK_KHR_external_memory_fd + VK_EXT_external_memory_dma_buf +
+        // VK_EXT_image_drm_format_modifier were all enabled at device creation
+        // -- see createDevice()'s dmaBufImportSupported. Gates both
+        // Device::createTextureFromDmaBuf() and
+        // Device::getSupportedDmaBufModifiers(): querying modifier support via
+        // vkGetPhysicalDeviceFormatProperties2()'s VkDrmFormatModifierPropertiesListEXT
+        // chain without the extension actually enabled is relying on
+        // unspecified driver leniency, not something to build correctness on.
+        bool dmaBufImportEnabled = false;
+
+        // VK_EXT_physical_device_drm: which /dev/dri node this physical
+        // device corresponds to. Queried once at device creation (fixed for
+        // the physical device's lifetime, same reasoning as memoryProperties
+        // above) -- see Device::getDrmDeviceNode().
+        DrmDeviceNode drmDeviceNode;
+#endif
 
         // Traditional render pass fallback (used when hasDynamicRendering == false)
         VkRenderPass               swapchainRenderPassClear = VK_NULL_HANDLE;

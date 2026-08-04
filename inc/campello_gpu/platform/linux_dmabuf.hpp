@@ -66,4 +66,40 @@ namespace systems::leal::campello_gpu
         /// guaranteed importable for every modifier.
         TextureUsage usage = TextureUsage::textureBinding;
     };
+
+    /**
+     * @brief One DRM format modifier a Vulkan device can import/render
+     * dma-bufs of a given `PixelFormat` and usage under, as returned by
+     * `Device::getSupportedDmaBufModifiers()`.
+     */
+    struct DmaBufFormatModifier
+    {
+        uint64_t modifier;   ///< DRM format modifier value (`DRM_FORMAT_MOD_*`).
+        uint32_t planeCount; ///< Number of planes a buffer using this modifier has.
+    };
+
+    /**
+     * @brief Identifies which `/dev/dri` device node this `Device`'s
+     * underlying GPU corresponds to, as returned by `Device::getDrmDeviceNode()`.
+     *
+     * Lets a caller (e.g. a compositor holding its own already-open DRM fd)
+     * confirm this Vulkan device is the same physical GPU as its display —
+     * by comparing major/minor device numbers, not by campello_gpu opening
+     * any device file itself (it never does).
+     */
+    struct DrmDeviceNode
+    {
+        /// False if the underlying Vulkan device doesn't support
+        /// `VK_EXT_physical_device_drm` — every other field is meaningless
+        /// when this is false.
+        bool valid = false;
+
+        bool    hasPrimary   = false; ///< Whether primaryMajor/primaryMinor identify a real node.
+        int64_t primaryMajor = -1;    ///< `/dev/dri/cardN` major number (the KMS/mode-setting node).
+        int64_t primaryMinor = -1;    ///< `/dev/dri/cardN` minor number.
+
+        bool    hasRender   = false;  ///< Whether renderMajor/renderMinor identify a real node.
+        int64_t renderMajor = -1;     ///< `/dev/dri/renderDN` major number (the render-only node).
+        int64_t renderMinor = -1;     ///< `/dev/dri/renderDN` minor number.
+    };
 }
