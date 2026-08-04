@@ -40,7 +40,7 @@ set_target_properties(campello_gpu_universal_tests PROPERTIES
 # Supported platforms: macOS/iOS (Metal), Android (Vulkan), Windows (DirectX 12), Linux (Vulkan).
 # ---------------------------------------------------------------------------
 if(BUILD_INTEGRATION_TESTS)
-    add_executable(campello_gpu_integration_tests
+    set(INTEGRATION_TEST_SOURCES
         platform/test_device.cpp
         platform/test_buffer.cpp
         platform/test_texture.cpp
@@ -54,6 +54,14 @@ if(BUILD_INTEGRATION_TESTS)
         platform/test_raytracing.cpp
         platform/test_frame_ring.cpp
     )
+    # Device::createTextureFromDmaBuf()/getSupportedDmaBufModifiers()/
+    # getDrmDeviceNode() don't exist as symbols outside Linux/Vulkan (see
+    # their #if defined(__linux__) && !defined(__ANDROID__) guards in
+    # device.hpp) -- only add this file's translation unit on Linux.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        list(APPEND INTEGRATION_TEST_SOURCES platform/test_dmabuf.cpp)
+    endif()
+    add_executable(campello_gpu_integration_tests ${INTEGRATION_TEST_SOURCES})
     target_include_directories(campello_gpu_integration_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/inc
         ${CMAKE_BINARY_DIR}
