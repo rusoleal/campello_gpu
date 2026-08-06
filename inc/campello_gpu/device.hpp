@@ -445,13 +445,17 @@ namespace systems::leal::campello_gpu
         /**
          * @brief Creates a bind group from a layout and a set of concrete resources.
          *
-         * The bind group's layout must match the layout expected by the pipeline that
-         * will use it.
-         *
          * @param descriptor Resources to bind and the layout they conform to.
+         * @param persistent When true, the bind group is allocated from a
+         *   never-reset pool and freed individually when the shared_ptr is
+         *   destroyed. Use this for bind groups that must outlive per-frame
+         *   pool resets (e.g. cached text/image bind groups). On backends
+         *   where all resources are already persistent (Metal, D3D12) this
+         *   flag is a no-op.
          * @return A new `BindGroup`, or `nullptr` on failure.
          */
-        std::shared_ptr<BindGroup> createBindGroup(const BindGroupDescriptor &descriptor);
+        std::shared_ptr<BindGroup> createBindGroup(const BindGroupDescriptor &descriptor,
+                                                   bool persistent = false);
 
         /**
          * @brief Creates a pipeline layout.

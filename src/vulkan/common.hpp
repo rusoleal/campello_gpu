@@ -237,6 +237,11 @@ namespace systems::leal::campello_gpu {
         // the DirectX12 backend's per-generation SRV heap slot recycling
         // (see its DeviceData::freeSrvSlots()/recycleSrvSlots()).
         VkDescriptorPool descriptorPools[kFramesInFlight] = {};
+        // Never-reset pool for bind groups that must survive across frame-ring
+        // resets. VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT allows
+        // individual sets to be freed when cache entries are evicted.
+        // See Device::createBindGroup(persistent=true) and BindGroup::~BindGroup().
+        VkDescriptorPool persistentDescriptorPool = VK_NULL_HANDLE;
 
 #ifdef __ANDROID__
         ANativeWindow            *window               = nullptr;

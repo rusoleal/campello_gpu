@@ -8,7 +8,10 @@ BindGroup::BindGroup(void *pd) {
 }
 
 BindGroup::~BindGroup() {
-    // Descriptor sets are owned by the pool; freeing the pool frees them all.
     auto data = (BindGroupHandle *)native;
+    if (data->ownerDevice != VK_NULL_HANDLE && data->ownerPool != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(data->ownerDevice, data->ownerPool,
+                             1, &data->descriptorSet);
+    }
     delete data;
 }

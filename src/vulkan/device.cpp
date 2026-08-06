@@ -437,6 +437,9 @@ Device::~Device()
             if (pool != VK_NULL_HANDLE)
                 vkDestroyDescriptorPool(deviceData->device, pool, nullptr);
         }
+        if (deviceData->persistentDescriptorPool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(deviceData->device,
+                                    deviceData->persistentDescriptorPool, nullptr);
 
         vkDestroyCommandPool(deviceData->device, deviceData->commandPool, nullptr);
         vkDestroyCommandPool(deviceData->device, deviceData->uploadCommandPool, nullptr);
@@ -1051,6 +1054,20 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         vkCreateDescriptorPool(toReturn, &poolInfo, nullptr, &descriptorPools[i]);
     }
 
+    constexpr uint32_t kPersistentPoolSets = 512;
+    VkDescriptorPoolSize persistentPoolSizes[] = {
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kPersistentPoolSets },
+        { VK_DESCRIPTOR_TYPE_SAMPLER,       kPersistentPoolSets },
+    };
+    VkDescriptorPoolCreateInfo persistentPoolInfo{};
+    persistentPoolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    persistentPoolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    persistentPoolInfo.maxSets       = kPersistentPoolSets;
+    persistentPoolInfo.poolSizeCount = 2;
+    persistentPoolInfo.pPoolSizes    = persistentPoolSizes;
+    VkDescriptorPool persistentPool = VK_NULL_HANDLE;
+    vkCreateDescriptorPool(toReturn, &persistentPoolInfo, nullptr, &persistentPool);
+
     // Create per-frames-in-flight sync primitives for swapchain acquire/
     // present — see DeviceData::kFramesInFlight's doc comment for why these
     // must be per-slot rather than a single shared pair.
@@ -1098,6 +1115,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         deviceData->inFlightFences[i]           = inFlightFences[i];
         deviceData->descriptorPools[i]          = descriptorPools[i];
     }
+    deviceData->persistentDescriptorPool = persistentPool;
     deviceData->queueFamilyIndex         = static_cast<uint32_t>(queueFamilyIndex);
     deviceData->currentImageIndex        = 0;
 #ifdef __ANDROID__
@@ -2758,23 +2776,25 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
     return std::shared_ptr<PipelineLayout>(new PipelineLayout(toReturn));
 }
 
-std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor) {
-
+std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor,
+                                                   bool persistent) {
     auto deviceData = (DeviceData *)this->native;
 
-    // Get the VkDescriptorSetLayout from the layout handle.
     auto layoutHandle = (BindGroupLayoutHandle *)descriptor.layout->native;
 
-    // Allocated from the CURRENT frame's ring-slot pool — see
-    // descriptorPools' doc comment in common.hpp. Every caller of
-    // createBindGroup() runs during that frame's own recording (draw
-    // methods called from Renderer::rasterFrame(), after
-    // createCommandEncoder() has already set currentFrameGen for this
-    // frame), so this always resolves to the pool for the frame actually
-    // being built right now.
+    // persistent=true → never-reset pool; the BindGroup destructor frees the
+    // set individually when its shared_ptr is dropped (see BindGroupHandle's
+    // ownerDevice/ownerPool and BindGroup::~BindGroup()).
+    // persistent=false → current frame's ring-slot pool, reclaimed wholesale
+    // by vkResetDescriptorPool in beginFrameRing().
+    VkDescriptorPool pool = persistent
+        ? deviceData->persistentDescriptorPool
+        : deviceData->descriptorPools[deviceData->currentFrameGen];
+    if (pool == VK_NULL_HANDLE) return nullptr;
+
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool     = deviceData->descriptorPools[deviceData->currentFrameGen];
+    allocInfo.descriptorPool     = pool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts        = &layoutHandle->layout;
 
@@ -2845,6 +2865,10 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
 
     auto toReturn = new BindGroupHandle();
     toReturn->descriptorSet = descriptorSet;
+    if (persistent) {
+        toReturn->ownerDevice = deviceData->device;
+        toReturn->ownerPool   = pool;
+    }
     deviceData->bindGroupCount++;
     return std::shared_ptr<BindGroup>(new BindGroup(toReturn));
 }
