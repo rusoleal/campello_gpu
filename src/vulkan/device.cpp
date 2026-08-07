@@ -126,24 +126,33 @@ VkRenderPass buildRenderPass(VkDevice device,
 {
     std::vector<VkAttachmentDescription> attachments;
 
-    VkAttachmentDescription colorAtt{};
-    colorAtt.format         = colorFormat;
-    colorAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
-    colorAtt.loadOp         = colorLoadOp;
-    colorAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    // For LOAD: initial layout = the layout the image was left in after the previous pass.
-    // For CLEAR: initial layout = UNDEFINED (content discarded).
-    colorAtt.initialLayout  = (colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
-                              ? colorFinalLayout
-                              : VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAtt.finalLayout    = colorFinalLayout;
-    attachments.push_back(colorAtt);
-
+    // A format of VK_FORMAT_UNDEFINED means "no color attachment" (depth-only,
+    // or fully attachment-less passes) -- mirrors the existing hasDepth gate
+    // below. Omitting this check made vkCreateRenderPass() reject the
+    // request (VUID-VkAttachmentDescription-format-parameter forbids
+    // VK_FORMAT_UNDEFINED on a real attachment), returning VK_NULL_HANDLE
+    // and crashing callers that dereference the render pass unconditionally.
+    bool hasColor = (colorFormat != VK_FORMAT_UNDEFINED);
     VkAttachmentReference colorRef{};
-    colorRef.attachment = 0;
-    colorRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    if (hasColor) {
+        VkAttachmentDescription colorAtt{};
+        colorAtt.format         = colorFormat;
+        colorAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+        colorAtt.loadOp         = colorLoadOp;
+        colorAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        // For LOAD: initial layout = the layout the image was left in after the previous pass.
+        // For CLEAR: initial layout = UNDEFINED (content discarded).
+        colorAtt.initialLayout  = (colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
+                                  ? colorFinalLayout
+                                  : VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAtt.finalLayout    = colorFinalLayout;
+        attachments.push_back(colorAtt);
+
+        colorRef.attachment = (uint32_t)attachments.size() - 1;
+        colorRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
     bool hasDepth = (depthFormat != VK_FORMAT_UNDEFINED);
     VkAttachmentDescription depthAtt{};
@@ -158,14 +167,14 @@ VkRenderPass buildRenderPass(VkDevice device,
         depthAtt.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
         depthAtt.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         attachments.push_back(depthAtt);
-        depthRef.attachment = 1;
+        depthRef.attachment = (uint32_t)attachments.size() - 1;
         depthRef.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount    = 1;
-    subpass.pColorAttachments       = &colorRef;
+    subpass.colorAttachmentCount    = hasColor ? 1 : 0;
+    subpass.pColorAttachments       = hasColor ? &colorRef : nullptr;
     subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
 
     VkSubpassDependency dep{};
@@ -1180,8 +1189,21 @@ std::shared_ptr<Texture> Device::createTexture(
         imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if ((int)usageMode & (int)TextureUsage::copyDst)
         imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if ((int)usageMode & (int)TextureUsage::renderTarget)
-        imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((int)usageMode & (int)TextureUsage::renderTarget) {
+        // renderTarget covers both color and depth/stencil attachments (see
+        // TextureUsage::renderTarget's doc comment) -- pick the Vulkan usage
+        // bit that actually matches the format. Using COLOR_ATTACHMENT_BIT
+        // unconditionally made depth/stencil formats fail
+        // vkGetPhysicalDeviceImageFormatProperties2 with
+        // VK_ERROR_FORMAT_NOT_SUPPORTED under validation (some drivers
+        // tolerate the mismatch silently, but it's not portable).
+        VkFormat nativeFmt = pixelFormatToNative(pixelFormat);
+        bool isDepthStencil = nativeFmt == VK_FORMAT_D16_UNORM || nativeFmt == VK_FORMAT_D32_SFLOAT ||
+                              nativeFmt == VK_FORMAT_S8_UINT   ||
+                              nativeFmt == VK_FORMAT_D24_UNORM_S8_UINT || nativeFmt == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        imageUsage |= isDepthStencil ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+                                      : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    }
     if ((int)usageMode & (int)TextureUsage::storageBinding)
         imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
     if ((int)usageMode & (int)TextureUsage::textureBinding)
@@ -2456,6 +2478,27 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
 
     auto deviceData = (DeviceData *)this->native;
 
+    if (descriptor.compute.module == nullptr) {
+        return nullptr;
+    }
+
+    // Use the caller-supplied pipeline layout if provided, otherwise create an empty one.
+    // Mirrors createRenderPipeline()'s handling of an optional descriptor.layout.
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    bool ownsPipelineLayout = false;
+    if (descriptor.layout) {
+        pipelineLayout = ((PipelineLayoutHandle *)descriptor.layout->native)->layout;
+    } else {
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 0;
+        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        if (vkCreatePipelineLayout(deviceData->device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
+            return nullptr;
+        }
+        ownsPipelineLayout = true;
+    }
+
     VkComputePipelineCreateInfo info;
     info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     info.pNext = nullptr;
@@ -2467,7 +2510,7 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     info.stage.module = ((ShaderModuleHandle *)descriptor.compute.module->native)->shaderModule;
     info.stage.pName = descriptor.compute.entryPoint.c_str();
     info.stage.pSpecializationInfo = nullptr;
-    info.layout = ((PipelineLayoutHandle *)descriptor.layout->native)->layout;
+    info.layout = pipelineLayout;
     info.basePipelineHandle = VK_NULL_HANDLE;
     info.basePipelineIndex = -1;
 
@@ -2480,13 +2523,17 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
         nullptr,
         &pipeline
     ) != VK_SUCCESS) {
+        if (ownsPipelineLayout) {
+            vkDestroyPipelineLayout(deviceData->device, pipelineLayout, nullptr);
+        }
         return nullptr;
     }
 
     auto toReturn = new ComputePipelineHandle();
-    toReturn->device         = deviceData->device;
-    toReturn->pipeline       = pipeline;
-    toReturn->pipelineLayout = info.layout;
+    toReturn->device             = deviceData->device;
+    toReturn->pipeline           = pipeline;
+    toReturn->pipelineLayout     = pipelineLayout;
+    toReturn->ownsPipelineLayout = ownsPipelineLayout;
 
     deviceData->computePipelineCount++;
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(toReturn));
@@ -2576,6 +2623,7 @@ VkSamplerAddressMode getAddressMode(WrapMode mode) {
         case WrapMode::repeat: return VK_SAMPLER_ADDRESS_MODE_REPEAT;
         case WrapMode::clampToEdge: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         case WrapMode::mirrorRepeat: return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        default: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
 }
 
@@ -2589,6 +2637,7 @@ VkCompareOp getCompareOp(CompareOp op) {
         case CompareOp::notEqual: return VK_COMPARE_OP_NOT_EQUAL;
         case CompareOp::greaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
         case CompareOp::always: return VK_COMPARE_OP_ALWAYS;
+        default: return VK_COMPARE_OP_ALWAYS;
     }
 }
 
@@ -3109,6 +3158,7 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         if (submitResult != VK_SUCCESS) {
             return;
         }
+        cbHandle->submitted = true;
 
         if (renderFinished) {
             VkPresentInfoKHR presentInfo{};
@@ -3202,6 +3252,7 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
             return;
         }
+        cbHandle->submitted = true;
 
         if (renderFinished) {
             VkPresentInfoKHR presentInfo{};
@@ -3513,6 +3564,8 @@ VkFormat pixelFormatToNative(PixelFormat format)
     // astc_12x12_unorm,
     case PixelFormat::astc_12x12_unorm_srgb:
         return VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
+    default:
+        return VK_FORMAT_UNDEFINED;
     }
 }
 

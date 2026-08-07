@@ -30,6 +30,11 @@ void RenderPassEncoder::beginOcclusionQuery(uint32_t queryIndex) {
 void RenderPassEncoder::draw(uint32_t vertexCount, uint32_t instanceCount,
                               uint32_t firstVertex, uint32_t firstInstance) {
     auto data = (RenderPassEncoderHandle *)native;
+    // The Vulkan spec requires a graphics pipeline to be bound before vkCmdDraw
+    // (VUID-vkCmdDraw-None-08606); some drivers crash rather than validate this
+    // when recording without a bound pipeline. Guard it the same way
+    // setBindGroup()/setPushConstants() already guard on pipelineLayout below.
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     vkCmdDraw(data->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
 }
 
@@ -37,6 +42,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
                                      uint32_t firstVertex, uint32_t baseVertex,
                                      uint32_t firstInstance) {
     auto data = (RenderPassEncoderHandle *)native;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     vkCmdDrawIndexed(data->commandBuffer, indexCount, instanceCount,
                      firstVertex, static_cast<int32_t>(baseVertex), firstInstance);
 }
@@ -44,6 +50,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
 void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                       uint64_t indirectOffset) {
     auto data      = (RenderPassEncoderHandle *)native;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     auto bufHandle = (BufferHandle *)indirectBuffer->native;
     // drawCount=1, stride=sizeof(VkDrawIndirectCommand)=16
     vkCmdDrawIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset, 1, 16);
@@ -52,6 +59,7 @@ void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer,
 void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                              uint64_t indirectOffset) {
     auto data      = (RenderPassEncoderHandle *)native;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     auto bufHandle = (BufferHandle *)indirectBuffer->native;
     // drawCount=1, stride=sizeof(VkDrawIndexedIndirectCommand)=20
     vkCmdDrawIndexedIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset, 1, 20);
@@ -67,6 +75,16 @@ void RenderPassEncoder::end() {
     }
 
     pfnCmdEndRenderingKHR(data->commandBuffer);
+
+    // A pass begun with no attachments (BeginRenderPassDescriptor{} with no
+    // color/depth targets) has neither a swapchain image nor an offscreen
+    // image to transition — skip the barrier rather than issuing it against
+    // VK_NULL_HANDLE, which crashes some drivers.
+    if (data->isSwapchain) {
+        if (data->currentSwapchainImage == VK_NULL_HANDLE) return;
+    } else {
+        if (data->offscreenImage == VK_NULL_HANDLE) return;
+    }
 
     VkImageMemoryBarrier barrier{};
     barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

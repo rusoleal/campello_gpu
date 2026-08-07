@@ -174,7 +174,22 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
                                                    TextureType dimension) {
     auto handle = (TextureHandle *)native;
 
+    VkFormat nativeFormat = pixelFormatToNative(format);
+
+    // Aspect::all means "the full texture" — for color formats that's
+    // COLOR_BIT, but for depth/stencil formats it means every aspect the
+    // format actually has (mirrors the default-view aspect selection in
+    // Device::createTexture()). Passing COLOR_BIT for a depth/stencil format
+    // is a VUID violation (aspect flags must match the format's aspects);
+    // some drivers tolerate it silently but it's still undefined behavior.
     VkImageAspectFlags aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
+    if (nativeFormat == VK_FORMAT_D16_UNORM || nativeFormat == VK_FORMAT_D32_SFLOAT)
+        aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT;
+    else if (nativeFormat == VK_FORMAT_S8_UINT)
+        aspectFlags = VK_IMAGE_ASPECT_STENCIL_BIT;
+    else if (nativeFormat == VK_FORMAT_D24_UNORM_S8_UINT || nativeFormat == VK_FORMAT_D32_SFLOAT_S8_UINT)
+        aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
     switch (aspect) {
         case Aspect::depthOnly:   aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT;   break;
         case Aspect::stencilOnly: aspectFlags = VK_IMAGE_ASPECT_STENCIL_BIT; break;
@@ -198,7 +213,7 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     viewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image    = handle->image;
     viewInfo.viewType = viewType;
-    viewInfo.format   = pixelFormatToNative(format);
+    viewInfo.format   = nativeFormat;
     viewInfo.subresourceRange.aspectMask     = aspectFlags;
     viewInfo.subresourceRange.baseMipLevel   = baseMipLevel;
     viewInfo.subresourceRange.levelCount     = VK_REMAINING_MIP_LEVELS;

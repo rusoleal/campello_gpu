@@ -286,9 +286,18 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             // functionally identical to what a fresh build would produce.
             VkImageLayout finalLayout = isSwapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            VkFormat colorFormat = isSwapchain
-                ? data->deviceData->surfaceFormat.format
-                : ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->format;
+            // A pass with no color attachments (depth-only, or fully
+            // attachment-less) has no color format to derive — leave it
+            // VK_FORMAT_UNDEFINED, matching depthFormat's default above when
+            // there's no depth attachment either. buildRenderPass() /
+            // RenderPassKey already treat VK_FORMAT_UNDEFINED as "no
+            // attachment of this kind".
+            VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+            if (isSwapchain) {
+                colorFormat = data->deviceData->surfaceFormat.format;
+            } else if (!descriptor.colorAttachments.empty()) {
+                colorFormat = ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->format;
+            }
             VkAttachmentLoadOp colorLoadOp = colorLoadClear ? VK_ATTACHMENT_LOAD_OP_CLEAR
                                                              : VK_ATTACHMENT_LOAD_OP_LOAD;
 
