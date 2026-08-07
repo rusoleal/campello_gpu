@@ -44,6 +44,7 @@ if(BUILD_INTEGRATION_TESTS)
         platform/test_device.cpp
         platform/test_buffer.cpp
         platform/test_texture.cpp
+        platform/test_texture_view.cpp
         platform/test_command_encoder.cpp
         platform/test_command_buffer.cpp
         platform/test_fence.cpp
@@ -53,6 +54,11 @@ if(BUILD_INTEGRATION_TESTS)
         platform/test_compute_pass_encoder.cpp
         platform/test_raytracing.cpp
         platform/test_frame_ring.cpp
+        platform/test_sampler.cpp
+        platform/test_bind_group.cpp
+        platform/test_query_set.cpp
+        platform/test_pipeline_layout.cpp
+        platform/test_adapter.cpp
     )
     # Device::createTextureFromDmaBuf()/getSupportedDmaBufModifiers()/
     # getDrmDeviceNode() don't exist as symbols outside Linux/Vulkan (see
@@ -93,4 +99,9 @@ if(BUILD_INTEGRATION_TESTS)
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(campello_gpu_universal_tests)
+# Same cross-compilation concern as campello_gpu_integration_tests above:
+# without PRE_TEST, CMake tries to run this binary on the build host right
+# after linking to discover its test list, which fails for cross-compiled
+# targets (Android, iOS device) where the host can't execute the binary.
+gtest_discover_tests(campello_gpu_universal_tests
+    DISCOVERY_MODE PRE_TEST)
