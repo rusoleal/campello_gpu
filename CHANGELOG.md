@@ -4,6 +4,10 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **[Linux/Vulkan] `CommandEncoder::beginRenderPass()`'s dynamic-rendering offscreen path always transitioned the target image's layout with `oldLayout = VK_IMAGE_LAYOUT_UNDEFINED`**, even when the pass's `loadOp` was `load` (i.e. the caller explicitly wants this pass's writes preserved on top of existing content — `IDrawBackend::beginOffscreenPass(preserve_content=true)`, used by campello_widgets' `RenderDrawSurface` for incremental multi-frame canvas accumulation). `UNDEFINED` as `oldLayout` is a hint that the driver is free to discard the image's prior contents during the transition — correct for a genuinely first-use or intentionally-cleared pass, but wrong once the image has already gone through a previous offscreen pass (`RenderPassEncoder::end()` always leaves it in `SHADER_READ_ONLY_OPTIMAL` afterward). On real hardware this visibly discarded fragments of previously-written content: a freehand drawing surface accumulating stroke segments across many frames rendered as a broken/dotted line instead of solid, and content wiped by a prior `clear()` pass could resurface on a later write. The traditional (non-dynamic-rendering) render-pass path already handled this correctly (`buildRenderPass()`'s `initialLayout` already switches on `loadOp`); this brings the dynamic-rendering manual-barrier path up to the same correctness, using `oldLayout = SHADER_READ_ONLY_OPTIMAL` / `srcAccessMask = VK_ACCESS_SHADER_READ_BIT` whenever `loadOp == load`. Verified fixed on Intel Iris Graphics 550 (Mesa, dynamic rendering) — the only current caller of `preserve_content=true` is campello_widgets' draw-surface incremental update, so the fix is narrowly and safely scoped.
+
 ## [0.22.1] - 2026-08-07
 
 ### Fixed

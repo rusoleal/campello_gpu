@@ -221,15 +221,31 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
 
         if (!useTraditional) {
             // Dynamic rendering: manually transition offscreen image → COLOR_ATTACHMENT_OPTIMAL.
+            // loadOp::load means the caller wants this pass's writes layered on
+            // top of what's already there (RenderDrawSurface's incremental
+            // accumulation — see IDrawBackend::beginOffscreenPass()'s
+            // preserve_content) — this image was necessarily used as an
+            // offscreen target in an earlier pass already, which
+            // RenderPassEncoder::end() always leaves in
+            // SHADER_READ_ONLY_OPTIMAL. Using UNDEFINED as oldLayout there (as
+            // for a genuinely first-use/clear pass) is a hint that the driver
+            // is free to discard prior contents during the transition — on
+            // this hardware it visibly did: circles stamped while dragging
+            // intermittently vanished (a dotted stroke instead of a solid
+            // one), and content wiped by clear() could later resurface.
+            const bool preserving = !descriptor.colorAttachments.empty() &&
+                                     descriptor.colorAttachments[0].loadOp == LoadOp::load;
             VkImageMemoryBarrier barrier{};
             barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.oldLayout           = preserving ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                      : VK_IMAGE_LAYOUT_UNDEFINED;
             barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.image               = firstImage;
             barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-            barrier.srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT;
+            barrier.srcAccessMask       = preserving ? VK_ACCESS_SHADER_READ_BIT
+                                                      : VK_ACCESS_MEMORY_READ_BIT;
             barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             vkCmdPipelineBarrier(data->commandBuffer,
                                  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
