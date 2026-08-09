@@ -1067,14 +1067,26 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
 
     constexpr uint32_t kPersistentPoolSets = 512;
     VkDescriptorPoolSize persistentPoolSizes[] = {
-        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, kPersistentPoolSets },
-        { VK_DESCRIPTOR_TYPE_SAMPLER,       kPersistentPoolSets },
+        { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  kPersistentPoolSets },
+        { VK_DESCRIPTOR_TYPE_SAMPLER,        kPersistentPoolSets },
+        // Persistent bind groups didn't need uniform-buffer capacity until a
+        // caller (campello_renderer's Vulkan-specific per-material
+        // MaterialUniforms binding) started writing a real UNIFORM_BUFFER
+        // entry into a persistent=true bind group — previously any buffer
+        // entry at a binding number the layout declared as a texture was
+        // silently dropped by createBindGroup()'s type filter, so this gap
+        // never got exercised. Without it, vkAllocateDescriptorSets() fails
+        // with "pAllocateInfo->pSetLayouts[0] binding N was created with
+        // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER but VkDescriptorPool ... was not
+        // created with any VkDescriptorPoolSize::type with
+        // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER".
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kPersistentPoolSets },
     };
     VkDescriptorPoolCreateInfo persistentPoolInfo{};
     persistentPoolInfo.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     persistentPoolInfo.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     persistentPoolInfo.maxSets       = kPersistentPoolSets;
-    persistentPoolInfo.poolSizeCount = 2;
+    persistentPoolInfo.poolSizeCount = 3;
     persistentPoolInfo.pPoolSizes    = persistentPoolSizes;
     VkDescriptorPool persistentPool = VK_NULL_HANDLE;
     vkCreateDescriptorPool(toReturn, &persistentPoolInfo, nullptr, &persistentPool);
@@ -1271,9 +1283,16 @@ std::shared_ptr<Texture> Device::createTexture(
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image    = image;
-    viewInfo.viewType = (type == TextureType::tt3d) ? VK_IMAGE_VIEW_TYPE_3D
-                      : (type == TextureType::tt1d) ? VK_IMAGE_VIEW_TYPE_1D
-                                                    : VK_IMAGE_VIEW_TYPE_2D;
+    // Default view type per TextureType — cube was previously missing here and
+    // fell through to VK_IMAGE_VIEW_TYPE_2D, which only surfaced once a caller
+    // (campello_renderer's Vulkan IBL bind group) bound a ttCube Texture
+    // directly (rather than through an explicit TextureView) into a descriptor
+    // set: VUID-vkCmdDrawIndexed-viewType-07752, "VkImageViewType is
+    // VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = Cube)".
+    viewInfo.viewType = (type == TextureType::tt3d)   ? VK_IMAGE_VIEW_TYPE_3D
+                      : (type == TextureType::tt1d)   ? VK_IMAGE_VIEW_TYPE_1D
+                      : (type == TextureType::ttCube) ? VK_IMAGE_VIEW_TYPE_CUBE
+                                                       : VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format   = pixelFormatToNative(pixelFormat);
     VkImageAspectFlags defaultAspect = VK_IMAGE_ASPECT_COLOR_BIT;
     {
