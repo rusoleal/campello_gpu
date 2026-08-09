@@ -291,6 +291,51 @@ TEST(BindGroup, CreateWithTextureBindingReturnsNonNull) {
     EXPECT_NE(bindGroup, nullptr);
 }
 
+// Regression test: binding a cube Texture directly (not through an explicit
+// TextureView from Texture::createView()) exercises the auto-created
+// "default view" every Texture carries — Device::createTexture()'s viewType
+// selection used to fall through to VK_IMAGE_VIEW_TYPE_2D for TextureType::
+// ttCube (only tt3d/tt1d were handled), which this call path never caught
+// (createBindGroup() doesn't itself validate the resource's dimension
+// against the layout's declared viewDimension). The real symptom only
+// showed up under Vulkan validation layers at actual draw time:
+// VUID-vkCmdDrawIndexed-viewType-07752, "VkImageViewType is
+// VK_IMAGE_VIEW_TYPE_2D but the OpTypeImage has (Dim = Cube)". This test
+// can't assert the underlying VkImageViewType directly (no public API
+// exposes it), but keeps the exact code path — a raw cube Texture bound
+// straight into a bind group — exercised, so anyone running this suite
+// under validation layers (as this bug was originally found) still catches
+// a regression here.
+TEST(BindGroup, CreateWithCubeTextureBindingReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    BindGroupLayoutDescriptor layoutDesc{};
+    EntryObject entry{};
+    entry.binding    = 0;
+    entry.visibility = ShaderStage::fragment;
+    entry.type       = EntryObjectType::texture;
+    entry.data.texture.multisampled  = false;
+    entry.data.texture.sampleType    = EntryObjectTextureType::ttFloat;
+    entry.data.texture.viewDimension = TextureType::ttCube;
+    layoutDesc.entries.push_back(entry);
+    auto layout = device->createBindGroupLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+
+    auto texture = device->createTexture(
+        TextureType::ttCube, PixelFormat::rgba8unorm,
+        32, 32, 1, 1, 1, TextureUsage::textureBinding);
+    ASSERT_NE(texture, nullptr);
+    EXPECT_EQ(texture->getDimension(), TextureType::ttCube);
+
+    BindGroupDescriptor desc{};
+    desc.layout  = layout;
+    desc.entries = { { 0, texture } };
+
+    auto bindGroup = device->createBindGroup(desc);
+    EXPECT_NE(bindGroup, nullptr);
+}
+
 TEST(BindGroup, CreateWithSamplerBindingReturnsNonNull) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device on this platform";
@@ -391,6 +436,41 @@ TEST(BindGroup, CreatePersistentBindGroupReturnsNonNull) {
     BindGroupDescriptor desc{};
     desc.layout  = layout;
     desc.entries = { { 0, sampler } };
+
+    auto bindGroup = device->createBindGroup(desc, /*persistent=*/true);
+    EXPECT_NE(bindGroup, nullptr);
+}
+
+// Regression test: the persistent descriptor pool (Vulkan backend) only
+// reserved SAMPLED_IMAGE/SAMPLER capacity — CreatePersistentBindGroupReturnsNonNull
+// above never exercised UNIFORM_BUFFER there, so the gap went unnoticed until a
+// caller (campello_renderer's Vulkan material bind group) tried to write a
+// real uniform buffer into a persistent=true bind group and hit
+// vkAllocateDescriptorSets() failing with "binding N was created with
+// VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER but VkDescriptorPool ... was not created
+// with any VkDescriptorPoolSize::type with VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER".
+TEST(BindGroup, CreatePersistentBindGroupWithUniformBufferReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    BindGroupLayoutDescriptor layoutDesc{};
+    EntryObject entry{};
+    entry.binding    = 0;
+    entry.visibility = ShaderStage::fragment;
+    entry.type       = EntryObjectType::buffer;
+    entry.data.buffer.type              = EntryObjectBufferType::uniform;
+    entry.data.buffer.hasDinamicOffaset = false;
+    entry.data.buffer.minBindingSize    = 0;
+    layoutDesc.entries.push_back(entry);
+    auto layout = device->createBindGroupLayout(layoutDesc);
+    ASSERT_NE(layout, nullptr);
+
+    auto buffer = device->createBuffer(256, BufferUsage::uniform);
+    ASSERT_NE(buffer, nullptr);
+
+    BindGroupDescriptor desc{};
+    desc.layout  = layout;
+    desc.entries = { { 0, BufferBinding{ buffer, 0, 256 } } };
 
     auto bindGroup = device->createBindGroup(desc, /*persistent=*/true);
     EXPECT_NE(bindGroup, nullptr);
