@@ -196,6 +196,18 @@ namespace systems::leal::campello_gpu {
         // descriptor pools/fences/semaphores/retained command buffers.
         static constexpr uint32_t kFramesInFlight = 3;
         VkSemaphore imageAvailableSemaphores[kFramesInFlight] = {};
+        // Chains Device::submit(commandBuffer, externalFence)'s real work into
+        // beginFrameRing()'s own inFlightFences[gen] bookkeeping — see that
+        // overload's use of this array for the full rationale: without it,
+        // a caller-supplied fence (as campello_renderer's per-frame
+        // frameResources[].fence uses for render()'s swapchain path) leaves
+        // inFlightFences[gen] permanently stuck signaled from creation,
+        // so beginFrameRing() reuses imageAvailableSemaphores[gen] for a new
+        // acquire before the previous acquire's wait was ever consumed by a
+        // submission — VUID-vkAcquireNextImageKHR-semaphore-01779, and with
+        // validation layers active, an observed crash inside the validation
+        // layer's own bookkeeping shortly after.
+        VkSemaphore genCompleteSemaphores[kFramesInFlight] = {};
         // Unlike imageAvailableSemaphores (needed *before* acquire tells us
         // which image we got, so it must be indexed by an independent
         // rotating slot), renderFinishedSemaphores is signaled by submit()
@@ -440,6 +452,20 @@ namespace systems::leal::campello_gpu {
     struct VulkanFenceData {
         VkDevice device       = VK_NULL_HANDLE;
         VkFence  fence        = VK_NULL_HANDLE;
+        // Keeps the last CommandBuffer submitted against this fence alive until
+        // it's safe to release — see Device::submit()'s assignment to this field
+        // for why. Most callers pass encoder->finish()'s result straight into
+        // submit() as a temporary (`device->submit(encoder->finish(), fence)`),
+        // so without this, the CommandBuffer's refcount hits zero and its
+        // destructor runs synchronously right there — calling vkFreeCommandBuffers/
+        // vkDestroyQueryPool on a command buffer vkQueueSubmit only just handed to
+        // the GPU asynchronously (submit() deliberately doesn't
+        // vkQueueWaitIdle — "caller waits on fence"). Reassigning this field on
+        // the next submit() against the same fence is safe specifically because
+        // the whole point of waiting on a frame's fence before reusing its slot
+        // (as every caller already does) is that the GPU is provably done with
+        // whatever this held previously.
+        std::shared_ptr<CommandBuffer> pendingCommandBuffer;
     };
 
     // Swapchain recreation helper (defined in device.cpp, used by command_encoder.cpp).

@@ -236,6 +236,7 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     vh->width     = mipW;
     vh->height    = mipH;
     vh->owned     = true;
+    vh->ownerTexture = handle;
     return std::shared_ptr<TextureView>(new TextureView(vh));
 }
 

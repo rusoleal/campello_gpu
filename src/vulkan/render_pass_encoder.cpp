@@ -6,6 +6,7 @@
 #include "render_pipeline_handle.hpp"
 #include "bind_group_handle.hpp"
 #include "query_set_handle.hpp"
+#include "texture_handle.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -71,6 +72,12 @@ void RenderPassEncoder::end() {
     if (data->usesTraditionalRenderPass) {
         // Traditional render pass: finalLayout handles image transitions — no manual barriers.
         vkCmdEndRenderPass(data->commandBuffer);
+        // finalLayout for the offscreen case (see beginRenderPass()'s buildRenderPass() call)
+        // is always SHADER_READ_ONLY_OPTIMAL — mirror that into TextureHandle::currentLayout
+        // so later ops (e.g. Texture::download()) see the real layout instead of a stale one.
+        if (!data->isSwapchain && data->offscreenTextureHandle) {
+            data->offscreenTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         return;
     }
 
@@ -113,6 +120,9 @@ void RenderPassEncoder::end() {
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
+        if (data->offscreenTextureHandle) {
+            data->offscreenTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
     }
 }
 

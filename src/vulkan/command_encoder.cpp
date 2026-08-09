@@ -109,6 +109,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     VkExtent2D renderExtent;
     VkImage    firstImage = VK_NULL_HANDLE;
     bool       isSwapchain = false;
+    TextureHandle *offscreenOwnerTexture = nullptr;
 
     const bool useTraditional = data->deviceData && !data->deviceData->hasDynamicRendering;
 
@@ -218,6 +219,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
         auto *vh = (TextureViewHandle *)descriptor.colorAttachments[0].view->native;
         firstImage   = vh->image;
         renderExtent = { vh->width, vh->height };
+        offscreenOwnerTexture = vh->ownerTexture;
 
         if (!useTraditional) {
             // Dynamic rendering: manually transition offscreen image → COLOR_ATTACHMENT_OPTIMAL.
@@ -263,6 +265,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rpeHandle->currentSwapchainImage = isSwapchain ? firstImage : VK_NULL_HANDLE;
     rpeHandle->offscreenImage        = isSwapchain ? VK_NULL_HANDLE : firstImage;
     rpeHandle->offscreenExtent       = renderExtent;
+    rpeHandle->offscreenTextureHandle = isSwapchain ? nullptr : offscreenOwnerTexture;
     // Keep the offscreen TextureView alive for the duration of the pass.
     // vkCmdBeginRenderingKHR records the raw VkImageView; if the CPU-side
     // TextureView is destroyed first the validation layer looks up a freed handle.

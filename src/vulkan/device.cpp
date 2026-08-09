@@ -419,6 +419,8 @@ Device::~Device()
         for (uint32_t i = 0; i < DeviceData::kFramesInFlight; i++) {
             if (deviceData->imageAvailableSemaphores[i] != VK_NULL_HANDLE)
                 vkDestroySemaphore(deviceData->device, deviceData->imageAvailableSemaphores[i], nullptr);
+            if (deviceData->genCompleteSemaphores[i] != VK_NULL_HANDLE)
+                vkDestroySemaphore(deviceData->device, deviceData->genCompleteSemaphores[i], nullptr);
             if (deviceData->inFlightFences[i] != VK_NULL_HANDLE)
                 vkDestroyFence(deviceData->device, deviceData->inFlightFences[i], nullptr);
         }
@@ -1084,9 +1086,11 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     VkFenceCreateInfo fenceInfo{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     VkSemaphore imageAvailableSemaphores[DeviceData::kFramesInFlight] = {};
+    VkSemaphore genCompleteSemaphores[DeviceData::kFramesInFlight] = {};
     VkFence     inFlightFences[DeviceData::kFramesInFlight] = {};
     for (uint32_t i = 0; i < DeviceData::kFramesInFlight; i++) {
         vkCreateSemaphore(toReturn, &semInfo, nullptr, &imageAvailableSemaphores[i]);
+        vkCreateSemaphore(toReturn, &semInfo, nullptr, &genCompleteSemaphores[i]);
         vkCreateFence(toReturn, &fenceInfo, nullptr, &inFlightFences[i]);
     }
     // renderFinishedSemaphores is sized per swapchain image, not per ring
@@ -1121,6 +1125,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->renderFinishedSemaphores = std::move(renderFinishedSemaphores);
     for (uint32_t i = 0; i < DeviceData::kFramesInFlight; i++) {
         deviceData->imageAvailableSemaphores[i] = imageAvailableSemaphores[i];
+        deviceData->genCompleteSemaphores[i]    = genCompleteSemaphores[i];
         deviceData->inFlightFences[i]           = inFlightFences[i];
         deviceData->descriptorPools[i]          = descriptorPools[i];
     }
@@ -2410,6 +2415,19 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         }
     }
 
+    // Prefer the caller-specified color target format (FragmentDescriptor::targets[0])
+    // over the device's swapchain surface format. The pipeline may target an offscreen
+    // texture with a different format than the swapchain, and for a headless device
+    // (no window surface at all, e.g. Device::createDefaultDevice(nullptr)) surfaceFormat
+    // is never populated — its .format stays VK_FORMAT_UNDEFINED (see its assignment
+    // above and the explicit VK_FORMAT_UNDEFINED check elsewhere in this file). Feeding
+    // that into VkPipelineRenderingCreateInfo::pColorAttachmentFormats crashes the Intel
+    // Mesa ANV driver inside vkCreateGraphicsPipelines rather than failing validation.
+    VkFormat colorAttachmentFormat = deviceData->surfaceFormat.format;
+    if (descriptor.fragment.has_value() && !descriptor.fragment->targets.empty()) {
+        colorAttachmentFormat = pixelFormatToNative(descriptor.fragment->targets[0].format);
+    }
+
     VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {};
     VkRenderPass compatibleRenderPass = VK_NULL_HANDLE;
 
@@ -2417,14 +2435,14 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         pipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
         pipelineRenderingCreateInfo.pNext = nullptr;
         pipelineRenderingCreateInfo.colorAttachmentCount = 1;
-        pipelineRenderingCreateInfo.pColorAttachmentFormats = &deviceData->surfaceFormat.format;
+        pipelineRenderingCreateInfo.pColorAttachmentFormats = &colorAttachmentFormat;
         pipelineRenderingCreateInfo.depthAttachmentFormat   = depthAttachmentFormat;
         pipelineRenderingCreateInfo.stencilAttachmentFormat = stencilAttachmentFormat;
     } else {
         // Traditional render pass path: build a compatible render pass for pipeline creation.
         // The pipeline is compatible with any render pass sharing the same attachment formats.
         compatibleRenderPass = buildRenderPass(deviceData->device,
-                                               deviceData->surfaceFormat.format,
+                                               colorAttachmentFormat,
                                                depthAttachmentFormat,
                                                VK_ATTACHMENT_LOAD_OP_CLEAR,
                                                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
@@ -2766,6 +2784,9 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
     auto toReturn = new BindGroupLayoutHandle();
     toReturn->device = deviceData->device;
     toReturn->layout = layout;
+    for (const auto &lb : layoutBindings) {
+        toReturn->bindingTypes[lb.binding] = lb.descriptorType;
+    }
     deviceData->bindGroupLayoutCount++;
     return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(toReturn));
 }
@@ -2859,6 +2880,34 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
 
     for (int a = 0; a < (int)descriptor.entries.size(); a++) {
         const auto &entry = descriptor.entries[a];
+
+        // Skip entries whose resource kind doesn't match what the layout
+        // declared for this binding — see BindGroupLayoutHandle::bindingTypes'
+        // doc comment for why this legitimately happens (a binding number
+        // deliberately reused for two different resource kinds, valid on
+        // Metal's separate argument-index spaces, invalid on Vulkan's single
+        // per-binding-type descriptor set). Writing it anyway either corrupts
+        // the OTHER (correct) entry for the same binding — vkUpdateDescriptorSets
+        // applies writes in order, so whichever conflicting entry comes later
+        // in `descriptor.entries` silently wins — or fails validation outright
+        // (VUID-VkWriteDescriptorSet-descriptorType-00319/00330) since Vulkan,
+        // unlike Metal, requires the write's descriptorType to match the
+        // layout's declared type for dstBinding.
+        auto typeIt = layoutHandle->bindingTypes.find(entry.binding);
+        if (typeIt == layoutHandle->bindingTypes.end()) continue;
+        VkDescriptorType expectedType = typeIt->second;
+        bool typeMatches =
+            (std::holds_alternative<BufferBinding>(entry.resource) &&
+             (expectedType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+              expectedType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)) ||
+            (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource) &&
+             expectedType == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) ||
+            (std::holds_alternative<std::shared_ptr<Sampler>>(entry.resource) &&
+             expectedType == VK_DESCRIPTOR_TYPE_SAMPLER) ||
+            (std::holds_alternative<std::shared_ptr<AccelerationStructure>>(entry.resource) &&
+             expectedType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR);
+        if (!typeMatches) continue;
+
         VkWriteDescriptorSet write{};
         write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         write.dstSet          = descriptorSet;
@@ -3226,12 +3275,32 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         ? &deviceData->renderFinishedSemaphores[cbHandle->currentImageIndex]
         : nullptr;
 
-    // Reset fence before reuse (required by Vulkan binary fences).
+    // Reset fence before reuse (required by Vulkan binary fences). Safe to drop
+    // whatever CommandBuffer this fence was previously holding onto here too —
+    // resetting the fence for reuse means the caller already waited on it, i.e.
+    // already proved the GPU is done with that prior submission. Then retain
+    // the CommandBuffer being submitted now, for the same reason this field
+    // exists at all — see VulkanFenceData::pendingCommandBuffer's doc comment.
     if (fenceData) {
         vkResetFences(deviceData->device, 1, &fenceData->fence);
+        fenceData->pendingCommandBuffer = commandBuffer;
     }
 
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+    // When this command buffer touched the swapchain, also signal
+    // genCompleteSemaphores[gen] alongside renderFinished — chained below into
+    // a second, empty submission that signals inFlightFences[gen] once this
+    // real submission's GPU work is done. That keeps beginFrameRing()'s own
+    // bookkeeping accurate regardless of the caller supplying its own fence
+    // here instead of using the no-fence submit() overload — see
+    // DeviceData::genCompleteSemaphores' doc comment for the full rationale.
+    VkSemaphore signalSemaphores[2];
+    uint32_t    signalSemaphoreCount = 0;
+    if (renderFinished) {
+        signalSemaphores[signalSemaphoreCount++] = *renderFinished;
+        signalSemaphores[signalSemaphoreCount++] = deviceData->genCompleteSemaphores[gen];
+    }
 
     VkSubmitInfo submitInfo{};
     submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -3242,8 +3311,8 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         submitInfo.waitSemaphoreCount   = 1;
         submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphores[gen];
         submitInfo.pWaitDstStageMask    = &waitStage;
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores    = renderFinished;
+        submitInfo.signalSemaphoreCount = signalSemaphoreCount;
+        submitInfo.pSignalSemaphores    = signalSemaphores;
     }
 
     VkFence submitFence = fenceData ? fenceData->fence : VK_NULL_HANDLE;
@@ -3255,6 +3324,19 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         cbHandle->submitted = true;
 
         if (renderFinished) {
+            // Chained empty submission: becomes eligible to run only once
+            // genCompleteSemaphores[gen] is signaled above (i.e. once the real
+            // work's GPU execution completes), at which point it immediately
+            // signals inFlightFences[gen] — see this function's earlier
+            // comment block for why.
+            vkResetFences(deviceData->device, 1, &deviceData->inFlightFences[gen]);
+            VkPipelineStageFlags genWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            VkSubmitInfo genSubmitInfo{};
+            genSubmitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            genSubmitInfo.waitSemaphoreCount = 1;
+            genSubmitInfo.pWaitSemaphores    = &deviceData->genCompleteSemaphores[gen];
+            genSubmitInfo.pWaitDstStageMask  = &genWaitStage;
+            vkQueueSubmit(deviceData->graphicsQueue, 1, &genSubmitInfo, deviceData->inFlightFences[gen]);
             VkPresentInfoKHR presentInfo{};
             presentInfo.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
             presentInfo.waitSemaphoreCount = 1;

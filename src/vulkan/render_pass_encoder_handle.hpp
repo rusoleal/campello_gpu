@@ -5,6 +5,8 @@
 
 namespace systems::leal::campello_gpu {
 
+    struct TextureHandle;  // Forward declaration
+
     struct RenderPassEncoderHandle {
         VkCommandBuffer  commandBuffer;
         VkPipelineLayout pipelineLayout   = VK_NULL_HANDLE; ///< Cached from last setPipeline call.
@@ -14,6 +16,10 @@ namespace systems::leal::campello_gpu {
         // Offscreen path
         VkImage          offscreenImage        = VK_NULL_HANDLE;
         VkExtent2D       offscreenExtent       = {};
+        // Owning texture of offscreenImage (from the view's TextureViewHandle::ownerTexture),
+        // so end() can write the post-pass layout back to TextureHandle::currentLayout —
+        // see that field's doc comment for why this matters for later downloads.
+        TextureHandle*   offscreenTextureHandle = nullptr;
         // Keeps the CPU-side TextureView alive for the duration of the offscreen pass.
         // vkCmdBeginRenderingKHR records the raw VkImageView; destroying the TextureView
         // before the pass ends would make the validation layer look up a freed handle.
