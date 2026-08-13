@@ -208,6 +208,37 @@ TEST(TextureView, MultipleViewsOfSameTextureCanCoexist) {
 }
 
 // ---------------------------------------------------------------------------
+// Destruction order — a TextureView is independently ref-counted from its
+// owning Texture (creating a view does not keep the Texture alive, and vice
+// versa), so nothing prevents the Texture from being destroyed first.
+// ---------------------------------------------------------------------------
+
+TEST(TextureView, SurvivesOwningTextureDestroyedFirst) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto texture = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        32, 32, 1, 1, 1, TextureUsage::textureBinding);
+    ASSERT_NE(texture, nullptr);
+
+    auto view = texture->createView(PixelFormat::rgba8unorm);
+    ASSERT_NE(view, nullptr);
+
+    // Drop the owning Texture first, while `view` is still alive. This
+    // used to leave TextureView's ownerTexture pointing at a deleted
+    // TextureHandle; TextureView::~TextureView() dereferencing
+    // ownerTexture->deviceData through it (to queue its deferred destroy —
+    // see PendingTextureDestroy in common.hpp) then crashed with SIGSEGV.
+    // Reaching the end of this test at all, rather than crashing, is the
+    // actual assertion here.
+    texture.reset();
+    EXPECT_NE(view, nullptr); // still a valid shared_ptr on our side
+
+    view.reset(); // must not crash
+}
+
+// ---------------------------------------------------------------------------
 // TextureView::fromNative — wraps an externally-owned handle.
 // ---------------------------------------------------------------------------
 

@@ -26,6 +26,7 @@ struct wl_surface;
 #endif
 #include "campello_gpu_config.h"
 #include <campello_gpu/device.hpp>
+#include <campello_gpu/validation_diagnostics.hpp>
 #include <campello_gpu/adapter.hpp>
 #include <campello_gpu/bind_group.hpp>
 #include <campello_gpu/bind_group_layout.hpp>
@@ -74,6 +75,11 @@ PFN_vkCmdEndRenderingKHR pfnCmdEndRenderingKHR = nullptr;
 
 static VkDebugUtilsMessengerEXT g_debugMessenger = VK_NULL_HANDLE;
 
+// Backs validationErrorCount()/resetValidationErrorCount() (see
+// validation_diagnostics.hpp) -- lets a test assert "no validation errors
+// fired" programmatically instead of a human reading stderr.
+static std::atomic<uint64_t> g_validationErrorCount{0};
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT /*type*/,
@@ -81,7 +87,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL validationCallback(
     void * /*userData*/)
 {
     const char *tag = "VERBOSE";
-    if      (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)   tag = "ERROR";
+    if      (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)   { tag = "ERROR"; g_validationErrorCount.fetch_add(1, std::memory_order_relaxed); }
     else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) tag = "WARNING";
     else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)    tag = "INFO";
 
@@ -115,6 +121,28 @@ static void setupDebugMessenger(VkInstance inst)
 }
 
 #endif // CAMPELLO_GPU_VALIDATION
+
+namespace systems::leal::campello_gpu {
+
+#ifdef CAMPELLO_GPU_VALIDATION
+    uint64_t validationErrorCount()
+    {
+        return g_validationErrorCount.load(std::memory_order_relaxed);
+    }
+
+    void resetValidationErrorCount()
+    {
+        g_validationErrorCount.store(0, std::memory_order_relaxed);
+    }
+#else
+    // No messenger installed in this build -- nothing to count. See
+    // validation_diagnostics.hpp's doc comment: a test asserting on these
+    // is only meaningful in a CAMPELLO_GPU_VALIDATION=ON build.
+    uint64_t validationErrorCount() { return 0; }
+    void resetValidationErrorCount() {}
+#endif
+
+} // namespace systems::leal::campello_gpu
 
 // Creates a compatible VkRenderPass for the traditional-render-pass fallback path.
 // colorFinalLayout: PRESENT_SRC_KHR for swapchain, GENERAL for offscreen.
@@ -411,6 +439,21 @@ Device::~Device()
         // vkDeviceWaitIdle above confirms the GPU is done with all of them.
         for (auto& cb : deviceData->genCommandBuffer)
             cb.reset();
+
+        // Same proof of GPU completion covers every ring slot's queued
+        // Texture/TextureView destroys too -- flush all of them now
+        // rather than leaking whatever a destructor deferred but never
+        // got a chance to have beginFrameRing() drain (e.g. a texture
+        // dropped in the app's final frames). See PendingTextureDestroy's
+        // doc comment in common.hpp.
+        for (auto& pending : deviceData->pendingTextureDestroys) {
+            for (auto& pd : pending) {
+                if (pd.view   != VK_NULL_HANDLE) vkDestroyImageView(deviceData->device, pd.view, nullptr);
+                if (pd.image  != VK_NULL_HANDLE) vkDestroyImage(deviceData->device, pd.image, nullptr);
+                if (pd.memory != VK_NULL_HANDLE) vkFreeMemory(deviceData->device, pd.memory, nullptr);
+            }
+            pending.clear();
+        }
 
         for (auto sem : deviceData->renderFinishedSemaphores) {
             if (sem != VK_NULL_HANDLE)

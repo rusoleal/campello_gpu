@@ -223,7 +223,16 @@ namespace systems::leal::campello_gpu {
         // completes. Created already-signaled (VK_FENCE_CREATE_SIGNALED_BIT)
         // so the first use of each slot needs no wait.
         VkFence     inFlightFences[kFramesInFlight] = {};
-        uint32_t    currentFrameGen = 0;
+        // Atomic (not plain uint32_t): written by beginFrameRing() on the
+        // main/raster thread without holding gpu_mutex (the wait it does
+        // under is already the real synchronization for its own callers),
+        // but read from Texture::~Texture()/TextureView::~TextureView()
+        // under gpu_mutex, which can run on any thread that drops the last
+        // shared_ptr to a Texture -- including an ImageLoader worker
+        // thread, via ImageCache::get() expiring an entry mid-decode (see
+        // pendingTextureDestroys' doc comment). A plain uint32_t read
+        // there raced the unguarded write here.
+        std::atomic<uint32_t> currentFrameGen{0};
         // Keeps each generation's CommandBuffer -- and therefore the GPU
         // resources it references (command buffer, staging buffers,
         // transient framebuffers; see CommandBuffer's destructor) -- alive
@@ -232,6 +241,35 @@ namespace systems::leal::campello_gpu {
         // from it is undefined behavior; this is what makes it safe for
         // submit() to no longer call vkQueueWaitIdle every frame.
         std::shared_ptr<CommandBuffer> genCommandBuffer[kFramesInFlight];
+
+        // Raw Vulkan handles a Texture/TextureView destructor wants
+        // destroyed, queued instead of destroyed immediately -- see
+        // pendingTextureDestroys' doc comment just below for why.
+        struct PendingTextureDestroy {
+            VkImageView    view   = VK_NULL_HANDLE;
+            VkImage        image  = VK_NULL_HANDLE;
+            VkDeviceMemory memory = VK_NULL_HANDLE;
+        };
+        // Deferred-destruction queue for Texture/TextureView Vulkan
+        // resources, indexed by the ring slot active when the C++ object
+        // was destroyed. Texture::~Texture()/TextureView::~TextureView()
+        // push here instead of calling vkDestroyImage(View)/vkFreeMemory
+        // directly -- those objects can be dropped (e.g. ImageCache
+        // replacing a cached entry) while a just-submitted, not-yet-
+        // GPU-complete command buffer still references their image/view,
+        // which is exactly the UB
+        // VUID-vkDestroyImage-image-01000/VUID-vkDestroyImageView-imageView-01026
+        // warn about -- immediate destruction was reachable within
+        // microseconds of a draw that referenced the same resource.
+        // beginFrameRing() below drains slot `nextGen` right where it
+        // already releases genCommandBuffer[nextGen] -- the same place
+        // that slot's fence is proven signaled -- so this mirrors
+        // genCommandBuffer[]'s exact lifetime/safety argument instead of
+        // introducing a new one. Guarded by gpu_mutex: destructors can run
+        // on any thread (e.g. ImageLoader's worker pool), while
+        // beginFrameRing() drains from the main/raster thread.
+        std::vector<PendingTextureDestroy> pendingTextureDestroys[kFramesInFlight];
+
         // One pool per frames-in-flight ring slot, NOT a single shared
         // pool -- Device::createBindGroup() allocates a fresh descriptor
         // set on essentially every draw call (only cached text draws
@@ -440,6 +478,20 @@ namespace systems::leal::campello_gpu {
             // allocated — see descriptorPools' doc comment.
             if (descriptorPools[nextGen] != VK_NULL_HANDLE) {
                 vkResetDescriptorPool(device, descriptorPools[nextGen], 0);
+            }
+            // Same proof of GPU completion as genCommandBuffer[nextGen]
+            // above -- now actually destroy whatever Texture/TextureView
+            // destructors deferred into this slot. See
+            // pendingTextureDestroys' doc comment.
+            std::vector<PendingTextureDestroy> toDestroy;
+            {
+                std::lock_guard<std::mutex> lock(gpu_mutex);
+                toDestroy.swap(pendingTextureDestroys[nextGen]);
+            }
+            for (auto& pd : toDestroy) {
+                if (pd.view   != VK_NULL_HANDLE) vkDestroyImageView(device, pd.view, nullptr);
+                if (pd.image  != VK_NULL_HANDLE) vkDestroyImage(device, pd.image, nullptr);
+                if (pd.memory != VK_NULL_HANDLE) vkFreeMemory(device, pd.memory, nullptr);
             }
             currentFrameGen = nextGen;
             return nextGen;

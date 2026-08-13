@@ -11,6 +11,12 @@
 #include <campello_gpu/constants/texture_type.hpp>
 #include <campello_gpu/constants/texture_usage.hpp>
 #include <campello_gpu/constants/aspect.hpp>
+#include <campello_gpu/command_encoder.hpp>
+#include <campello_gpu/command_buffer.hpp>
+#include <campello_gpu/render_pass_encoder.hpp>
+#include <campello_gpu/fence.hpp>
+#include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
+#include <campello_gpu/validation_diagnostics.hpp>
 
 using namespace systems::leal::campello_gpu;
 
@@ -265,9 +271,9 @@ TEST(Texture, UploadDownloadRoundtripRandomData) {
     // Create texture with copySrc usage for readback
     auto tex = device->createTexture(
         TextureType::tt2d, PixelFormat::rgba8unorm,
-        W, H, 1, 1, 1, 
+        W, H, 1, 1, 1,
         static_cast<TextureUsage>(
-            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::textureBinding) |
             static_cast<int>(TextureUsage::copySrc)));
     ASSERT_NE(tex, nullptr);
 
@@ -342,9 +348,9 @@ TEST(Texture, UploadDownloadSmallTexture) {
 
     auto tex = device->createTexture(
         TextureType::tt2d, PixelFormat::rgba8unorm,
-        W, H, 1, 1, 1, 
+        W, H, 1, 1, 1,
         static_cast<TextureUsage>(
-            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::textureBinding) |
             static_cast<int>(TextureUsage::copySrc)));
     ASSERT_NE(tex, nullptr);
 
@@ -375,9 +381,9 @@ TEST(Texture, UploadDownloadGrayscaleTexture) {
 
     auto tex = device->createTexture(
         TextureType::tt2d, PixelFormat::r8unorm,
-        W, H, 1, 1, 1, 
+        W, H, 1, 1, 1,
         static_cast<TextureUsage>(
-            static_cast<int>(TextureUsage::textureBinding) | 
+            static_cast<int>(TextureUsage::textureBinding) |
             static_cast<int>(TextureUsage::copySrc)));
     ASSERT_NE(tex, nullptr);
 
@@ -390,4 +396,112 @@ TEST(Texture, UploadDownloadGrayscaleTexture) {
 
     // Verify data matches
     EXPECT_EQ(uploadData, downloadData);
+}
+
+// ---------------------------------------------------------------------------
+// Regression: destroying a Texture/TextureView must not call
+// vkDestroyImage/vkDestroyImageView while the GPU may still be executing a
+// command buffer that references them
+// (VUID-vkDestroyImage-image-01000 / VUID-vkDestroyImageView-imageView-01026).
+// See DeviceData::pendingTextureDestroys' doc comment in common.hpp for the
+// fix (a deferred-destruction queue, drained once a frame-ring slot's fence
+// confirms GPU completion, instead of destroying immediately).
+//
+// Only meaningful in a CAMPELLO_GPU_VALIDATION=ON build: validationErrorCount()
+// is hardcoded to 0 otherwise (see validation_diagnostics.hpp), since there is
+// no messenger installed to actually observe the VUID violation. Build/run
+// this suite with -DCAMPELLO_GPU_VALIDATION=ON to exercise the real check;
+// without it this test still runs (and passes trivially) so it isn't skipped
+// by default configs.
+// ---------------------------------------------------------------------------
+
+TEST(Texture, DroppingTextureImmediatelyAfterSubmitTriggersNoValidationError) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    resetValidationErrorCount();
+
+    // Everything that references the device lives in this nested scope, so
+    // it's guaranteed to be destroyed — in reverse declaration order — before
+    // `device` goes out of scope below. Without this, BeginRenderPassDescriptor
+    // (desc/ca below) silently keeps its own shared_ptr<TextureView> copy
+    // alive until the *test function* returns, which is after the explicit
+    // `device.reset()` a manually-ordered version of this test used to have —
+    // by then DeviceData is already freed, and TextureView::~TextureView()
+    // dereferencing it is its own, unrelated use-after-free. A real
+    // application is never going to destroy its Device while it still has
+    // live Textures/TextureViews (any more than it would with any other
+    // graphics API), so the fix belongs in this test's structure, not in the
+    // library.
+    {
+        // renderTarget | textureBinding, not renderTarget alone: unrelated
+        // to what this test checks, RenderPassEncoder::end()'s offscreen
+        // branch transitions a color attachment to SHADER_READ_ONLY_OPTIMAL
+        // when the pass ends, which is only a valid layout for an image
+        // actually created with the SAMPLED usage bit (textureBinding
+        // here). Without it, that unconditional transition itself trips
+        // VUID-VkImageMemoryBarrier-oldLayout-01211 — a real, pre-existing,
+        // unrelated issue (reproducible with renderTarget-only textures in
+        // RenderPassEncoder's own tests too) that would otherwise
+        // contaminate this test's validationErrorCount() assertion below.
+        auto tex = device->createTexture(
+            TextureType::tt2d, PixelFormat::rgba8unorm,
+            256, 256, 1, 1, 1,
+            static_cast<TextureUsage>(
+                static_cast<int>(TextureUsage::renderTarget) |
+                static_cast<int>(TextureUsage::textureBinding)));
+        ASSERT_NE(tex, nullptr);
+
+        auto view = tex->createView(PixelFormat::rgba8unorm, 1);
+        ASSERT_NE(view, nullptr);
+
+        auto encoder = device->createCommandEncoder();
+        ASSERT_NE(encoder, nullptr);
+
+        ColorAttachment ca{};
+        ca.view          = view;
+        ca.loadOp        = LoadOp::clear;
+        ca.storeOp       = StoreOp::store;
+        ca.clearValue[0] = 1.0f;
+        ca.clearValue[1] = 0.0f;
+        ca.clearValue[2] = 0.0f;
+        ca.clearValue[3] = 1.0f;
+        BeginRenderPassDescriptor desc{};
+        desc.colorAttachments = { ca };
+
+        auto pass = encoder->beginRenderPass(desc);
+        ASSERT_NE(pass, nullptr);
+        pass->end();
+
+        auto cmdBuf = encoder->finish();
+        ASSERT_NE(cmdBuf, nullptr);
+
+        auto fence = device->createFence();
+        device->submit(cmdBuf, fence);
+
+        // The point of this test: drop the texture and its view right now,
+        // without waiting for `fence` first — the GPU may well still be
+        // executing the render pass that referenced them. Before the fix,
+        // this triggered vkDestroyImageView/vkDestroyImage immediately,
+        // here, synchronously.
+        view.reset();
+        tex.reset();
+
+        fence->wait();
+    } // desc/ca/pass/encoder/cmdBuf/fence — and their shared_ptr<TextureView>
+      // copies — are all fully destroyed by here.
+
+    // Force full teardown -- Device::~Device()'s vkDeviceWaitIdle() plus its
+    // pendingTextureDestroys flush is what actually issues the deferred
+    // vkDestroyImageView/vkDestroyImage/vkFreeMemory calls for a
+    // single-frame test like this one (nothing else calls
+    // createCommandEncoder() again to cycle the frame ring and drain them
+    // sooner). Checking validationErrorCount() before this point wouldn't
+    // distinguish old vs. new behavior, since the deferred calls simply
+    // wouldn't have run yet either way.
+    device.reset();
+
+    EXPECT_EQ(validationErrorCount(), 0u)
+        << "vkDestroyImage/vkDestroyImageView fired while the texture may "
+           "still have been in use by GPU-submitted work";
 }

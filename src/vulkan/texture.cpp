@@ -27,16 +27,33 @@ Texture::~Texture() {
         handle->deviceData->textureCount--;
         handle->deviceData->textureBytes.fetch_sub(handle->allocatedSize);
     }
-    
+
     handle->buffer = nullptr;
-    if (handle->defaultView != VK_NULL_HANDLE) {
-        vkDestroyImageView(handle->device, handle->defaultView, nullptr);
-    }
-    if (handle->image != VK_NULL_HANDLE) {
-        vkDestroyImage(handle->device, handle->image, nullptr);
-    }
-    if (handle->imageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(handle->device, handle->imageMemory, nullptr);
+
+    // Deferred, not immediate: this destructor can run while the GPU is
+    // still executing a command buffer that references defaultView/image
+    // (e.g. ImageCache replacing a cached entry within microseconds of a
+    // frame that drew it) -- see PendingTextureDestroy's doc comment in
+    // common.hpp for the full rationale and where these actually get
+    // destroyed. Only falls back to destroying immediately when there's no
+    // DeviceData to defer through (device already torn down).
+    if (handle->deviceData) {
+        DeviceData::PendingTextureDestroy pd;
+        pd.view   = handle->defaultView;
+        pd.image  = handle->image;
+        pd.memory = handle->imageMemory;
+        std::lock_guard<std::mutex> lock(handle->deviceData->gpu_mutex);
+        handle->deviceData->pendingTextureDestroys[handle->deviceData->currentFrameGen].push_back(pd);
+    } else {
+        if (handle->defaultView != VK_NULL_HANDLE) {
+            vkDestroyImageView(handle->device, handle->defaultView, nullptr);
+        }
+        if (handle->image != VK_NULL_HANDLE) {
+            vkDestroyImage(handle->device, handle->image, nullptr);
+        }
+        if (handle->imageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(handle->device, handle->imageMemory, nullptr);
+        }
     }
     delete handle;
 }
@@ -237,6 +254,7 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     vh->height    = mipH;
     vh->owned     = true;
     vh->ownerTexture = handle;
+    vh->deviceData   = handle->deviceData;
     return std::shared_ptr<TextureView>(new TextureView(vh));
 }
 

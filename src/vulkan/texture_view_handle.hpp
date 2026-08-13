@@ -5,6 +5,7 @@
 namespace systems::leal::campello_gpu {
 
     struct TextureHandle;  // Forward declaration
+    struct DeviceData;     // Forward declaration
 
     struct TextureViewHandle {
         VkDevice    device;
@@ -21,6 +22,18 @@ namespace systems::leal::campello_gpu {
         // Null for views created via TextureView::fromNative(), which aren't backed by
         // a TextureHandle; those aren't tracked and end() simply skips the write-back.
         TextureHandle* ownerTexture = nullptr;
+        // Independent copy of ownerTexture->deviceData, taken at creation
+        // time (see Texture::createView()) — NOT derived from ownerTexture
+        // at use time. TextureView::~TextureView() needs DeviceData to
+        // queue its deferred destroy (see PendingTextureDestroy in
+        // common.hpp), but a TextureView's lifetime is independent of its
+        // owning Texture's: nothing stops the owning Texture (and its
+        // TextureHandle, deleted by Texture::~Texture()) from being
+        // destroyed first, which would leave ownerTexture dangling. This
+        // field sidesteps that entirely by never touching ownerTexture
+        // outside of the (still-safe, view-is-actively-in-use) rendering
+        // paths that already used it before this field existed.
+        DeviceData* deviceData = nullptr;
     };
 
 }
