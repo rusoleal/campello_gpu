@@ -167,21 +167,27 @@ std::shared_ptr<TextureView> Texture::createView(
     auto handle = (MetalTextureHandle *)native;
     auto *tex = handle->texture;
 
-    MTL::TextureType mtlType;
-    switch (dimension) {
-        case TextureType::tt1d:       mtlType = MTL::TextureType1D;       break;
-        case TextureType::tt3d:       mtlType = MTL::TextureType3D;       break;
-        case TextureType::ttCube:     mtlType = MTL::TextureTypeCube;     break;
-        case TextureType::ttCubeArray: mtlType = MTL::TextureTypeCubeArray; break;
-        default:                      mtlType = MTL::TextureType2D;       break;
-    }
-
     uint32_t resolvedMipCount = (mipLevelCount == static_cast<uint32_t>(-1))
                                   ? (tex->mipmapLevelCount() - baseMipLevel)
                                   : mipLevelCount;
     uint32_t resolvedArrayLayerCount = (arrayLayerCount == static_cast<uint32_t>(-1))
                                   ? (tex->arrayLength() - baseArrayLayer)
                                   : arrayLayerCount;
+
+    MTL::TextureType mtlType;
+    switch (dimension) {
+        case TextureType::tt1d:       mtlType = MTL::TextureType1D;       break;
+        case TextureType::tt3d:       mtlType = MTL::TextureType3D;       break;
+        case TextureType::ttCube:     mtlType = MTL::TextureTypeCube;     break;
+        case TextureType::ttCubeArray: mtlType = MTL::TextureTypeCubeArray; break;
+        // TextureType has no "2D array" enumerator of its own -- tt2d covers
+        // both, same as Device::createTexture()'s array-length-based switch.
+        default:                      mtlType = resolvedArrayLayerCount > 1
+                                                   ? MTL::TextureType2DArray
+                                                   : MTL::TextureType2D;
+                                       break;
+    }
+
     NS::Range mipRange   = NS::Range::Make(baseMipLevel, resolvedMipCount);
     NS::Range sliceRange = NS::Range::Make(baseArrayLayer, resolvedArrayLayerCount);
 
