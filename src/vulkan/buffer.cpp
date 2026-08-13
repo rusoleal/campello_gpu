@@ -97,19 +97,35 @@ bool Buffer::upload(uint64_t offset, uint64_t length, void *data) {
     // Host-visible buffers (including device-local|host-visible UMA heaps) can be
     // mapped directly. Pure device-local buffers go through a staging copy.
     if (handle->isHostVisible) {
+        // Both vkMapMemory()'s offset and vkFlushMappedMemoryRanges()'s
+        // range must be nonCoherentAtomSize-aligned in general (a raw
+        // `[offset, offset+length)` -- e.g. a 372-byte uniform buffer write
+        // -- satisfies neither): round the mapped/flushed range outward to
+        // the atom boundary (down for the start, up for the end), clamped
+        // to the allocation so it never runs past the end of the memory
+        // (VUID-VkMappedMemoryRange-size-01390 and -00685). The actual
+        // memcpy still only ever touches the caller's real
+        // [offset, offset+length) within that wider mapping.
+        VkDeviceSize atom = handle->deviceData ? handle->deviceData->nonCoherentAtomSize : 1;
+        if (atom == 0) atom = 1;
+        VkDeviceSize alignedOffset = (offset / atom) * atom;
+        VkDeviceSize alignedEnd    = ((offset + length + atom - 1) / atom) * atom;
+        if (alignedEnd > handle->allocatedSize) alignedEnd = handle->allocatedSize;
+        VkDeviceSize mapSize = alignedEnd - alignedOffset;
+
         void *p;
-        if (vkMapMemory(handle->device, handle->memory, offset, length, 0, &p) != VK_SUCCESS) {
+        if (vkMapMemory(handle->device, handle->memory, alignedOffset, mapSize, 0, &p) != VK_SUCCESS) {
             return false;
         }
 
-        memcpy(p, data, length);
+        memcpy((uint8_t *)p + (offset - alignedOffset), data, length);
 
         VkMappedMemoryRange range;
         range.sType  = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range.pNext  = nullptr;
         range.memory = handle->memory;
-        range.offset = offset;
-        range.size   = length;
+        range.offset = alignedOffset;
+        range.size   = mapSize;
         vkFlushMappedMemoryRanges(handle->device, 1, &range);
 
         vkUnmapMemory(handle->device, handle->memory);

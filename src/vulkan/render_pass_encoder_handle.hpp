@@ -20,6 +20,14 @@ namespace systems::leal::campello_gpu {
         // so end() can write the post-pass layout back to TextureHandle::currentLayout —
         // see that field's doc comment for why this matters for later downloads.
         TextureHandle*   offscreenTextureHandle = nullptr;
+        // The specific subresource offscreenImage's view targets (from
+        // TextureViewHandle::baseArrayLayer/baseMipLevel) — end() barriers this exact
+        // subresource, not a hardcoded (mip 0, layer 0), so attachment views into any
+        // other mip/layer (e.g. one face of a cubemap render target) get correctly
+        // transitioned instead of silently left in COLOR_ATTACHMENT_OPTIMAL while later
+        // reads assume SHADER_READ_ONLY_OPTIMAL.
+        uint32_t         offscreenBaseArrayLayer = 0;
+        uint32_t         offscreenBaseMipLevel   = 0;
         // Keeps the CPU-side TextureView alive for the duration of the offscreen pass.
         // vkCmdBeginRenderingKHR records the raw VkImageView; destroying the TextureView
         // before the pass ends would make the validation layer look up a freed handle.

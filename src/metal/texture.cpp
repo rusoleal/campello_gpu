@@ -160,7 +160,8 @@ std::shared_ptr<TextureView> Texture::createView(
     Aspect aspect,
     uint32_t baseArrayLayer,
     uint32_t baseMipLevel,
-    TextureType dimension) {
+    TextureType dimension,
+    uint32_t mipLevelCount) {
 
     MetalAutoreleasePool pool;
     auto handle = (MetalTextureHandle *)native;
@@ -175,7 +176,10 @@ std::shared_ptr<TextureView> Texture::createView(
         default:                      mtlType = MTL::TextureType2D;       break;
     }
 
-    NS::Range mipRange   = NS::Range::Make(baseMipLevel, tex->mipmapLevelCount() - baseMipLevel);
+    uint32_t resolvedMipCount = (mipLevelCount == static_cast<uint32_t>(-1))
+                                  ? (tex->mipmapLevelCount() - baseMipLevel)
+                                  : mipLevelCount;
+    NS::Range mipRange   = NS::Range::Make(baseMipLevel, resolvedMipCount);
     NS::Range sliceRange = NS::Range::Make(baseArrayLayer, arrayLayerCount > 0 ? arrayLayerCount : 1);
 
     auto *view = tex->newTextureView(

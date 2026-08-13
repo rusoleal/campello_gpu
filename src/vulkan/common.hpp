@@ -139,6 +139,13 @@ namespace systems::leal::campello_gpu {
         // campello_widgets' TODO.md for that follow-up), so this query ran
         // once per draw call, not once per frame.
         VkPhysicalDeviceMemoryProperties memoryProperties{};
+        // Cached from VkPhysicalDeviceLimits at device creation (fixed for the
+        // physical device's lifetime, same reasoning as memoryProperties
+        // above) -- Buffer::upload() must round vkFlushMappedMemoryRanges()'s
+        // range to a multiple of this, or a partial-length upload (e.g. a
+        // 372-byte uniform buffer write) trips
+        // VUID-VkMappedMemoryRange-size-01390.
+        VkDeviceSize              nonCoherentAtomSize = 1;
         VkSurfaceKHR              surface;
         VkSwapchainKHR            swapchain;
         VkExtent2D                imageExtent;

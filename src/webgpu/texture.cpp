@@ -35,7 +35,8 @@ std::shared_ptr<TextureView> Texture::createView(
     Aspect aspect,
     uint32_t baseArrayLayer,
     uint32_t baseMipLevel,
-    TextureType dimension) {
+    TextureType dimension,
+    uint32_t mipLevelCount) {
 
     auto* handle = static_cast<TextureHandle*>(native);
 
@@ -43,7 +44,9 @@ std::shared_ptr<TextureView> Texture::createView(
     desc.format = toWGPUTextureFormat(format);
     desc.dimension = toWGPUTextureViewDimension(dimension);
     desc.baseMipLevel = baseMipLevel;
-    desc.mipLevelCount = handle->mipLevels - baseMipLevel;
+    desc.mipLevelCount = (mipLevelCount == static_cast<uint32_t>(-1))
+                          ? (handle->mipLevels - baseMipLevel)
+                          : mipLevelCount;
     desc.baseArrayLayer = baseArrayLayer;
     desc.arrayLayerCount = (arrayLayerCount == static_cast<uint32_t>(-1))
                            ? (handle->arrayLayers - baseArrayLayer)

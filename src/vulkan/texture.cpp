@@ -188,7 +188,8 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
                                                    Aspect      aspect,
                                                    uint32_t    baseArrayLayer,
                                                    uint32_t    baseMipLevel,
-                                                   TextureType dimension) {
+                                                   TextureType dimension,
+                                                   uint32_t    mipLevelCount) {
     auto handle = (TextureHandle *)native;
 
     VkFormat nativeFormat = pixelFormatToNative(format);
@@ -225,6 +226,9 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     uint32_t layerCount = (arrayLayerCount == static_cast<uint32_t>(-1))
                               ? VK_REMAINING_ARRAY_LAYERS
                               : arrayLayerCount;
+    uint32_t levelCount = (mipLevelCount == static_cast<uint32_t>(-1))
+                              ? VK_REMAINING_MIP_LEVELS
+                              : mipLevelCount;
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -233,7 +237,7 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     viewInfo.format   = nativeFormat;
     viewInfo.subresourceRange.aspectMask     = aspectFlags;
     viewInfo.subresourceRange.baseMipLevel   = baseMipLevel;
-    viewInfo.subresourceRange.levelCount     = VK_REMAINING_MIP_LEVELS;
+    viewInfo.subresourceRange.levelCount     = levelCount;
     viewInfo.subresourceRange.baseArrayLayer = baseArrayLayer;
     viewInfo.subresourceRange.layerCount     = layerCount;
 
@@ -253,6 +257,8 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     vh->width     = mipW;
     vh->height    = mipH;
     vh->owned     = true;
+    vh->baseArrayLayer = baseArrayLayer;
+    vh->baseMipLevel   = baseMipLevel;
     vh->ownerTexture = handle;
     vh->deviceData   = handle->deviceData;
     return std::shared_ptr<TextureView>(new TextureView(vh));

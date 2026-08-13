@@ -102,6 +102,46 @@ TEST(TextureView, CreateViewOfEachMipLevelIndividuallyReturnsNonNull) {
 }
 
 // ---------------------------------------------------------------------------
+// mipLevelCount (explicit, for render-pass attachment views).
+// ---------------------------------------------------------------------------
+
+TEST(TextureView, CreateViewWithExplicitMipLevelCountReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto texture = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        64, 64, 1, /*mipLevels=*/4, 1, TextureUsage::textureBinding);
+    ASSERT_NE(texture, nullptr);
+
+    // A view exposing exactly one mip level starting at level 2 -- the shape
+    // required for a render-pass attachment view into a non-zero mip.
+    auto view = texture->createView(
+        PixelFormat::rgba8unorm, /*arrayLayerCount=*/1,
+        Aspect::all, /*baseArrayLayer=*/0, /*baseMipLevel=*/2,
+        TextureType::tt2d, /*mipLevelCount=*/1);
+    EXPECT_NE(view, nullptr);
+}
+
+TEST(TextureView, CreateViewWithMipLevelCountSpanningPartialRangeReturnsNonNull) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto texture = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        64, 64, 1, /*mipLevels=*/4, 1, TextureUsage::textureBinding);
+    ASSERT_NE(texture, nullptr);
+
+    // Levels [1, 3) -- neither "all remaining" (-1, the default) nor a
+    // single level.
+    auto view = texture->createView(
+        PixelFormat::rgba8unorm, /*arrayLayerCount=*/1,
+        Aspect::all, /*baseArrayLayer=*/0, /*baseMipLevel=*/1,
+        TextureType::tt2d, /*mipLevelCount=*/2);
+    EXPECT_NE(view, nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // Array textures.
 // ---------------------------------------------------------------------------
 

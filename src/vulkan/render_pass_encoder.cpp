@@ -97,7 +97,11 @@ void RenderPassEncoder::end() {
     barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    // The specific subresource this pass's color attachment view targeted — see
+    // beginRenderPass()'s entry-barrier fix and RenderPassEncoderHandle::
+    // offscreenBaseArrayLayer/offscreenBaseMipLevel's doc comment. Swapchain images
+    // are always subresource (mip 0, layer 0) so this is a no-op change for that path.
+    barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, data->offscreenBaseMipLevel, 1, data->offscreenBaseArrayLayer, 1 };
     barrier.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     barrier.oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 

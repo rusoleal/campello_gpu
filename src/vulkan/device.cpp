@@ -1160,6 +1160,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     vkGetDeviceQueue(toReturn, queueFamilyIndex, 0, &deviceData->graphicsQueue);
     deviceData->physicalDevice           = gpu;
     vkGetPhysicalDeviceMemoryProperties(gpu, &deviceData->memoryProperties);
+    deviceData->nonCoherentAtomSize      = deviceProps.limits.nonCoherentAtomSize;
     deviceData->rayTracingEnabled        = rtSupported;
     deviceData->cooperativeMatrixEnabled = coopMatSupported;
     deviceData->cooperativeMatrixProperties = std::move(coopMatProperties);
@@ -2736,8 +2737,14 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor &descript
     info.addressModeV = getAddressMode(descriptor.addressModeV);
     info.addressModeW = getAddressMode(descriptor.addressModeW);
     info.mipLodBias = 0.0;
-    info.anisotropyEnable = true;
-    info.maxAnisotropy = (float)descriptor.maxAnisotropy;
+    // maxAnisotropy has no default member initializer in SamplerDescriptor
+    // (see its doc comment: "Set to 1.0 to disable anisotropic filtering"),
+    // so a caller that never sets it gets 0.0 from `SamplerDescriptor sd{};`.
+    // Unconditionally enabling anisotropy regardless violated
+    // VUID-VkSamplerCreateInfo-anisotropyEnable-01071, which requires
+    // maxAnisotropy in [1.0, maxSamplerAnisotropy] whenever enabled.
+    info.anisotropyEnable = descriptor.maxAnisotropy > 1.0;
+    info.maxAnisotropy = info.anisotropyEnable ? (float)descriptor.maxAnisotropy : 1.0f;
     info.compareEnable = false;
     if (descriptor.compare.has_value()) {
         info.compareEnable = true;

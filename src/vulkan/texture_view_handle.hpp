@@ -34,6 +34,14 @@ namespace systems::leal::campello_gpu {
         // outside of the (still-safe, view-is-actively-in-use) rendering
         // paths that already used it before this field existed.
         DeviceData* deviceData = nullptr;
+        // The specific subresource this view exposes — set by Texture::createView().
+        // beginRenderPass()/end() use these (not a hardcoded (0,0)) to transition the
+        // *actual* targeted mip/layer when this view is used as a render-pass color
+        // attachment; every other subresource of the owning image must otherwise stay
+        // untouched by that transition, or a genuinely different subresource that also
+        // happens to be attachment-bound elsewhere gets its layout corrupted instead.
+        uint32_t baseArrayLayer = 0;
+        uint32_t baseMipLevel   = 0;
     };
 
 }
