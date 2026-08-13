@@ -160,11 +160,19 @@ std::shared_ptr<TextureView> Texture::createView(
     Aspect aspect,
     uint32_t baseArrayLayer,
     uint32_t baseMipLevel,
-    TextureType dimension) {
+    TextureType dimension,
+    uint32_t mipLevelCount) {
 
     MetalAutoreleasePool pool;
     auto handle = (MetalTextureHandle *)native;
     auto *tex = handle->texture;
+
+    uint32_t resolvedMipCount = (mipLevelCount == static_cast<uint32_t>(-1))
+                                  ? (tex->mipmapLevelCount() - baseMipLevel)
+                                  : mipLevelCount;
+    uint32_t resolvedArrayLayerCount = (arrayLayerCount == static_cast<uint32_t>(-1))
+                                  ? (tex->arrayLength() - baseArrayLayer)
+                                  : arrayLayerCount;
 
     MTL::TextureType mtlType;
     switch (dimension) {
@@ -172,14 +180,19 @@ std::shared_ptr<TextureView> Texture::createView(
         case TextureType::tt3d:       mtlType = MTL::TextureType3D;       break;
         case TextureType::ttCube:     mtlType = MTL::TextureTypeCube;     break;
         case TextureType::ttCubeArray: mtlType = MTL::TextureTypeCubeArray; break;
-        default:                      mtlType = MTL::TextureType2D;       break;
+        // TextureType has no "2D array" enumerator of its own -- tt2d covers
+        // both, same as Device::createTexture()'s array-length-based switch.
+        default:                      mtlType = resolvedArrayLayerCount > 1
+                                                   ? MTL::TextureType2DArray
+                                                   : MTL::TextureType2D;
+                                       break;
     }
 
-    NS::Range mipRange   = NS::Range::Make(baseMipLevel, tex->mipmapLevelCount() - baseMipLevel);
-    NS::Range sliceRange = NS::Range::Make(baseArrayLayer, arrayLayerCount > 0 ? arrayLayerCount : 1);
+    NS::Range mipRange   = NS::Range::Make(baseMipLevel, resolvedMipCount);
+    NS::Range sliceRange = NS::Range::Make(baseArrayLayer, resolvedArrayLayerCount);
 
     auto *view = tex->newTextureView(
-        (MTL::PixelFormat)format, mtlType, mipRange, sliceRange);
+        toMTLPixelFormat(tex->device(), format), mtlType, mipRange, sliceRange);
     if (!view) return nullptr;
     return std::shared_ptr<TextureView>(new TextureView(view));
 }

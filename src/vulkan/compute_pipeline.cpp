@@ -12,7 +12,8 @@ ComputePipeline::~ComputePipeline() {
     auto handle = (ComputePipelineHandle *)native;
 
     vkDestroyPipeline(handle->device, handle->pipeline, nullptr);
-    vkDestroyPipelineLayout(handle->device, handle->pipelineLayout, nullptr);
+    if (handle->ownsPipelineLayout && handle->pipelineLayout != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(handle->device, handle->pipelineLayout, nullptr);
 
     delete handle;
 

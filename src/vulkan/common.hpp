@@ -139,6 +139,13 @@ namespace systems::leal::campello_gpu {
         // campello_widgets' TODO.md for that follow-up), so this query ran
         // once per draw call, not once per frame.
         VkPhysicalDeviceMemoryProperties memoryProperties{};
+        // Cached from VkPhysicalDeviceLimits at device creation (fixed for the
+        // physical device's lifetime, same reasoning as memoryProperties
+        // above) -- Buffer::upload() must round vkFlushMappedMemoryRanges()'s
+        // range to a multiple of this, or a partial-length upload (e.g. a
+        // 372-byte uniform buffer write) trips
+        // VUID-VkMappedMemoryRange-size-01390.
+        VkDeviceSize              nonCoherentAtomSize = 1;
         VkSurfaceKHR              surface;
         VkSwapchainKHR            swapchain;
         VkExtent2D                imageExtent;
@@ -196,6 +203,18 @@ namespace systems::leal::campello_gpu {
         // descriptor pools/fences/semaphores/retained command buffers.
         static constexpr uint32_t kFramesInFlight = 3;
         VkSemaphore imageAvailableSemaphores[kFramesInFlight] = {};
+        // Chains Device::submit(commandBuffer, externalFence)'s real work into
+        // beginFrameRing()'s own inFlightFences[gen] bookkeeping — see that
+        // overload's use of this array for the full rationale: without it,
+        // a caller-supplied fence (as campello_renderer's per-frame
+        // frameResources[].fence uses for render()'s swapchain path) leaves
+        // inFlightFences[gen] permanently stuck signaled from creation,
+        // so beginFrameRing() reuses imageAvailableSemaphores[gen] for a new
+        // acquire before the previous acquire's wait was ever consumed by a
+        // submission — VUID-vkAcquireNextImageKHR-semaphore-01779, and with
+        // validation layers active, an observed crash inside the validation
+        // layer's own bookkeeping shortly after.
+        VkSemaphore genCompleteSemaphores[kFramesInFlight] = {};
         // Unlike imageAvailableSemaphores (needed *before* acquire tells us
         // which image we got, so it must be indexed by an independent
         // rotating slot), renderFinishedSemaphores is signaled by submit()
@@ -211,7 +230,16 @@ namespace systems::leal::campello_gpu {
         // completes. Created already-signaled (VK_FENCE_CREATE_SIGNALED_BIT)
         // so the first use of each slot needs no wait.
         VkFence     inFlightFences[kFramesInFlight] = {};
-        uint32_t    currentFrameGen = 0;
+        // Atomic (not plain uint32_t): written by beginFrameRing() on the
+        // main/raster thread without holding gpu_mutex (the wait it does
+        // under is already the real synchronization for its own callers),
+        // but read from Texture::~Texture()/TextureView::~TextureView()
+        // under gpu_mutex, which can run on any thread that drops the last
+        // shared_ptr to a Texture -- including an ImageLoader worker
+        // thread, via ImageCache::get() expiring an entry mid-decode (see
+        // pendingTextureDestroys' doc comment). A plain uint32_t read
+        // there raced the unguarded write here.
+        std::atomic<uint32_t> currentFrameGen{0};
         // Keeps each generation's CommandBuffer -- and therefore the GPU
         // resources it references (command buffer, staging buffers,
         // transient framebuffers; see CommandBuffer's destructor) -- alive
@@ -220,6 +248,35 @@ namespace systems::leal::campello_gpu {
         // from it is undefined behavior; this is what makes it safe for
         // submit() to no longer call vkQueueWaitIdle every frame.
         std::shared_ptr<CommandBuffer> genCommandBuffer[kFramesInFlight];
+
+        // Raw Vulkan handles a Texture/TextureView destructor wants
+        // destroyed, queued instead of destroyed immediately -- see
+        // pendingTextureDestroys' doc comment just below for why.
+        struct PendingTextureDestroy {
+            VkImageView    view   = VK_NULL_HANDLE;
+            VkImage        image  = VK_NULL_HANDLE;
+            VkDeviceMemory memory = VK_NULL_HANDLE;
+        };
+        // Deferred-destruction queue for Texture/TextureView Vulkan
+        // resources, indexed by the ring slot active when the C++ object
+        // was destroyed. Texture::~Texture()/TextureView::~TextureView()
+        // push here instead of calling vkDestroyImage(View)/vkFreeMemory
+        // directly -- those objects can be dropped (e.g. ImageCache
+        // replacing a cached entry) while a just-submitted, not-yet-
+        // GPU-complete command buffer still references their image/view,
+        // which is exactly the UB
+        // VUID-vkDestroyImage-image-01000/VUID-vkDestroyImageView-imageView-01026
+        // warn about -- immediate destruction was reachable within
+        // microseconds of a draw that referenced the same resource.
+        // beginFrameRing() below drains slot `nextGen` right where it
+        // already releases genCommandBuffer[nextGen] -- the same place
+        // that slot's fence is proven signaled -- so this mirrors
+        // genCommandBuffer[]'s exact lifetime/safety argument instead of
+        // introducing a new one. Guarded by gpu_mutex: destructors can run
+        // on any thread (e.g. ImageLoader's worker pool), while
+        // beginFrameRing() drains from the main/raster thread.
+        std::vector<PendingTextureDestroy> pendingTextureDestroys[kFramesInFlight];
+
         // One pool per frames-in-flight ring slot, NOT a single shared
         // pool -- Device::createBindGroup() allocates a fresh descriptor
         // set on essentially every draw call (only cached text draws
@@ -237,6 +294,11 @@ namespace systems::leal::campello_gpu {
         // the DirectX12 backend's per-generation SRV heap slot recycling
         // (see its DeviceData::freeSrvSlots()/recycleSrvSlots()).
         VkDescriptorPool descriptorPools[kFramesInFlight] = {};
+        // Never-reset pool for bind groups that must survive across frame-ring
+        // resets. VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT allows
+        // individual sets to be freed when cache entries are evicted.
+        // See Device::createBindGroup(persistent=true) and BindGroup::~BindGroup().
+        VkDescriptorPool persistentDescriptorPool = VK_NULL_HANDLE;
 
 #ifdef __ANDROID__
         ANativeWindow            *window               = nullptr;
@@ -424,6 +486,20 @@ namespace systems::leal::campello_gpu {
             if (descriptorPools[nextGen] != VK_NULL_HANDLE) {
                 vkResetDescriptorPool(device, descriptorPools[nextGen], 0);
             }
+            // Same proof of GPU completion as genCommandBuffer[nextGen]
+            // above -- now actually destroy whatever Texture/TextureView
+            // destructors deferred into this slot. See
+            // pendingTextureDestroys' doc comment.
+            std::vector<PendingTextureDestroy> toDestroy;
+            {
+                std::lock_guard<std::mutex> lock(gpu_mutex);
+                toDestroy.swap(pendingTextureDestroys[nextGen]);
+            }
+            for (auto& pd : toDestroy) {
+                if (pd.view   != VK_NULL_HANDLE) vkDestroyImageView(device, pd.view, nullptr);
+                if (pd.image  != VK_NULL_HANDLE) vkDestroyImage(device, pd.image, nullptr);
+                if (pd.memory != VK_NULL_HANDLE) vkFreeMemory(device, pd.memory, nullptr);
+            }
             currentFrameGen = nextGen;
             return nextGen;
         }
@@ -435,6 +511,20 @@ namespace systems::leal::campello_gpu {
     struct VulkanFenceData {
         VkDevice device       = VK_NULL_HANDLE;
         VkFence  fence        = VK_NULL_HANDLE;
+        // Keeps the last CommandBuffer submitted against this fence alive until
+        // it's safe to release — see Device::submit()'s assignment to this field
+        // for why. Most callers pass encoder->finish()'s result straight into
+        // submit() as a temporary (`device->submit(encoder->finish(), fence)`),
+        // so without this, the CommandBuffer's refcount hits zero and its
+        // destructor runs synchronously right there — calling vkFreeCommandBuffers/
+        // vkDestroyQueryPool on a command buffer vkQueueSubmit only just handed to
+        // the GPU asynchronously (submit() deliberately doesn't
+        // vkQueueWaitIdle — "caller waits on fence"). Reassigning this field on
+        // the next submit() against the same fence is safe specifically because
+        // the whole point of waiting on a frame's fence before reusing its slot
+        // (as every caller already does) is that the GPU is provably done with
+        // whatever this held previously.
+        std::shared_ptr<CommandBuffer> pendingCommandBuffer;
     };
 
     // Swapchain recreation helper (defined in device.cpp, used by command_encoder.cpp).

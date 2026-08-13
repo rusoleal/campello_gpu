@@ -83,6 +83,57 @@
       this enumerator). Verified by installing the exact CI Emscripten
       version locally and reproducing `emcmake cmake` + `cmake --build` —
       confirmed the compile error before the fix and a clean build after.
+- [x] **[Linux/Vulkan]** `Device::createComputePipeline()` null-derefed `descriptor.compute.module`
+      and `descriptor.layout` unconditionally — crashed instead of returning `nullptr`; now
+      null-checks the module and falls back to an internally-created empty pipeline layout when
+      `descriptor.layout` is absent, mirroring `createRenderPipeline()`'s existing handling.
+- [x] **[Linux/Vulkan]** `getAddressMode()`/`getCompareOp()`/`pixelFormatToNative()` switches had no
+      `default:` case, falling off the end of a non-`void` function (undefined behavior, compiled
+      to a trap by GCC). Triggered in practice because `SamplerDescriptor::addressModeU/V/W` had no
+      default member initializer, so a zero-initialized `SamplerDescriptor{}` produced `WrapMode(0)`
+      — not a valid enumerator (real values are GL constants 10497/33071/33648) — crashing
+      `getAddressMode()` with `SIGILL`. Fixed both: added `default:` fallbacks to all three
+      switches, and `addressModeU/V/W` now default to `WrapMode::clampToEdge`.
+- [x] **[Linux/Vulkan]** `RenderPassEncoder::draw*()`/`ComputePassEncoder::dispatch*()` recorded
+      `vkCmdDraw`/`vkCmdDispatch` even with no pipeline ever bound — invalid per spec
+      (`VUID-vkCmdDraw-None-08606`), and this Mesa/Intel driver segfaults on it instead of
+      validating. Now no-ops when `pipelineLayout == VK_NULL_HANDLE` (no `setPipeline()` call yet),
+      matching the guard already used by `setBindGroup()`/`setPushConstants()`.
+- [x] **[Linux/Vulkan]** `RenderPassEncoder::end()` unconditionally built a post-pass image barrier
+      against `data->offscreenImage`/`data->currentSwapchainImage` — `VK_NULL_HANDLE` for a pass
+      begun with no attachments at all, crashing `vkCmdPipelineBarrier`. Now skips the barrier when
+      there is no image to transition.
+- [x] **[Linux/Vulkan]** `Texture::createView()` mapped `Aspect::all` to `VK_IMAGE_ASPECT_COLOR_BIT`
+      unconditionally — wrong for depth/stencil formats (a VUID violation some drivers tolerate
+      silently, confirmed via Vulkan validation layers). Now derives the correct aspect mask from
+      the view's actual format, same logic already used for the texture's internal default view.
+- [x] **[Linux/Vulkan]** `Device::createTexture()`'s `TextureUsage::renderTarget` → `VkImageUsageFlags`
+      mapping always used `VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT`, even for depth/stencil pixel
+      formats — `vkGetPhysicalDeviceImageFormatProperties2` rejects that combination
+      (`VK_ERROR_FORMAT_NOT_SUPPORTED` under validation), silently tolerated by some drivers but not
+      portable. Now picks `VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT` for depth/stencil formats.
+- [x] **[Android/Vulkan]** `CommandBuffer::getGPUExecutionTime()` **hung the calling thread forever**
+      when called on a command buffer that was `finish()`ed but never submitted — the
+      timestamp-writing commands are only *recorded*, not executed, so `vkGetQueryPoolResults(...,
+      VK_QUERY_RESULT_WAIT_BIT)` blocked on a query that could never become available. Invisible on
+      desktop Mesa/Intel (doesn't actually block); reproduced as a genuine hang on a real Adreno 618
+      device (Xiaomi Redmi Note 10). Fixed by tracking whether the command buffer has been submitted
+      (`CommandBufferHandle::submitted`, set in both `Device::submit()` overloads) and returning `0`
+      immediately if not, before ever calling `vkGetQueryPoolResults()`.
+- [x] **[Android/Vulkan]** Traditional-render-pass fallback (`CommandEncoder::beginRenderPass()`'s
+      `useTraditional` branch, taken on hardware without `VK_KHR_dynamic_rendering` — e.g. a real
+      Adreno 618 device on Vulkan 1.1, a path desktop's Vulkan 1.4 driver never exercises at all)
+      null-derefed `descriptor.colorAttachments[0].view` when the pass had no color attachments.
+      `buildRenderPass()` had the matching bug: it unconditionally created a color
+      `VkAttachmentDescription`/set `colorAttachmentCount = 1` even for `VK_FORMAT_UNDEFINED`, which
+      `vkCreateRenderPass` rejects. Fixed both: `colorFormat` is now `VK_FORMAT_UNDEFINED` when
+      `colorAttachments` is empty, and `buildRenderPass()` gained a `hasColor` gate mirroring the
+      existing `hasDepth` one.
+- [x] **[Build]** `tests/CMakeLists.txt`'s `gtest_discover_tests(campello_gpu_universal_tests)` was
+      missing `DISCOVERY_MODE PRE_TEST` — present on `campello_gpu_integration_tests` but not this
+      target, so CMake tried to *execute* the cross-compiled binary on the host right after linking
+      to discover its test list, breaking any cross-compiled build (Android, iOS device) that
+      enables `BUILD_TESTS`. Fixed by adding the same `DISCOVERY_MODE PRE_TEST`.
 
 ## Missing implementations — Vulkan/Android
 

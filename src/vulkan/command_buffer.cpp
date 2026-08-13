@@ -33,10 +33,10 @@ CommandBuffer::~CommandBuffer() {
 uint64_t CommandBuffer::getGPUExecutionTime() {
     auto data = (CommandBufferHandle *)native;
     
-    if (!data->hasTimingData || data->queryPool == VK_NULL_HANDLE) {
+    if (!data->hasTimingData || data->queryPool == VK_NULL_HANDLE || !data->submitted) {
         return 0;
     }
-    
+
     // Read back the timestamp query results
     uint64_t timestamps[2] = {0, 0};
     VkResult result = vkGetQueryPoolResults(

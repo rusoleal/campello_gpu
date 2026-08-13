@@ -109,6 +109,9 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     VkExtent2D renderExtent;
     VkImage    firstImage = VK_NULL_HANDLE;
     bool       isSwapchain = false;
+    TextureHandle *offscreenOwnerTexture = nullptr;
+    uint32_t   offscreenArrayLayer = 0;
+    uint32_t   offscreenMipLevel   = 0;
 
     const bool useTraditional = data->deviceData && !data->deviceData->hasDynamicRendering;
 
@@ -218,18 +221,37 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
         auto *vh = (TextureViewHandle *)descriptor.colorAttachments[0].view->native;
         firstImage   = vh->image;
         renderExtent = { vh->width, vh->height };
+        offscreenOwnerTexture = vh->ownerTexture;
+        offscreenArrayLayer = vh->baseArrayLayer;
+        offscreenMipLevel   = vh->baseMipLevel;
 
         if (!useTraditional) {
             // Dynamic rendering: manually transition offscreen image → COLOR_ATTACHMENT_OPTIMAL.
+            // loadOp::load means the caller wants this pass's writes layered on
+            // top of what's already there (RenderDrawSurface's incremental
+            // accumulation — see IDrawBackend::beginOffscreenPass()'s
+            // preserve_content) — this image was necessarily used as an
+            // offscreen target in an earlier pass already, which
+            // RenderPassEncoder::end() always leaves in
+            // SHADER_READ_ONLY_OPTIMAL. Using UNDEFINED as oldLayout there (as
+            // for a genuinely first-use/clear pass) is a hint that the driver
+            // is free to discard prior contents during the transition — on
+            // this hardware it visibly did: circles stamped while dragging
+            // intermittently vanished (a dotted stroke instead of a solid
+            // one), and content wiped by clear() could later resurface.
+            const bool preserving = !descriptor.colorAttachments.empty() &&
+                                     descriptor.colorAttachments[0].loadOp == LoadOp::load;
             VkImageMemoryBarrier barrier{};
             barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.oldLayout           = preserving ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                      : VK_IMAGE_LAYOUT_UNDEFINED;
             barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.image               = firstImage;
-            barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-            barrier.srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT;
+            barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, offscreenMipLevel, 1, offscreenArrayLayer, 1 };
+            barrier.srcAccessMask       = preserving ? VK_ACCESS_SHADER_READ_BIT
+                                                      : VK_ACCESS_MEMORY_READ_BIT;
             barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             vkCmdPipelineBarrier(data->commandBuffer,
                                  VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
@@ -247,6 +269,9 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rpeHandle->currentSwapchainImage = isSwapchain ? firstImage : VK_NULL_HANDLE;
     rpeHandle->offscreenImage        = isSwapchain ? VK_NULL_HANDLE : firstImage;
     rpeHandle->offscreenExtent       = renderExtent;
+    rpeHandle->offscreenTextureHandle = isSwapchain ? nullptr : offscreenOwnerTexture;
+    rpeHandle->offscreenBaseArrayLayer = offscreenArrayLayer;
+    rpeHandle->offscreenBaseMipLevel   = offscreenMipLevel;
     // Keep the offscreen TextureView alive for the duration of the pass.
     // vkCmdBeginRenderingKHR records the raw VkImageView; if the CPU-side
     // TextureView is destroyed first the validation layer looks up a freed handle.
@@ -286,9 +311,18 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             // functionally identical to what a fresh build would produce.
             VkImageLayout finalLayout = isSwapchain ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            VkFormat colorFormat = isSwapchain
-                ? data->deviceData->surfaceFormat.format
-                : ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->format;
+            // A pass with no color attachments (depth-only, or fully
+            // attachment-less) has no color format to derive — leave it
+            // VK_FORMAT_UNDEFINED, matching depthFormat's default above when
+            // there's no depth attachment either. buildRenderPass() /
+            // RenderPassKey already treat VK_FORMAT_UNDEFINED as "no
+            // attachment of this kind".
+            VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+            if (isSwapchain) {
+                colorFormat = data->deviceData->surfaceFormat.format;
+            } else if (!descriptor.colorAttachments.empty()) {
+                colorFormat = ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->format;
+            }
             VkAttachmentLoadOp colorLoadOp = colorLoadClear ? VK_ATTACHMENT_LOAD_OP_CLEAR
                                                              : VK_ATTACHMENT_LOAD_OP_LOAD;
 
@@ -523,10 +557,22 @@ void CommandEncoder::copyBufferToTexture(
     auto bufH = (BufferHandle *)source->native;
     auto texH = (TextureHandle *)destination->native;
 
-    // Transition destination to TRANSFER_DST_OPTIMAL.
+    // Transition destination to TRANSFER_DST_OPTIMAL. oldLayout is always
+    // UNDEFINED here, not texH->currentLayout: this call only ever targets
+    // one specific (mipLevel, arrayLayer) subresource, but currentLayout is
+    // a single whole-texture scalar -- for a multi-face/multi-call upload
+    // (e.g. one copyBufferToTexture() per cubemap face), a later face's
+    // barrier would otherwise claim whatever the *previous* face's call left
+    // in that shared scalar (typically GENERAL, set below) even though this
+    // face's subresource was never actually touched and is genuinely still
+    // UNDEFINED -- tripping VUID-vkCmdDraw-None-09600 the first time
+    // something samples the "untransitioned" faces. UNDEFINED is always a
+    // valid oldLayout to claim (it just means "don't preserve prior
+    // contents"), which is exactly true here since this call fully
+    // overwrites the subresource's contents regardless of what came before.
     VkImageMemoryBarrier barrier{};
     barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout           = texH->currentLayout;
+    barrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
     barrier.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -729,10 +775,21 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         uint32_t dstWidth  = std::max(1u, texH->width  >> mip);
         uint32_t dstHeight = std::max(1u, texH->height >> mip);
 
-        // Transition source mip to TRANSFER_SRC_OPTIMAL
+        // Transition source mip to TRANSFER_SRC_OPTIMAL.
+        // mip-1's *actual* current layout depends on whether this is the
+        // first iteration or not: on the first (mip==1), mip-1 is mip 0,
+        // which has never been touched by this function, so it's still
+        // whatever the texture's whole-resource currentLayout says (its
+        // post-upload layout). On every later iteration, mip-1 was the
+        // *destination* of the previous iteration, which always restores to
+        // SHADER_READ_ONLY_OPTIMAL below (texH->currentLayout is a single
+        // whole-texture scalar, only updated once after the whole loop
+        // finishes -- reading it fresh here on every iteration was stale
+        // from the second iteration onward, claiming a since-changed layout
+        // and tripping VUID-VkImageMemoryBarrier-oldLayout-01197).
         VkImageMemoryBarrier srcBarrier{};
         srcBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        srcBarrier.oldLayout           = texH->currentLayout;
+        srcBarrier.oldLayout           = (mip == 1) ? texH->currentLayout : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         srcBarrier.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         srcBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         srcBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -745,10 +802,12 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
 
-        // Transition destination mip to TRANSFER_DST_OPTIMAL
+        // Transition destination mip to TRANSFER_DST_OPTIMAL. mip is always
+        // being touched for the first (and only) time here, regardless of
+        // iteration, so its actual layout is unconditionally UNDEFINED.
         VkImageMemoryBarrier dstBarrier{};
         dstBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        dstBarrier.oldLayout           = texH->currentLayout;
+        dstBarrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
         dstBarrier.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         dstBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         dstBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -761,25 +820,43 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &dstBarrier);
 
-        VkImageBlit blitRegion{};
-        blitRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 0, 1 };
-        blitRegion.srcOffsets[0]  = { 0, 0, 0 };
-        blitRegion.srcOffsets[1]  = { (int32_t)srcWidth, (int32_t)srcHeight, 1 };
-        blitRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1 };
-        blitRegion.dstOffsets[0]  = { 0, 0, 0 };
-        blitRegion.dstOffsets[1]  = { (int32_t)dstWidth, (int32_t)dstHeight, 1 };
+        // One region per array layer (cubemap faces / array texture layers)
+        // — a single VkImageBlit's subresource only ever covers one
+        // baseArrayLayer+layerCount slice, so blitting all layers of a
+        // layer > 1 texture (e.g. a ttCube environment map) in one call
+        // requires one region per layer, not a single hardcoded layer 0
+        // region. Without this, only layer/face 0 ever got real blitted
+        // content for mip levels > 0 -- the surrounding barriers already
+        // transition every layer via VK_REMAINING_ARRAY_LAYERS, so this was
+        // silently leaving faces 1..N's higher mips with whatever
+        // uninitialized memory the image allocation happened to contain.
+        uint32_t layerCount = std::max(1u, texH->arrayLayers);
+        std::vector<VkImageBlit> blitRegions(layerCount);
+        for (uint32_t layer = 0; layer < layerCount; ++layer) {
+            VkImageBlit &blitRegion = blitRegions[layer];
+            blitRegion.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, layer, 1 };
+            blitRegion.srcOffsets[0]  = { 0, 0, 0 };
+            blitRegion.srcOffsets[1]  = { (int32_t)srcWidth, (int32_t)srcHeight, 1 };
+            blitRegion.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1 };
+            blitRegion.dstOffsets[0]  = { 0, 0, 0 };
+            blitRegion.dstOffsets[1]  = { (int32_t)dstWidth, (int32_t)dstHeight, 1 };
+        }
 
         vkCmdBlitImage(data->commandBuffer,
                        texH->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                        texH->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blitRegion, VK_FILTER_LINEAR);
+                       static_cast<uint32_t>(blitRegions.size()), blitRegions.data(), VK_FILTER_LINEAR);
 
-        // Restore source mip layout
-        VkImageLayout srcRestore = (texH->currentLayout == VK_IMAGE_LAYOUT_UNDEFINED)
-                                   ? VK_IMAGE_LAYOUT_GENERAL
-                                   : texH->currentLayout;
+        // Restore both mips to SHADER_READ_ONLY_OPTIMAL (sampling-ready).
+        // This must be the same target both barriers use, and the same one
+        // the *next* iteration's src-entry barrier above expects its source
+        // (this iteration's destination) to already be in -- previously the
+        // destination restored to GENERAL while the source restored to
+        // texH->currentLayout (typically SHADER_READ_ONLY_OPTIMAL), an
+        // inconsistency that left every mip but the last one correctly
+        // sampling-ready and the last mip stuck in GENERAL.
         srcBarrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        srcBarrier.newLayout     = srcRestore;
+        srcBarrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         srcBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         srcBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
         vkCmdPipelineBarrier(data->commandBuffer,
@@ -787,9 +864,8 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
                              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
 
-        // Restore destination mip layout
         dstBarrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        dstBarrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
+        dstBarrier.newLayout     = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         dstBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         dstBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
         vkCmdPipelineBarrier(data->commandBuffer,
@@ -798,7 +874,7 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
                              0, 0, nullptr, 0, nullptr, 1, &dstBarrier);
     }
 
-    texH->currentLayout = VK_IMAGE_LAYOUT_GENERAL;
+    texH->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     return true;
 }
 

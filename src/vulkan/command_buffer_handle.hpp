@@ -29,6 +29,12 @@ namespace systems::leal::campello_gpu {
         uint64_t gpuStartTimestamp = 0;
         uint64_t gpuEndTimestamp = 0;
         bool hasTimingData = false;
+        // True once this command buffer has been handed to vkQueueSubmit.
+        // getGPUExecutionTime() must not query timestamp results before this
+        // -- the timestamp-writing commands are only *recorded*, not
+        // executed, until submission, so the query can never become
+        // available and VK_QUERY_RESULT_WAIT_BIT would block forever.
+        bool submitted = false;
         float timestampPeriod = 1.0f;  // Nanoseconds per tick
         VkQueryPool queryPool = VK_NULL_HANDLE;  // If we allocated a dedicated pool
         uint32_t queryStartIndex = 0;

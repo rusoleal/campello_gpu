@@ -64,6 +64,20 @@ namespace systems::leal::campello_gpu
          *                       to have `depthOrArrayLayers == 6` and `width == height`).
          *                       Use `ttCubeArray` for cubemap arrays (requires `depthOrArrayLayers`
          *                       to be a multiple of 6).
+         * @param mipLevelCount  Number of mip levels to include. Pass -1 (default) to include
+         *                       all remaining levels starting from `baseMipLevel` — the right
+         *                       choice for a view that will be *sampled* (e.g. a material
+         *                       texture read with implicit/explicit LOD across its mip chain).
+         *                       Pass exactly 1 for a view that will be used as a render-pass
+         *                       color/depth attachment: attachment views are required to have
+         *                       a single mip level (and, on Vulkan, the correct
+         *                       baseArrayLayer/baseMipLevel here is what lets
+         *                       CommandEncoder::beginRenderPass() and RenderPassEncoder::end()
+         *                       transition the *actual* targeted subresource instead of always
+         *                       subresource (mip 0, layer 0) — passing the texture's full
+         *                       remaining-levels default for a non-(0,0) attachment view left
+         *                       every other subresource's image layout untransitioned, which
+         *                       read back as GPU-cache-incoherent garbage on affected drivers.
          * @return A new `TextureView` on success, or `nullptr` on failure.
          */
         std::shared_ptr<TextureView> createView(
@@ -72,7 +86,8 @@ namespace systems::leal::campello_gpu
             Aspect      aspect          = Aspect::all,
             uint32_t    baseArrayLayer  = 0,
             uint32_t    baseMipLevel    = 0,
-            TextureType dimension       = TextureType::tt2d);
+            TextureType dimension       = TextureType::tt2d,
+            uint32_t    mipLevelCount   = -1);
 
         /**
          * @brief Uploads CPU pixel data into the texture.

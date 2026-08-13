@@ -34,6 +34,11 @@ void ComputePassEncoder::dispatchWorkgroups(uint64_t workgroupCountX,
                                              uint64_t workgroupCountY,
                                              uint64_t workgroupCountZ) {
     auto data = (ComputePassEncoderHandle *)native;
+    // The Vulkan spec requires a compute pipeline to be bound before vkCmdDispatch
+    // (VUID-vkCmdDispatch-None-08606); some drivers crash rather than validate this
+    // when recording without a bound pipeline. Guard it the same way setBindGroup()
+    // already guards on pipelineLayout below.
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     vkCmdDispatch(data->commandBuffer,
                   static_cast<uint32_t>(workgroupCountX),
                   static_cast<uint32_t>(workgroupCountY),
@@ -43,6 +48,7 @@ void ComputePassEncoder::dispatchWorkgroups(uint64_t workgroupCountX,
 void ComputePassEncoder::dispatchWorkgroupsIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                                      uint64_t indirectOffset) {
     auto data   = (ComputePassEncoderHandle *)native;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     auto bufHandle = (BufferHandle *)indirectBuffer->native;
     vkCmdDispatchIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset);
 }

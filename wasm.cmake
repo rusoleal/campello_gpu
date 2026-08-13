@@ -5,6 +5,7 @@ message(STATUS "Building campello_gpu for Emscripten (WebGPU)")
 add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
+    src/pi/validation_diagnostics.cpp
     src/webgpu/conversions.cpp
     src/webgpu/device.cpp
     src/webgpu/adapter.cpp

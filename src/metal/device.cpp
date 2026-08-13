@@ -519,7 +519,7 @@ std::shared_ptr<Texture> Device::createTexture(
     pTextureDesc->setDepth(depth > 0 ? depth : 1);
     pTextureDesc->setMipmapLevelCount(mipLevels > 0 ? mipLevels : 1);
     pTextureDesc->setSampleCount(samples > 0 ? samples : 1);
-    pTextureDesc->setPixelFormat((MTL::PixelFormat)pixelFormat);
+    pTextureDesc->setPixelFormat(toMTLPixelFormat(dev, pixelFormat));
 
     // Depth/stencil textures must use StorageModePrivate on macOS; Managed is invalid.
     bool isDepthStencil = (pixelFormat == PixelFormat::depth16unorm         ||
@@ -732,7 +732,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     // Depth attachment pixel format
     if (descriptor.depthStencil) {
         pipelineDesc->setDepthAttachmentPixelFormat(
-            (MTL::PixelFormat)descriptor.depthStencil->format);
+            toMTLPixelFormat(dev, descriptor.depthStencil->format));
     }
 
     // Vertex descriptor
@@ -829,7 +829,7 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
     return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(data));
 }
 
-std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor) {
+std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor, bool persistent) {
     MetalAutoreleasePool pool;
     auto *data = new MetalBindGroupData{};
     data->entries = descriptor.entries;

@@ -89,7 +89,7 @@ TEST(Device, GetEngineVersionReturnsString) {
 // ---------------------------------------------------------------------------
 
 TEST(Device, GetAdaptersReturnsAtLeastOneOnSupportedPlatform) {
-#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32) || defined(__linux__)
     auto adapters = Device::getAdapters();
     EXPECT_FALSE(adapters.empty()) << "Expected at least one GPU adapter";
 #else

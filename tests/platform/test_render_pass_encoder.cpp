@@ -80,6 +80,20 @@ static BeginRenderPassDescriptor makeColorPassDesc(
     return desc;
 }
 
+// makeColorPassDesc()'s clear color has components that land exactly on an
+// 8-bit quantization boundary (0.1 * 255 = 25.5, 0.3 * 255 = 76.5), so the
+// GPU/driver's float->unorm8 rounding-mode choice at that midpoint (round up
+// vs round down) is implementation-defined -- e.g. the virtualized "Apple
+// Paravirtual device" used by CI runners rounds up while other GPUs round
+// down. Tolerate a 1-ULP difference on those channels rather than asserting
+// exact byte equality.
+static void expectClearedPixel(uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint32_t px) {
+    EXPECT_NEAR(r, 25, 1)  << "pixel " << px;
+    EXPECT_EQ(g, 51)       << "pixel " << px;
+    EXPECT_NEAR(b, 76, 1)  << "pixel " << px;
+    EXPECT_EQ(a, 255)      << "pixel " << px;
+}
+
 // ---------------------------------------------------------------------------
 // beginRenderPass
 // ---------------------------------------------------------------------------
@@ -360,6 +374,115 @@ TEST(RenderPassEncoder, FullPassWithColorAttachmentProducesCommandBuffer) {
 
     auto cmdBuf = encoder->finish();
     EXPECT_NE(cmdBuf, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Offscreen subresource layout transitions.
+//
+// Regression coverage for beginRenderPass()/end(): their entry/exit image
+// barriers used to hardcode subresourceRange = (mip 0, layer 0) regardless
+// of which subresource the attachment view actually targeted. Rendering into
+// any other subresource (a non-zero array layer, a non-zero mip level, one
+// face of a cube map, ...) left that subresource's layout untransitioned,
+// which read back as GPU-cache-incoherent content on affected drivers. See
+// Texture::createView()'s `mipLevelCount` doc comment.
+// ---------------------------------------------------------------------------
+
+TEST(RenderPassEncoder, ClearingNonZeroArrayLayerProducesCorrectContent) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 32, H = 32, LAYERS = 4;
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, LAYERS, 1, 1,
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::renderTarget) |
+            static_cast<int>(TextureUsage::copySrc)));
+    ASSERT_NE(tex, nullptr);
+
+    // A view onto array layer 2 only -- the shape required for a
+    // render-pass attachment view into a non-default layer.
+    constexpr uint32_t TARGET_LAYER = 2;
+    auto view = tex->createView(
+        PixelFormat::rgba8unorm, /*arrayLayerCount=*/1, Aspect::all,
+        /*baseArrayLayer=*/TARGET_LAYER, /*baseMipLevel=*/0,
+        TextureType::tt2d, /*mipLevelCount=*/1);
+    ASSERT_NE(view, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+
+    auto pass = encoder->beginRenderPass(makeColorPassDesc(view, LoadOp::clear));
+    ASSERT_NE(pass, nullptr);
+    pass->end();
+
+    auto cmdBuf = encoder->finish();
+    ASSERT_NE(cmdBuf, nullptr);
+
+    auto fence = device->createFence();
+    device->submit(cmdBuf, fence);
+    fence->wait();
+
+    std::vector<uint8_t> readback(W * H * 4, 0);
+    ASSERT_TRUE(tex->download(/*mipLevel=*/0, TARGET_LAYER, readback.data(), readback.size()));
+
+    // makeColorPassDesc() clears to (0.1, 0.2, 0.3, 1.0) -> (25, 51, 76, 255)
+    // in rgba8unorm. If the barriers had targeted (mip 0, layer 0) instead of
+    // this view's actual (mip 0, layer 2), layer 2 would never have been
+    // transitioned into COLOR_ATTACHMENT_OPTIMAL for the clear and this
+    // readback would not reliably show the cleared color.
+    for (uint32_t px = 0; px < W * H; ++px) {
+        expectClearedPixel(readback[px * 4 + 0], readback[px * 4 + 1],
+                            readback[px * 4 + 2], readback[px * 4 + 3], px);
+    }
+}
+
+TEST(RenderPassEncoder, ClearingNonZeroMipLevelProducesCorrectContent) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 32, H = 32, MIPS = 3;
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, MIPS, 1,
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::renderTarget) |
+            static_cast<int>(TextureUsage::copySrc)));
+    ASSERT_NE(tex, nullptr);
+
+    // A view onto mip level 1 only.
+    constexpr uint32_t TARGET_MIP = 1;
+    auto view = tex->createView(
+        PixelFormat::rgba8unorm, /*arrayLayerCount=*/1, Aspect::all,
+        /*baseArrayLayer=*/0, /*baseMipLevel=*/TARGET_MIP,
+        TextureType::tt2d, /*mipLevelCount=*/1);
+    ASSERT_NE(view, nullptr);
+
+    auto encoder = device->createCommandEncoder();
+    ASSERT_NE(encoder, nullptr);
+
+    auto pass = encoder->beginRenderPass(makeColorPassDesc(view, LoadOp::clear));
+    ASSERT_NE(pass, nullptr);
+    pass->end();
+
+    auto cmdBuf = encoder->finish();
+    ASSERT_NE(cmdBuf, nullptr);
+
+    auto fence = device->createFence();
+    device->submit(cmdBuf, fence);
+    fence->wait();
+
+    constexpr uint32_t MIP1_W = W / 2, MIP1_H = H / 2;
+    std::vector<uint8_t> readback(MIP1_W * MIP1_H * 4, 0);
+    ASSERT_TRUE(tex->download(TARGET_MIP, /*arrayLayer=*/0, readback.data(), readback.size()));
+
+    // Same rationale as ClearingNonZeroArrayLayerProducesCorrectContent, but
+    // for a non-zero mip level rather than a non-zero array layer.
+    for (uint32_t px = 0; px < MIP1_W * MIP1_H; ++px) {
+        expectClearedPixel(readback[px * 4 + 0], readback[px * 4 + 1],
+                            readback[px * 4 + 2], readback[px * 4 + 3], px);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -27,16 +27,33 @@ Texture::~Texture() {
         handle->deviceData->textureCount--;
         handle->deviceData->textureBytes.fetch_sub(handle->allocatedSize);
     }
-    
+
     handle->buffer = nullptr;
-    if (handle->defaultView != VK_NULL_HANDLE) {
-        vkDestroyImageView(handle->device, handle->defaultView, nullptr);
-    }
-    if (handle->image != VK_NULL_HANDLE) {
-        vkDestroyImage(handle->device, handle->image, nullptr);
-    }
-    if (handle->imageMemory != VK_NULL_HANDLE) {
-        vkFreeMemory(handle->device, handle->imageMemory, nullptr);
+
+    // Deferred, not immediate: this destructor can run while the GPU is
+    // still executing a command buffer that references defaultView/image
+    // (e.g. ImageCache replacing a cached entry within microseconds of a
+    // frame that drew it) -- see PendingTextureDestroy's doc comment in
+    // common.hpp for the full rationale and where these actually get
+    // destroyed. Only falls back to destroying immediately when there's no
+    // DeviceData to defer through (device already torn down).
+    if (handle->deviceData) {
+        DeviceData::PendingTextureDestroy pd;
+        pd.view   = handle->defaultView;
+        pd.image  = handle->image;
+        pd.memory = handle->imageMemory;
+        std::lock_guard<std::mutex> lock(handle->deviceData->gpu_mutex);
+        handle->deviceData->pendingTextureDestroys[handle->deviceData->currentFrameGen].push_back(pd);
+    } else {
+        if (handle->defaultView != VK_NULL_HANDLE) {
+            vkDestroyImageView(handle->device, handle->defaultView, nullptr);
+        }
+        if (handle->image != VK_NULL_HANDLE) {
+            vkDestroyImage(handle->device, handle->image, nullptr);
+        }
+        if (handle->imageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(handle->device, handle->imageMemory, nullptr);
+        }
     }
     delete handle;
 }
@@ -171,10 +188,26 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
                                                    Aspect      aspect,
                                                    uint32_t    baseArrayLayer,
                                                    uint32_t    baseMipLevel,
-                                                   TextureType dimension) {
+                                                   TextureType dimension,
+                                                   uint32_t    mipLevelCount) {
     auto handle = (TextureHandle *)native;
 
+    VkFormat nativeFormat = pixelFormatToNative(format);
+
+    // Aspect::all means "the full texture" — for color formats that's
+    // COLOR_BIT, but for depth/stencil formats it means every aspect the
+    // format actually has (mirrors the default-view aspect selection in
+    // Device::createTexture()). Passing COLOR_BIT for a depth/stencil format
+    // is a VUID violation (aspect flags must match the format's aspects);
+    // some drivers tolerate it silently but it's still undefined behavior.
     VkImageAspectFlags aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT;
+    if (nativeFormat == VK_FORMAT_D16_UNORM || nativeFormat == VK_FORMAT_D32_SFLOAT)
+        aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT;
+    else if (nativeFormat == VK_FORMAT_S8_UINT)
+        aspectFlags = VK_IMAGE_ASPECT_STENCIL_BIT;
+    else if (nativeFormat == VK_FORMAT_D24_UNORM_S8_UINT || nativeFormat == VK_FORMAT_D32_SFLOAT_S8_UINT)
+        aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
     switch (aspect) {
         case Aspect::depthOnly:   aspectFlags = VK_IMAGE_ASPECT_DEPTH_BIT;   break;
         case Aspect::stencilOnly: aspectFlags = VK_IMAGE_ASPECT_STENCIL_BIT; break;
@@ -193,15 +226,18 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     uint32_t layerCount = (arrayLayerCount == static_cast<uint32_t>(-1))
                               ? VK_REMAINING_ARRAY_LAYERS
                               : arrayLayerCount;
+    uint32_t levelCount = (mipLevelCount == static_cast<uint32_t>(-1))
+                              ? VK_REMAINING_MIP_LEVELS
+                              : mipLevelCount;
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image    = handle->image;
     viewInfo.viewType = viewType;
-    viewInfo.format   = pixelFormatToNative(format);
+    viewInfo.format   = nativeFormat;
     viewInfo.subresourceRange.aspectMask     = aspectFlags;
     viewInfo.subresourceRange.baseMipLevel   = baseMipLevel;
-    viewInfo.subresourceRange.levelCount     = VK_REMAINING_MIP_LEVELS;
+    viewInfo.subresourceRange.levelCount     = levelCount;
     viewInfo.subresourceRange.baseArrayLayer = baseArrayLayer;
     viewInfo.subresourceRange.layerCount     = layerCount;
 
@@ -221,6 +257,10 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     vh->width     = mipW;
     vh->height    = mipH;
     vh->owned     = true;
+    vh->baseArrayLayer = baseArrayLayer;
+    vh->baseMipLevel   = baseMipLevel;
+    vh->ownerTexture = handle;
+    vh->deviceData   = handle->deviceData;
     return std::shared_ptr<TextureView>(new TextureView(vh));
 }
 

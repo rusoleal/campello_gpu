@@ -29,20 +29,24 @@ namespace systems::leal::campello_gpu {
     struct SamplerDescriptor {
         /**
          * @brief Wrap mode applied when the U texture coordinate exceeds [0, 1].
+         *
+         * Defaults to `WrapMode::clampToEdge`.
          */
-        WrapMode addressModeU;
+        WrapMode addressModeU = WrapMode::clampToEdge;
 
         /**
          * @brief Wrap mode applied when the V texture coordinate exceeds [0, 1].
+         *
+         * Defaults to `WrapMode::clampToEdge`.
          */
-        WrapMode addressModeV;
+        WrapMode addressModeV = WrapMode::clampToEdge;
 
         /**
          * @brief Wrap mode applied when the W texture coordinate exceeds [0, 1].
          *
-         * Only relevant for 3D (`tt3d`) textures.
+         * Only relevant for 3D (`tt3d`) textures. Defaults to `WrapMode::clampToEdge`.
          */
-        WrapMode addressModeW;
+        WrapMode addressModeW = WrapMode::clampToEdge;
 
         /**
          * @brief Optional comparison function that makes this a comparison sampler.

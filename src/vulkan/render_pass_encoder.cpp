@@ -6,6 +6,7 @@
 #include "render_pipeline_handle.hpp"
 #include "bind_group_handle.hpp"
 #include "query_set_handle.hpp"
+#include "texture_handle.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -30,6 +31,11 @@ void RenderPassEncoder::beginOcclusionQuery(uint32_t queryIndex) {
 void RenderPassEncoder::draw(uint32_t vertexCount, uint32_t instanceCount,
                               uint32_t firstVertex, uint32_t firstInstance) {
     auto data = (RenderPassEncoderHandle *)native;
+    // The Vulkan spec requires a graphics pipeline to be bound before vkCmdDraw
+    // (VUID-vkCmdDraw-None-08606); some drivers crash rather than validate this
+    // when recording without a bound pipeline. Guard it the same way
+    // setBindGroup()/setPushConstants() already guard on pipelineLayout below.
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     vkCmdDraw(data->commandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
 }
 
@@ -37,6 +43,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
                                      uint32_t firstVertex, uint32_t baseVertex,
                                      uint32_t firstInstance) {
     auto data = (RenderPassEncoderHandle *)native;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     vkCmdDrawIndexed(data->commandBuffer, indexCount, instanceCount,
                      firstVertex, static_cast<int32_t>(baseVertex), firstInstance);
 }
@@ -44,6 +51,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
 void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                       uint64_t indirectOffset) {
     auto data      = (RenderPassEncoderHandle *)native;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     auto bufHandle = (BufferHandle *)indirectBuffer->native;
     // drawCount=1, stride=sizeof(VkDrawIndirectCommand)=16
     vkCmdDrawIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset, 1, 16);
@@ -52,6 +60,7 @@ void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer,
 void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuffer,
                                              uint64_t indirectOffset) {
     auto data      = (RenderPassEncoderHandle *)native;
+    if (data->pipelineLayout == VK_NULL_HANDLE) return;
     auto bufHandle = (BufferHandle *)indirectBuffer->native;
     // drawCount=1, stride=sizeof(VkDrawIndexedIndirectCommand)=20
     vkCmdDrawIndexedIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset, 1, 20);
@@ -63,16 +72,36 @@ void RenderPassEncoder::end() {
     if (data->usesTraditionalRenderPass) {
         // Traditional render pass: finalLayout handles image transitions — no manual barriers.
         vkCmdEndRenderPass(data->commandBuffer);
+        // finalLayout for the offscreen case (see beginRenderPass()'s buildRenderPass() call)
+        // is always SHADER_READ_ONLY_OPTIMAL — mirror that into TextureHandle::currentLayout
+        // so later ops (e.g. Texture::download()) see the real layout instead of a stale one.
+        if (!data->isSwapchain && data->offscreenTextureHandle) {
+            data->offscreenTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         return;
     }
 
     pfnCmdEndRenderingKHR(data->commandBuffer);
 
+    // A pass begun with no attachments (BeginRenderPassDescriptor{} with no
+    // color/depth targets) has neither a swapchain image nor an offscreen
+    // image to transition — skip the barrier rather than issuing it against
+    // VK_NULL_HANDLE, which crashes some drivers.
+    if (data->isSwapchain) {
+        if (data->currentSwapchainImage == VK_NULL_HANDLE) return;
+    } else {
+        if (data->offscreenImage == VK_NULL_HANDLE) return;
+    }
+
     VkImageMemoryBarrier barrier{};
     barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    // The specific subresource this pass's color attachment view targeted — see
+    // beginRenderPass()'s entry-barrier fix and RenderPassEncoderHandle::
+    // offscreenBaseArrayLayer/offscreenBaseMipLevel's doc comment. Swapchain images
+    // are always subresource (mip 0, layer 0) so this is a no-op change for that path.
+    barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, data->offscreenBaseMipLevel, 1, data->offscreenBaseArrayLayer, 1 };
     barrier.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     barrier.oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
@@ -95,6 +124,9 @@ void RenderPassEncoder::end() {
                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
+        if (data->offscreenTextureHandle) {
+            data->offscreenTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
     }
 }
 
