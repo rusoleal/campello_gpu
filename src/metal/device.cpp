@@ -829,7 +829,7 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
     return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(data));
 }
 
-std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor) {
+std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &descriptor, bool persistent) {
     MetalAutoreleasePool pool;
     auto *data = new MetalBindGroupData{};
     data->entries = descriptor.entries;

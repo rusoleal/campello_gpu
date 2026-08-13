@@ -678,7 +678,7 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
     return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(handle));
 }
 
-std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor& descriptor) {
+std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor& descriptor, bool persistent) {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
 
     WGPUBindGroupLayout layout = nullptr;

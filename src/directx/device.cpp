@@ -1373,7 +1373,7 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(
 }
 
 std::shared_ptr<BindGroup> Device::createBindGroup(
-    const BindGroupDescriptor& descriptor) {
+    const BindGroupDescriptor& descriptor, bool persistent) {
     // For each texture entry, allocate an SRV slot in the shader-visible
     // heap by copying the pre-built SRV. The base GPU handle of the first
     // slot is stored so SetGraphicsRootDescriptorTable can point at it.
