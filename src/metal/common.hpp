@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <campello_gpu/metrics.hpp>
+#include <campello_gpu/constants/pixel_format.hpp>
 
 // Forward declarations for Metal classes
 namespace MTL {
@@ -144,5 +145,26 @@ struct MetalDeviceData {
     MemoryPressureCallback memoryPressureCallback;
     std::atomic<MemoryPressureLevel> lastPressureLevel{MemoryPressureLevel::Normal};
 };
+
+/**
+ * @brief Translates a campello_gpu PixelFormat to its Metal equivalent.
+ *
+ * campello_gpu::PixelFormat values are numbered to match MTL::PixelFormat
+ * directly wherever a real Metal format exists, so most formats are a raw
+ * cast. `depth24plus_stencil8` is the exception: it maps to
+ * MTLPixelFormatDepth24Unorm_Stencil8, an *optional* Metal format
+ * (gated by `isDepth24Stencil8PixelFormatSupported`) that most Apple
+ * Silicon / paravirtualized devices don't support. Per WebGPU semantics,
+ * "depth24plus" only promises *at least* 24 bits of depth, so on devices
+ * without the optional format we substitute the always-supported
+ * Depth32Float_Stencil8 instead of handing Metal an unusable format.
+ */
+inline MTL::PixelFormat toMTLPixelFormat(MTL::Device *device, PixelFormat format) {
+    if (format == PixelFormat::depth24plus_stencil8 &&
+        device && !device->depth24Stencil8PixelFormatSupported()) {
+        return MTL::PixelFormatDepth32Float_Stencil8;
+    }
+    return (MTL::PixelFormat)format;
+}
 
 } // namespace systems::leal::campello_gpu

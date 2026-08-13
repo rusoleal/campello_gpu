@@ -80,6 +80,20 @@ static BeginRenderPassDescriptor makeColorPassDesc(
     return desc;
 }
 
+// makeColorPassDesc()'s clear color has components that land exactly on an
+// 8-bit quantization boundary (0.1 * 255 = 25.5, 0.3 * 255 = 76.5), so the
+// GPU/driver's float->unorm8 rounding-mode choice at that midpoint (round up
+// vs round down) is implementation-defined -- e.g. the virtualized "Apple
+// Paravirtual device" used by CI runners rounds up while other GPUs round
+// down. Tolerate a 1-ULP difference on those channels rather than asserting
+// exact byte equality.
+static void expectClearedPixel(uint8_t r, uint8_t g, uint8_t b, uint8_t a, uint32_t px) {
+    EXPECT_NEAR(r, 25, 1)  << "pixel " << px;
+    EXPECT_EQ(g, 51)       << "pixel " << px;
+    EXPECT_NEAR(b, 76, 1)  << "pixel " << px;
+    EXPECT_EQ(a, 255)      << "pixel " << px;
+}
+
 // ---------------------------------------------------------------------------
 // beginRenderPass
 // ---------------------------------------------------------------------------
@@ -419,10 +433,8 @@ TEST(RenderPassEncoder, ClearingNonZeroArrayLayerProducesCorrectContent) {
     // transitioned into COLOR_ATTACHMENT_OPTIMAL for the clear and this
     // readback would not reliably show the cleared color.
     for (uint32_t px = 0; px < W * H; ++px) {
-        ASSERT_EQ(readback[px * 4 + 0], 25)  << "pixel " << px;
-        ASSERT_EQ(readback[px * 4 + 1], 51)  << "pixel " << px;
-        ASSERT_EQ(readback[px * 4 + 2], 76)  << "pixel " << px;
-        ASSERT_EQ(readback[px * 4 + 3], 255) << "pixel " << px;
+        expectClearedPixel(readback[px * 4 + 0], readback[px * 4 + 1],
+                            readback[px * 4 + 2], readback[px * 4 + 3], px);
     }
 }
 
@@ -468,10 +480,8 @@ TEST(RenderPassEncoder, ClearingNonZeroMipLevelProducesCorrectContent) {
     // Same rationale as ClearingNonZeroArrayLayerProducesCorrectContent, but
     // for a non-zero mip level rather than a non-zero array layer.
     for (uint32_t px = 0; px < MIP1_W * MIP1_H; ++px) {
-        ASSERT_EQ(readback[px * 4 + 0], 25)  << "pixel " << px;
-        ASSERT_EQ(readback[px * 4 + 1], 51)  << "pixel " << px;
-        ASSERT_EQ(readback[px * 4 + 2], 76)  << "pixel " << px;
-        ASSERT_EQ(readback[px * 4 + 3], 255) << "pixel " << px;
+        expectClearedPixel(readback[px * 4 + 0], readback[px * 4 + 1],
+                            readback[px * 4 + 2], readback[px * 4 + 3], px);
     }
 }
 

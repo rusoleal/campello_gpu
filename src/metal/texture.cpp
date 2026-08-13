@@ -179,11 +179,14 @@ std::shared_ptr<TextureView> Texture::createView(
     uint32_t resolvedMipCount = (mipLevelCount == static_cast<uint32_t>(-1))
                                   ? (tex->mipmapLevelCount() - baseMipLevel)
                                   : mipLevelCount;
+    uint32_t resolvedArrayLayerCount = (arrayLayerCount == static_cast<uint32_t>(-1))
+                                  ? (tex->arrayLength() - baseArrayLayer)
+                                  : arrayLayerCount;
     NS::Range mipRange   = NS::Range::Make(baseMipLevel, resolvedMipCount);
-    NS::Range sliceRange = NS::Range::Make(baseArrayLayer, arrayLayerCount > 0 ? arrayLayerCount : 1);
+    NS::Range sliceRange = NS::Range::Make(baseArrayLayer, resolvedArrayLayerCount);
 
     auto *view = tex->newTextureView(
-        (MTL::PixelFormat)format, mtlType, mipRange, sliceRange);
+        toMTLPixelFormat(tex->device(), format), mtlType, mipRange, sliceRange);
     if (!view) return nullptr;
     return std::shared_ptr<TextureView>(new TextureView(view));
 }
