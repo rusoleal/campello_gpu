@@ -6,6 +6,7 @@
 add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
+    src/pi/validation_diagnostics.cpp
     src/metal/adapter.cpp
     src/metal/bind_group.cpp
     src/metal/bind_group_layout.cpp
