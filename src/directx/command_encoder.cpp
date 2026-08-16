@@ -370,14 +370,40 @@ static bool initMipmapGenResources(DeviceData* d) {
         }
     )";
 
+    // dstSize (root constants, register b0) carries the DESTINATION mip's
+    // pixel dimensions for the draw currently in flight — computing the
+    // sample UV from this instead of Texture2D::GetDimensions() on
+    // srcTexture. GetDimensions() (no explicit mip argument) previously
+    // seemed like the obvious source for "this mip level's size", but
+    // whether it's relative to the SRV's own view (MostDetailedMip-shifted,
+    // i.e. correctly returning the SOURCE mip's actual size) or the
+    // underlying resource's absolute mip 0 is exactly the kind of
+    // API-semantics/compiler-target ambiguity worth not depending on here —
+    // this shader targets ps_5_0 via the legacy FXC compiler (D3DCompile),
+    // a different compiler and shader model entirely from the rest of this
+    // codebase's ps_6_0/DXC shaders, so its exact behavior isn't verified
+    // against the same assumptions. If it silently returned the resource's
+    // full mip-0 size regardless of MostDetailedMip, only the FIRST
+    // downsample step in a chain would happen to compute the right UV
+    // scale (by coincidence, since dst == srcSize*0.5 there); every
+    // subsequent step would then sample a shrinking corner of the source
+    // instead of its full extent, producing degenerate (not properly
+    // blurred) mip content beyond mip 1 — exactly matching a report that
+    // KHR_materials_transmission's roughness-based background blur never
+    // shows on DirectX despite the mip chain otherwise generating without
+    // error. Passing the known-correct destination size directly removes
+    // the ambiguity instead of trying to prove which interpretation FXC
+    // actually implements.
     const char* psCode = R"(
         Texture2D srcTexture : register(t0);
         SamplerState srcSampler : register(s0);
+        cbuffer DstSize : register(b0) {
+            float2 dstSize;
+            float2 _dstSizePad;
+        };
 
         float4 PSMain(float4 pos : SV_Position) : SV_Target0 {
-            uint2 srcSize;
-            srcTexture.GetDimensions(srcSize.x, srcSize.y);
-            float2 uv = pos.xy / (srcSize * 0.5);
+            float2 uv = pos.xy / dstSize;
             return srcTexture.Sample(srcSampler, uv);
         }
     )";
@@ -406,8 +432,10 @@ static bool initMipmapGenResources(DeviceData* d) {
     d->mipmapVS = vsBlob;
     d->mipmapPS = psBlob;
 
-    // Create root signature: one descriptor table for SRV, one for sampler
-    D3D12_ROOT_PARAMETER1 params[2] = {};
+    // Create root signature: one descriptor table for SRV, one for sampler,
+    // one inline root-constant pair for the destination mip's pixel size
+    // (see DstSize's doc comment in psCode above).
+    D3D12_ROOT_PARAMETER1 params[3] = {};
     D3D12_DESCRIPTOR_RANGE1 srvRange = {};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRange.NumDescriptors = 1;
@@ -434,9 +462,15 @@ static bool initMipmapGenResources(DeviceData* d) {
     params[1].DescriptorTable.pDescriptorRanges = &sampRange;
     params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
+    params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    params[2].Constants.ShaderRegister = 0;
+    params[2].Constants.RegisterSpace  = 0;
+    params[2].Constants.Num32BitValues = 4; // matches DstSize's float2 + pad(float2)
+    params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    rsDesc.Desc_1_1.NumParameters = 2;
+    rsDesc.Desc_1_1.NumParameters = 3;
     rsDesc.Desc_1_1.pParameters = params;
     rsDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -578,10 +612,32 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         // Allocate temporary descriptors. Capture the index explicitly
         // rather than assuming srvOffset - 1 — allocSrvIndex() may now
         // return a reused slot from srvFreeSlots instead of a fresh one.
+        // Both are freed at the end of this iteration (see the matching
+        // freeSrvSlots()/freeRtvExtraSlots() calls below) — this used to
+        // leak one of each per mip level, forever, for every texture ever
+        // mipmapped (allocRtvExtra()'s own doc comment even said as much:
+        // "where the caller doesn't wrap the allocation ... to free it ...
+        // later"). Harmless for a handful of textures, but a real model
+        // with many high-resolution textures (confirmed via cdb.exe:
+        // loading a complex second glTF model after a simple first one)
+        // permanently exhausted the 1024-slot rtvExtraHeap and hit the
+        // same debug-layer fail-fast RaiseException(STATUS_FATAL_APP_EXIT)
+        // pattern as the DSV/sampler heap exhaustion bugs — this is why
+        // allocRtvExtraIndex()/rtvExtraCpuAt() are used directly here
+        // instead of the allocRtvExtra() convenience wrapper, which
+        // deliberately doesn't expose an index to free later.
         UINT srvIdx = d->allocSrvIndex();
         D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = d->srvCpuAt(srvIdx);
         D3D12_GPU_DESCRIPTOR_HANDLE srvGpu = d->srvGpuAt(srvIdx);
-        D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = d->allocRtvExtra();
+        UINT rtvExtraIdx = d->allocRtvExtraIndex();
+        if (rtvExtraIdx == static_cast<UINT>(-1)) {
+            // rtvExtraHeap exhausted — skip this mip level rather than
+            // writing an RTV past the heap's backing storage. Free the SRV
+            // slot already reserved above so this doesn't also leak it.
+            d->freeSrvSlots({ srvIdx });
+            continue;
+        }
+        D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = d->rtvExtraCpuAt(rtvExtraIdx);
 
         // Create SRV for source mip
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -605,6 +661,8 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         h->cmdList->SetDescriptorHeaps(2, heaps);
         h->cmdList->SetGraphicsRootDescriptorTable(0, srvGpu);
         h->cmdList->SetGraphicsRootDescriptorTable(1, samplerGpu);
+        float dstSizeConsts[4] = { static_cast<float>(dstW), static_cast<float>(dstH), 0.0f, 0.0f };
+        h->cmdList->SetGraphicsRoot32BitConstants(2, 4, dstSizeConsts, 0);
 
         D3D12_VIEWPORT vp = {};
         vp.Width = static_cast<float>(dstW);
@@ -645,6 +703,16 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         restoreBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         restoreBarriers[1].Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
         h->cmdList->ResourceBarrier(2, restoreBarriers);
+
+        // Deferred free is safe even though the GPU hasn't executed this
+        // command list yet — freeSrvSlots()/freeRtvExtraSlots() only queue
+        // the slot into this generation's pending list; actual reuse is
+        // held back until beginFrameRing() confirms this generation's own
+        // fence has signaled, by which point the DrawInstanced() above has
+        // long finished reading these descriptors. Same pattern
+        // BindGroup::~BindGroup() already relies on.
+        d->freeSrvSlots({ srvIdx });
+        d->freeRtvExtraSlots({ rtvExtraIdx });
     }
 
     // Every subresource this loop touched (0 through mipLevels-1) ends at
@@ -653,6 +721,13 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
     // transition it starting from the stale pre-generateMipmaps() state,
     // hitting the same before-state-mismatch this function itself just had.
     tex->currentState = D3D12_RESOURCE_STATE_COMMON;
+
+    // Same deferred-free reasoning as the per-mip srvIdx/rtvExtraIdx above
+    // — this sampler slot was also never freed before, leaking one entry
+    // per generateMipmaps() call (smaller than the per-mip leak, but the
+    // shader-visible sampler heap is far scarcer — 2048 hard ceiling vs.
+    // srvHeap's 65536 — so still worth closing).
+    d->freeSamplerSlots({ samplerIdx });
     return true;
 }
 

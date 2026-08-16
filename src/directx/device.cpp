@@ -264,12 +264,13 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
-    // Sampler heap — 128 shader-visible. Holds only per-BindGroup contiguous
+    // Sampler heap — DeviceData::kSamplerHeapCapacity (2048, D3D12's hard
+    // ceiling) shader-visible slots. Holds only per-BindGroup contiguous
     // copies (see DeviceData::samplerHeap's doc comment) — Sampler objects'
     // own canonical descriptors live in samplerStagingHeap below.
     {
         D3D12_DESCRIPTOR_HEAP_DESC hd = {};
-        hd.NumDescriptors = 128;
+        hd.NumDescriptors = DeviceData::kSamplerHeapCapacity;
         hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&data->samplerHeap));
@@ -300,10 +301,10 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     }
 
-    // DSV heap (CPU-only, 32 slots)
+    // DSV heap (CPU-only, DeviceData::kDsvHeapCapacity slots)
     {
         D3D12_DESCRIPTOR_HEAP_DESC hd = {};
-        hd.NumDescriptors = 32;
+        hd.NumDescriptors = DeviceData::kDsvHeapCapacity;
         hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&data->dsvHeap));
@@ -1022,7 +1023,16 @@ std::shared_ptr<Texture> Device::createTexture(
     // Pre-create the RTV/DSV if this texture is a render target
     if (u & static_cast<int>(TextureUsage::renderTarget)) {
         if (isDepthFormat(pixelFormat)) {
-            handle->dsvHandle = d->allocDsv();
+            handle->dsvIndex = d->allocDsvIndex();
+            if (handle->dsvIndex == static_cast<UINT>(-1)) {
+                // dsvHeap exhausted (see allocDsvIndex()'s doc comment) —
+                // fail the texture creation instead of writing a DSV past
+                // the heap's backing storage.
+                delete handle;
+                resource->Release();
+                return nullptr;
+            }
+            handle->dsvHandle = d->dsvCpuAt(handle->dsvIndex);
             dev->CreateDepthStencilView(resource, nullptr, handle->dsvHandle);
         } else {
             handle->rtvExtraIndex = d->allocRtvExtraIndex();
@@ -1458,6 +1468,20 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
     // required (the root signature's sampler descriptor table).
     bool haveSampler   = samplerCount > 0;
     UINT baseSamplerIdx = haveSampler ? d->allocSamplerIndexRange(samplerCount) : 0;
+    if (haveSampler && baseSamplerIdx == static_cast<UINT>(-1)) {
+        // samplerHeap exhausted (see allocSamplerIndexRange()'s doc
+        // comment) — fail the bind group instead of writing sampler
+        // descriptors past the heap's backing storage. Free the SRV range
+        // already reserved above so this doesn't also leak it.
+        if (haveSrv) {
+            std::vector<UINT> range;
+            range.reserve(nonSamplerCount);
+            for (UINT i = 0; i < nonSamplerCount; ++i) range.push_back(baseIdx + i);
+            d->freeSrvSlots(range);
+        }
+        delete h;
+        return nullptr;
+    }
     UINT nextSamplerIdx = baseSamplerIdx;
 
     for (const auto& entry : descriptor.entries) {
@@ -1638,6 +1662,11 @@ std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor& descr
 std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
+
+    // Must run before anything below references renderTargets[frameIndex]
+    // (the PRESENT->RENDER_TARGET barrier a few lines down) — see
+    // DeviceData::ensureSwapchainSize()'s doc comment.
+    d->ensureSwapchainSize();
 
     // Frame-in-flight ring rotation — see DeviceData::beginFrameRing()'s
     // doc comment for the full design/correctness rationale. Must run
@@ -1895,35 +1924,7 @@ std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     auto* d = static_cast<DeviceData*>(native);
     if (!d->swapChain || !d->rtvHeap) return nullptr;
 
-    // Lazily resize the swapchain if the window dimensions have changed.
-    if (d->hwnd) {
-        RECT rect = {};
-        GetClientRect(d->hwnd, &rect);
-        UINT w = std::max<UINT>(rect.right  - rect.left, 1u);
-        UINT h = std::max<UINT>(rect.bottom - rect.top,  1u);
-
-        DXGI_SWAP_CHAIN_DESC1 desc = {};
-        d->swapChain->GetDesc1(&desc);
-
-        if (w != desc.Width || h != desc.Height) {
-            d->waitForGpu();
-            for (UINT i = 0; i < DeviceData::kFrameCount; ++i) {
-                if (d->renderTargets[i]) {
-                    d->renderTargets[i]->Release();
-                    d->renderTargets[i] = nullptr;
-                }
-            }
-            if (SUCCEEDED(d->swapChain->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0))) {
-                D3D12_CPU_DESCRIPTOR_HANDLE rtvH = d->rtvHeap->GetCPUDescriptorHandleForHeapStart();
-                for (UINT i = 0; i < DeviceData::kFrameCount; ++i) {
-                    d->swapChain->GetBuffer(i, IID_PPV_ARGS(&d->renderTargets[i]));
-                    d->device->CreateRenderTargetView(d->renderTargets[i], nullptr, rtvH);
-                    rtvH.ptr += d->rtvDescSize;
-                }
-                d->frameIndex = d->swapChain->GetCurrentBackBufferIndex();
-            }
-        }
-    }
+    d->ensureSwapchainSize();
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvH = d->rtvHeap->GetCPUDescriptorHandleForHeapStart();
     rtvH.ptr += d->frameIndex * d->rtvDescSize;

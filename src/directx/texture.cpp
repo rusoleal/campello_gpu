@@ -28,6 +28,8 @@ Texture::~Texture() {
 
         if (h->rtvExtraIndex != static_cast<UINT>(-1))
             h->deviceData->freeRtvExtraSlots({ h->rtvExtraIndex });
+        if (h->dsvIndex != static_cast<UINT>(-1))
+            h->deviceData->freeDsvSlots({ h->dsvIndex });
     }
 
     if (h->resource) h->resource->Release();

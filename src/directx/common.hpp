@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
+#include <algorithm>
 #include <array>
 #include <vector>
 #include <set>
@@ -36,6 +37,57 @@ struct DeviceData {
     ID3D12DescriptorHeap*   rtvHeap           = nullptr;   // swapchain RTVs
     UINT                    rtvDescSize       = 0;
     UINT                    frameIndex        = 0;
+
+    // Resizes the swapchain buffers to match the window's current client
+    // rect, if they've drifted out of sync (e.g. after the app resized the
+    // window) — must run before anything in the new frame references
+    // renderTargets[frameIndex], i.e. at the very top of
+    // Device::createCommandEncoder(), BEFORE it records that frame's
+    // PRESENT->RENDER_TARGET barrier against that pointer. Previously this
+    // logic only lived inside Device::getSwapchainTextureView(), which
+    // nothing on Windows actually calls (CommandEncoder::beginRenderPass()
+    // acquires the current backbuffer directly by index instead — see its
+    // null-colorAttachment-view handling) — so the swapchain buffers were
+    // simply never resized. Once beginRenderPass() started actually binding
+    // and drawing into the backbuffer, a real window resize left the
+    // depth buffer (recreated fresh every resize by campello_renderer's
+    // Renderer::resize()) and the color backbuffer (still the OLD size) as
+    // mismatched render-pass attachments, corrupting draw-call/barrier
+    // state and crashing with STATUS_ACCESS_VIOLATION inside this DLL.
+    void ensureSwapchainSize() {
+        if (!swapChain || !hwnd) return;
+
+        RECT rect = {};
+        GetClientRect(hwnd, &rect);
+        UINT w = std::max<UINT>(rect.right  - rect.left, 1u);
+        UINT h = std::max<UINT>(rect.bottom - rect.top,  1u);
+
+        DXGI_SWAP_CHAIN_DESC1 desc = {};
+        swapChain->GetDesc1(&desc);
+        if (w == desc.Width && h == desc.Height) return;
+
+        // ResizeBuffers requires every buffer to be free of GPU references
+        // and released first — the frame-in-flight ring's own per-slot
+        // fence waits aren't enough (all kFrameCount backbuffers must be
+        // free, not just the ring slot about to be reused), so this needs
+        // a full GPU idle wait.
+        waitForGpu();
+        for (UINT i = 0; i < kFrameCount; ++i) {
+            if (renderTargets[i]) {
+                renderTargets[i]->Release();
+                renderTargets[i] = nullptr;
+            }
+        }
+        if (SUCCEEDED(swapChain->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0))) {
+            D3D12_CPU_DESCRIPTOR_HANDLE rtvH = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+            for (UINT i = 0; i < kFrameCount; ++i) {
+                swapChain->GetBuffer(i, IID_PPV_ARGS(&renderTargets[i]));
+                device->CreateRenderTargetView(renderTargets[i], nullptr, rtvH);
+                rtvH.ptr += rtvDescSize;
+            }
+            frameIndex = swapChain->GetCurrentBackBufferIndex();
+        }
+    }
 
     // Frame-in-flight ring. Tied explicitly to kFrameCount (rather than an
     // independent constant) since there's no benefit to pipelining deeper
@@ -86,6 +138,23 @@ struct DeviceData {
     // see samplerStagingHeap's doc comment — this heap only ever holds
     // per-BindGroup contiguous copies, allocated via allocSamplerIndexRange()
     // exactly like srvHeap holds per-BindGroup SRV/CBV copies.
+    //
+    // kSamplerHeapCapacity is D3D12's hard ceiling for a shader-visible
+    // sampler heap (D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE — unlike
+    // srvHeap's CBV_SRV_UAV type, which has no such hardware-imposed limit,
+    // hence its far larger 65536). Originally sized 128, which sufficed for
+    // toy scenes but not real ones: campello_renderer rebuilds ALL of a
+    // scene's combined per-material BindGroups fresh every render() call
+    // (see its own doc comment on why — no cross-frame caching), each with
+    // up to 8 sampler entries, so a model with 16+ materials already needed
+    // more than 128 slots live at once (recycling only happens once the GPU
+    // confirms a PAST frame's slots are free, not within the frame that's
+    // still allocating them). Confirmed via cdb.exe reproducing a real
+    // "load a second, more complex model" scenario: "D3D12 ERROR:
+    // ID3D12Device::CopyDescriptorsSimple: ... does not refer to a location
+    // in a descriptor heap. DestDescriptorRangeStart is the issue" followed
+    // by the debug layer's usual fail-fast RaiseException(STATUS_FATAL_APP_EXIT).
+    static constexpr UINT   kSamplerHeapCapacity = 2048;
     ID3D12DescriptorHeap*   samplerHeap       = nullptr;
     UINT                    samplerDescSize   = 0;
     UINT                    samplerOffset     = 0;
@@ -116,7 +185,10 @@ struct DeviceData {
     UINT                    rtvExtraDescSize  = 0;
     UINT                    rtvExtraOffset    = 0;
 
-    // CPU-only DSV heap
+    // CPU-only DSV heap. kDsvHeapCapacity's doc comment on allocDsvIndex()
+    // explains why this needs bounds-checking + reclamation, not just a
+    // bump allocator.
+    static constexpr UINT   kDsvHeapCapacity  = 256;
     ID3D12DescriptorHeap*   dsvHeap           = nullptr;
     UINT                    dsvDescSize       = 0;
     UINT                    dsvOffset         = 0;
@@ -331,6 +403,13 @@ struct DeviceData {
     // BindGroup's sampler entries — mirrors allocSrvIndexRange() exactly;
     // see its doc comment for why contiguity is required (the root
     // signature's sampler descriptor table range layout).
+    // Returns UINT(-1) if the heap is exhausted (kSamplerHeapCapacity)
+    // rather than handing out an index samplerCpuAt() would compute a CPU
+    // handle past the heap's actual backing storage for — see
+    // allocRtvExtraIndex()'s doc comment for why that distinction matters
+    // (a real CopyDescriptorsSimple/CreateSampler call at such a handle
+    // corrupts adjacent memory or hits driver-dependent undefined behavior,
+    // instead of failing cleanly).
     UINT allocSamplerIndexRange(UINT count) {
         std::lock_guard<std::mutex> lock(samplerMutex);
         if (count == 0) return samplerOffset;
@@ -341,6 +420,7 @@ struct DeviceData {
                 samplerFreeSlots.erase(it);
                 return idx;
             }
+            if (samplerOffset >= kSamplerHeapCapacity) return static_cast<UINT>(-1);
             return samplerOffset++;
         }
         if (samplerFreeSlots.size() >= count) {
@@ -361,6 +441,7 @@ struct DeviceData {
                 }
             }
         }
+        if (samplerOffset + count > kSamplerHeapCapacity) return static_cast<UINT>(-1);
         UINT base = samplerOffset;
         samplerOffset += count;
         return base;
@@ -470,11 +551,68 @@ struct DeviceData {
         return rtvExtraCpuAt(allocRtvExtraIndex());
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE allocDsv() {
+    // dsvHeap slot reclamation — mirrors rtvExtraFreeSlots/
+    // rtvExtraPendingFreeSlots exactly (same generation-partitioned
+    // deferred-free rationale; see that block's doc comment). Before this,
+    // allocDsv() only ever incremented dsvOffset against a 32-slot heap —
+    // fatal for any caller that recreates its depth buffer often, e.g.
+    // campello_renderer's Renderer::resize() creates a brand-new depth
+    // Texture (and thus a brand-new DSV) on every single resize event with
+    // no rate-limiting or debouncing — a few dozen WM_SIZE ticks from one
+    // continued mouse-drag resize exhausts 32 slots almost immediately.
+    // Confirmed via cdb.exe catching what looked like an untraceable,
+    // instant, dialog-less process disappearance during resize (no WER
+    // report, no TDR): "D3D12 ERROR: ID3D12Device::CreateDepthStencilView:
+    // Specified CPU descriptor handle ... does not refer to a location in a
+    // descriptor heap" immediately followed by the debug layer
+    // fail-fast-terminating the process via RaiseException(STATUS_FATAL_APP_EXIT)
+    // — a deliberate hard exit for a validation error this severe, which is
+    // why it never showed up as a normal AppCrash/WER report.
+    std::mutex        dsvMutex;
+    std::vector<UINT> dsvFreeSlots;
+    std::array<std::vector<UINT>, kFramesInFlight> dsvPendingFreeSlots;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvCpuAt(UINT idx) const {
         D3D12_CPU_DESCRIPTOR_HANDLE h = dsvHeap->GetCPUDescriptorHandleForHeapStart();
-        h.ptr += dsvOffset * dsvDescSize;
-        ++dsvOffset;
+        h.ptr += idx * dsvDescSize;
         return h;
+    }
+
+    // Thread-safe — mirrors allocRtvExtraIndex(). Returns UINT(-1) if the
+    // heap is exhausted (kDsvHeapCapacity) rather than handing out an index
+    // dsvCpuAt() would compute a CPU handle past the heap's actual backing
+    // storage for — see allocRtvExtraIndex()'s doc comment for why that
+    // matters (silent memory corruption vs. a clean allocation failure).
+    UINT allocDsvIndex() {
+        std::lock_guard<std::mutex> lock(dsvMutex);
+        if (!dsvFreeSlots.empty()) {
+            UINT idx = dsvFreeSlots.back();
+            dsvFreeSlots.pop_back();
+            return idx;
+        }
+        if (dsvOffset >= kDsvHeapCapacity) return static_cast<UINT>(-1);
+        return dsvOffset++;
+    }
+
+    // Thread-safe — mirrors freeRtvExtraSlots(). Attributes the free to
+    // whichever generation is "current" right now — see currentFrameGen's
+    // doc comment.
+    void freeDsvSlots(const std::vector<UINT>& indices) {
+        if (indices.empty()) return;
+        std::lock_guard<std::mutex> lock(dsvMutex);
+        auto& pending = dsvPendingFreeSlots[currentFrameGen.load()];
+        pending.insert(pending.end(), indices.begin(), indices.end());
+    }
+
+    // Thread-safe — mirrors recycleRtvExtraSlots(gen). Called from
+    // beginFrameRing() once generation `gen`'s own fence is confirmed
+    // signaled.
+    void recycleDsvSlots(UINT gen) {
+        std::lock_guard<std::mutex> lock(dsvMutex);
+        auto& pending = dsvPendingFreeSlots[gen];
+        if (pending.empty()) return;
+        dsvFreeSlots.insert(dsvFreeSlots.end(), pending.begin(), pending.end());
+        pending.clear();
     }
 
     // Cached command signatures for indirect draw/dispatch (created on first use).
@@ -651,6 +789,7 @@ struct DeviceData {
         recycleSrvSlots(nextGen);
         recycleRtvExtraSlots(nextGen);
         recycleSamplerSlots(nextGen);
+        recycleDsvSlots(nextGen);
         currentFrameGen.store(nextGen);
         return nextGen;
     }
@@ -692,8 +831,12 @@ struct TextureHandle {
     // rtvExtraHeap slot index backing rtvHandle above, so Texture::~Texture()
     // can free it via DeviceData::freeRtvExtraSlots() — sentinel (-1) means
     // this texture was never allocated a rtvExtraHeap slot (not a render
-    // target, or a depth format using dsvHandle/allocDsv() instead).
+    // target, or a depth format using dsvHandle/dsvIndex instead).
     UINT rtvExtraIndex = static_cast<UINT>(-1);
+    // dsvHeap slot index backing dsvHandle above, freed the same way via
+    // DeviceData::freeDsvSlots() — sentinel (-1) means no DSV slot was
+    // allocated (not a depth-format render target).
+    UINT dsvIndex = static_cast<UINT>(-1);
 
     // Current resource state (initialized in Device::createTexture() to
     // whatever InitialResourceState was passed to CreateCommittedResource,
