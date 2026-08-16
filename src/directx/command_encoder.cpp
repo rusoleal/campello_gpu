@@ -61,7 +61,34 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
     std::vector<TextureHandle*> colorAttachmentTextures;
 
     for (const auto& ca : descriptor.colorAttachments) {
-        if (!ca.view || !ca.view->native) continue;
+        if (!ca.view || !ca.view->native) {
+            // No explicit view means "render to the device's own swapchain"
+            // — campello_renderer's Renderer::render() (the no-arg overload)
+            // relies on this convention, matching Vulkan's beginRenderPass()
+            // (see its isSwapchain/hasExplicitView handling), which acquires
+            // and binds the swapchain image itself when colorAttachments[0]
+            // has no view. This backend previously just skipped the
+            // attachment entirely here — OMSetRenderTargets never included
+            // it and ClearRenderTargetView was never called on it — so nothing
+            // was ever drawn into the presented backbuffer even though
+            // createCommandEncoder() (see its own comment) already
+            // unconditionally transitions it PRESENT->RENDER_TARGET up front
+            // and submit()/finish() unconditionally transition it back and
+            // Present() it: a self-consistent but semantically empty cycle
+            // that produced a permanently black window with no D3D12
+            // validation complaints (the barriers were internally
+            // consistent, just bracketing zero actual rendering).
+            if (h->deviceData->swapChain && h->deviceData->rtvHeap) {
+                auto* dd = h->deviceData;
+                D3D12_CPU_DESCRIPTOR_HANDLE bbRtv = dd->rtvHeap->GetCPUDescriptorHandleForHeapStart();
+                bbRtv.ptr += dd->frameIndex * dd->rtvDescSize;
+                rtvHandles.push_back(bbRtv);
+                if (ca.loadOp == LoadOp::clear) {
+                    list->ClearRenderTargetView(bbRtv, ca.clearValue, 0, nullptr);
+                }
+            }
+            continue;
+        }
         auto* tvh = static_cast<TextureViewHandle*>(ca.view->native);
         rtvHandles.push_back(tvh->cpuHandle);
 
@@ -471,9 +498,14 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         d->renderPipelineCount++;
     }
 
-    // Create a temporary linear sampler
-    D3D12_CPU_DESCRIPTOR_HANDLE samplerCpu = d->allocSamplerCpu();
-    D3D12_GPU_DESCRIPTOR_HANDLE samplerGpu = d->samplerGpuAt(d->samplerOffset - 1);
+    // Create a temporary linear sampler directly in the shader-visible
+    // sampler heap (not routed through a Sampler/staging-heap round trip —
+    // this is a single, self-contained slot used once and freed below, not
+    // shared across a BindGroup's descriptor table, so no contiguity
+    // concerns beyond allocSamplerIndexRange(1)'s own free-list reuse).
+    UINT samplerIdx = d->allocSamplerIndexRange(1);
+    D3D12_CPU_DESCRIPTOR_HANDLE samplerCpu = d->samplerCpuAt(samplerIdx);
+    D3D12_GPU_DESCRIPTOR_HANDLE samplerGpu = d->samplerGpuAt(samplerIdx);
     D3D12_SAMPLER_DESC sampDesc = {};
     sampDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     sampDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;

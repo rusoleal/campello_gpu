@@ -264,7 +264,9 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
-    // Sampler heap — 128 shader-visible
+    // Sampler heap — 128 shader-visible. Holds only per-BindGroup contiguous
+    // copies (see DeviceData::samplerHeap's doc comment) — Sampler objects'
+    // own canonical descriptors live in samplerStagingHeap below.
     {
         D3D12_DESCRIPTOR_HEAP_DESC hd = {};
         hd.NumDescriptors = 128;
@@ -272,6 +274,18 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
         hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&data->samplerHeap));
         data->samplerDescSize = dev->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    }
+
+    // Non-shader-visible staging heap for each Sampler's canonical
+    // descriptor — see DeviceData::samplerStagingHeap's doc comment.
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+        hd.NumDescriptors = 2048;
+        hd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&data->samplerStagingHeap));
+        data->samplerStagingDescSize = dev->GetDescriptorHandleIncrementSize(
             D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
     }
 
@@ -924,10 +938,22 @@ std::shared_ptr<Texture> Device::createTexture(
     D3D12_HEAP_PROPERTIES hp = {};
     hp.Type = D3D12_HEAP_TYPE_DEFAULT;
 
+    // Cube textures always have exactly 6 array layers regardless of the
+    // `depth` argument — matches the Vulkan backend's contract (see
+    // Device::createTexture() in vulkan/device.cpp, which hardcodes
+    // arrayLayers=6 for ttCube and ignores `depth` entirely). Without this,
+    // campello_renderer's cube-texture call sites (which all pass depth=1,
+    // relying on that contract) created a DirectX resource with only 1
+    // array layer, so per-face uploads computed out-of-range subresource
+    // indices — confirmed via the D3D12 debug layer (GetCopyableFootprints/
+    // CopyTextureRegion "Subresource is too large") escalating to
+    // DXGI_ERROR_DEVICE_HUNG.
+    uint32_t resolvedDepth = (type == TextureType::ttCube) ? 6u : std::max(depth, 1u);
+
     D3D12_RESOURCE_DESC rd = {};
     rd.Width            = std::max(width, 1u);
     rd.Height           = std::max(height, 1u);
-    rd.DepthOrArraySize = static_cast<UINT16>(std::max(depth, 1u));
+    rd.DepthOrArraySize = static_cast<UINT16>(resolvedDepth);
     rd.MipLevels        = static_cast<UINT16>(std::max(mipLevels, 1u));
     rd.Format           = fmt;
     rd.SampleDesc.Count = std::max(samples, 1u);
@@ -986,7 +1012,7 @@ std::shared_ptr<Texture> Device::createTexture(
     handle->dimension      = type;
     handle->width          = width;
     handle->height         = height;
-    handle->depthOrLayers  = std::max(depth, 1u);
+    handle->depthOrLayers  = resolvedDepth;
     handle->mipLevels      = std::max(mipLevels, 1u);
     handle->sampleCount    = std::max(samples, 1u);
     handle->usage          = usageMode;
@@ -1018,7 +1044,7 @@ std::shared_ptr<Texture> Device::createTexture(
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Format                  = fmt;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        uint32_t layers = std::max(depth, 1u);
+        uint32_t layers = resolvedDepth;
         switch (type) {
             case TextureType::tt1d:
                 srvDesc.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE1D;
@@ -1029,6 +1055,20 @@ std::shared_ptr<Texture> Device::createTexture(
                 srvDesc.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE3D;
                 srvDesc.Texture3D.MostDetailedMip = 0;
                 srvDesc.Texture3D.MipLevels       = handle->mipLevels;
+                break;
+            case TextureType::ttCube:
+                srvDesc.ViewDimension                   = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                srvDesc.TextureCube.MostDetailedMip     = 0;
+                srvDesc.TextureCube.MipLevels           = handle->mipLevels;
+                srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+                break;
+            case TextureType::ttCubeArray:
+                srvDesc.ViewDimension                        = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+                srvDesc.TextureCubeArray.MostDetailedMip      = 0;
+                srvDesc.TextureCubeArray.MipLevels            = handle->mipLevels;
+                srvDesc.TextureCubeArray.First2DArrayFace     = 0;
+                srvDesc.TextureCubeArray.NumCubes             = layers / 6;
+                srvDesc.TextureCubeArray.ResourceMinLODClamp  = 0.0f;
                 break;
             default:
                 if (layers > 1) {
@@ -1084,7 +1124,7 @@ std::shared_ptr<Texture> Device::createTexture(
     }
     
     uint64_t texSize = 0;
-    uint32_t w = width, h = height, dep = std::max(depth, 1u);
+    uint32_t w = width, h = height, dep = resolvedDepth;
     for (uint32_t mip = 0; mip < mipLevels; mip++) {
         texSize += static_cast<uint64_t>(w) * h * dep * formatSize * samples;
         w = std::max(1u, w / 2);
@@ -1391,16 +1431,41 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
     auto* dev = d->device;
     h->deviceData = d;
 
-    bool firstSrv = true;
-    UINT baseIdx  = 0;
+    // Count non-sampler entries up front and reserve one contiguous run for
+    // all of them — see allocSrvIndexRange()'s doc comment for why this
+    // must be contiguous rather than N independent allocSrvIndex() calls.
+    UINT nonSamplerCount = 0;
+    UINT samplerCount    = 0;
+    for (const auto& entry : descriptor.entries) {
+        if (auto* bbPtr = std::get_if<BufferBinding>(&entry.resource)) {
+            if (bbPtr->buffer && bbPtr->buffer->native) ++nonSamplerCount;
+        } else if (auto* texPtr = std::get_if<std::shared_ptr<Texture>>(&entry.resource)) {
+            if (*texPtr && (*texPtr)->native) ++nonSamplerCount;
+        } else if (auto* asPtr = std::get_if<std::shared_ptr<AccelerationStructure>>(&entry.resource)) {
+            if (*asPtr && (*asPtr)->native) ++nonSamplerCount;
+        } else if (auto* sampPtr = std::get_if<std::shared_ptr<Sampler>>(&entry.resource)) {
+            if (*sampPtr && (*sampPtr)->native) ++samplerCount;
+        }
+    }
+
+    bool haveSrv  = nonSamplerCount > 0;
+    UINT baseIdx  = haveSrv ? d->allocSrvIndexRange(nonSamplerCount) : 0;
+    UINT nextIdx  = baseIdx;
+
+    // Reserve one contiguous run in the shader-visible sampler heap for all
+    // of this bind group's sampler entries — mirrors baseIdx/nextIdx above.
+    // See allocSamplerIndexRange()'s doc comment for why contiguity is
+    // required (the root signature's sampler descriptor table).
+    bool haveSampler   = samplerCount > 0;
+    UINT baseSamplerIdx = haveSampler ? d->allocSamplerIndexRange(samplerCount) : 0;
+    UINT nextSamplerIdx = baseSamplerIdx;
 
     for (const auto& entry : descriptor.entries) {
         if (auto* bbPtr = std::get_if<BufferBinding>(&entry.resource)) {
             auto& bb = *bbPtr;
             if (bb.buffer && bb.buffer->native) {
                 auto* bh = static_cast<BufferHandle*>(bb.buffer->native);
-                UINT idx = d->allocSrvIndex();
-                if (firstSrv) { baseIdx = idx; firstSrv = false; }
+                UINT idx = nextIdx++;
                 h->srvSlotIndices.push_back(idx);
                 D3D12_CPU_DESCRIPTOR_HANDLE dst = d->srvCpuAt(idx);
                 // Uniform buffers → CBV; others → raw SRV
@@ -1413,8 +1478,7 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
             auto& tex = *texPtr;
             if (tex && tex->native) {
                 auto* th = static_cast<TextureHandle*>(tex->native);
-                UINT idx = d->allocSrvIndex();
-                if (firstSrv) { baseIdx = idx; firstSrv = false; }
+                UINT idx = nextIdx++;
                 h->srvSlotIndices.push_back(idx);
                 D3D12_CPU_DESCRIPTOR_HANDLE dst = d->srvCpuAt(idx);
                 if (th->srvCpuHandle.ptr != 0)
@@ -1425,15 +1489,18 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
             auto& samp = *sampPtr;
             if (samp && samp->native) {
                 auto* sh = static_cast<SamplerHandle*>(samp->native);
-                if (sh->gpuHandle.ptr != 0)
-                    h->samplerHandle = sh->gpuHandle;
+                UINT idx = nextSamplerIdx++;
+                h->samplerSlotIndices.push_back(idx);
+                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->samplerCpuAt(idx);
+                if (sh->cpuHandle.ptr != 0)
+                    dev->CopyDescriptorsSimple(1, dst, sh->cpuHandle,
+                                               D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
             }
         } else if (auto* asPtr = std::get_if<std::shared_ptr<AccelerationStructure>>(&entry.resource)) {
             auto& as = *asPtr;
             if (as && as->native) {
                 auto* ash = static_cast<AccelerationStructureHandle*>(as->native);
-                UINT idx = d->allocSrvIndex();
-                if (firstSrv) { baseIdx = idx; firstSrv = false; }
+                UINT idx = nextIdx++;
                 h->srvSlotIndices.push_back(idx);
                 D3D12_CPU_DESCRIPTOR_HANDLE dst = d->srvCpuAt(idx);
                 D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -1445,8 +1512,10 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
         }
     }
 
-    if (!firstSrv)
+    if (haveSrv)
         h->gpuHandle = d->srvGpuAt(baseIdx);
+    if (haveSampler)
+        h->samplerHandle = d->samplerGpuAt(baseSamplerIdx);
 
     d->bindGroupCount++;
     return std::shared_ptr<BindGroup>(new BindGroup(h));
@@ -1515,14 +1584,11 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor& descript
     sd.MinLOD = static_cast<float>(descriptor.lodMinClamp);
     sd.MaxLOD = static_cast<float>(descriptor.lodMaxClamp);
 
-    UINT idx = d->samplerOffset;
-    D3D12_CPU_DESCRIPTOR_HANDLE cpu = d->allocSamplerCpu();
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = d->allocSamplerStagingCpu();
     dev->CreateSampler(&sd, cpu);
 
     auto* h      = new SamplerHandle();
     h->cpuHandle = cpu;
-    h->gpuHandle = d->samplerGpuAt(idx);
-    h->heapIndex = idx;
     d->samplerCount++;
     return std::shared_ptr<Sampler>(new Sampler(h));
 }
@@ -1692,6 +1758,12 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
 }
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
+    // encoder->finish() returns null if the encoder was already finished/
+    // invalid, or if ID3D12GraphicsCommandList::Close() failed — dereferencing
+    // that null here previously crashed with no indication of why; callers
+    // that don't check finish()'s result (every campello_renderer call site)
+    // now get a clean no-op instead.
+    if (!commandBuffer || !commandBuffer->native) return;
     auto* h  = static_cast<CommandBufferHandle*>(commandBuffer->native);
     auto* d  = h->deviceData;
 
@@ -1729,6 +1801,8 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
                     std::shared_ptr<Fence> signalFence) {
+    // See the single-argument overload's identical check above for why.
+    if (!commandBuffer || !commandBuffer->native) return;
     auto* h  = static_cast<CommandBufferHandle*>(commandBuffer->native);
     auto* d  = h->deviceData;
 
@@ -1746,6 +1820,37 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         ++fenceData->value;
         d->queue->Signal(fenceData->fence, fenceData->value);
     }
+
+    // Also signal the global device fence and record this ring slot's
+    // fence value/CommandBuffer — this overload used to skip this entirely,
+    // which broke the invariant CommandBuffer::~CommandBuffer()'s own doc
+    // comment documents as load-bearing ("this CommandBuffer is kept alive
+    // via DeviceData::genCommandBuffer[] until beginFrameRing() confirms its
+    // frame's fence has signaled ... which is what guarantees GPU work is
+    // complete by the time this destructor runs"). Every real caller in
+    // campello_renderer uses this two-argument overload exclusively (its own
+    // per-operation Fence is for the caller's own synchronous wait, e.g.
+    // buffer/texture uploads that call fence->wait() right after submit()),
+    // so genFenceValue[]/genCommandBuffer[] were never populated in practice:
+    // beginFrameRing()'s waitForFenceValue() then waited on a value that
+    // never advanced past 0 (trivially "already satisfied", i.e. no real
+    // wait at all), and — more importantly — commandBuffer here (the
+    // temporary shared_ptr<CommandBuffer> callers pass straight from
+    // encoder->finish()) dropped to a zero refcount and ran
+    // ~CommandBuffer() immediately after this function returns, Release()ing
+    // its ID3D12CommandAllocator/ID3D12GraphicsCommandList while the GPU
+    // could still be executing from them — confirmed via the D3D12 debug
+    // layer's "A command allocator ... is being reset before previous
+    // executions associated with the allocator have completed" warning, and
+    // a reproducible crash chasing from there into Device::submit()
+    // dereferencing a null CommandBuffer returned by a subsequent
+    // CommandEncoder::finish() whose ID3D12GraphicsCommandList::Close()
+    // failed on a corrupted list.
+    ++d->fenceValue;
+    d->queue->Signal(d->fence, d->fenceValue);
+    UINT gen = d->currentFrameGen.load();
+    d->genFenceValue[gen]    = d->fenceValue;
+    d->genCommandBuffer[gen] = std::move(commandBuffer);
 
 #ifdef _DEBUG
     // Best-effort: this overload doesn't block on waitForGpu(), so messages

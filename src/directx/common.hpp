@@ -6,6 +6,7 @@
 #include <d3dcompiler.h>
 #include <array>
 #include <vector>
+#include <set>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -81,10 +82,30 @@ struct DeviceData {
     UINT                    srvStagingDescSize = 0;
     UINT                    srvStagingOffset  = 0;
 
-    // Persistent shader-visible sampler heap
+    // Shader-visible sampler heap. NOT where Sampler objects live anymore —
+    // see samplerStagingHeap's doc comment — this heap only ever holds
+    // per-BindGroup contiguous copies, allocated via allocSamplerIndexRange()
+    // exactly like srvHeap holds per-BindGroup SRV/CBV copies.
     ID3D12DescriptorHeap*   samplerHeap       = nullptr;
     UINT                    samplerDescSize   = 0;
     UINT                    samplerOffset     = 0;
+
+    // Non-shader-visible staging heap for each Sampler's canonical
+    // descriptor — mirrors srvStagingHeap exactly (same CPU write-only/
+    // write-combined restriction on copying FROM a shader-visible heap
+    // applies to sampler heaps as it does to CBV/SRV/UAV heaps). Before this
+    // existed, createSampler() wrote directly into the shader-visible
+    // samplerHeap and createBindGroup() just grabbed whichever sampler's
+    // slot happened to be written last as the WHOLE table's base GPU
+    // handle — any BindGroup referencing 2+ distinct Sampler objects (e.g.
+    // campello_renderer's combined PBR material bind group, which has up to
+    // 8 sampler entries) read uninitialized/wrong descriptors for every
+    // range after the first. Confirmed via the D3D12 debug layer:
+    // "Descriptor Range (at Range Index [N] of type
+    // D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER) has not been initialized."
+    ID3D12DescriptorHeap*   samplerStagingHeap      = nullptr;
+    UINT                    samplerStagingDescSize  = 0;
+    UINT                    samplerStagingOffset    = 0;
 
     // CPU-only RTV heap for user render targets (non-swapchain). See
     // kRtvExtraHeapCapacity's doc comment — allocRtvExtraIndex() bounds-checks
@@ -152,7 +173,16 @@ struct DeviceData {
     // debugging (reproducible but with wildly inconsistent timing, which is
     // the signature of a race rather than a deterministic resource leak).
     std::mutex              srvMutex;
-    std::vector<UINT>      srvFreeSlots;
+    // Sorted (not insertion-ordered like a vector) so allocSrvIndexRange()
+    // can scan for a run of N consecutive indices — needed because every
+    // campello_renderer DirectX BindGroup with 2+ non-sampler entries
+    // (IBL bake, skybox, the combined PBR material layout) requires its
+    // slots to land contiguously in srvHeap (see allocSrvIndexRange()'s doc
+    // comment), and campello_renderer rebuilds several of these every
+    // render() call — a plain LIFO free list can't find a contiguous run,
+    // so createBindGroup() used to bypass reuse for those entirely, which
+    // would exhaust srvHeap after enough frames.
+    std::set<UINT>          srvFreeSlots;
     std::array<std::vector<UINT>, kFramesInFlight> srvPendingFreeSlots;
 
     D3D12_CPU_DESCRIPTOR_HANDLE srvCpuAt(UINT idx) const {
@@ -167,11 +197,61 @@ struct DeviceData {
     UINT allocSrvIndex() {
         std::lock_guard<std::mutex> lock(srvMutex);
         if (!srvFreeSlots.empty()) {
-            UINT idx = srvFreeSlots.back();
-            srvFreeSlots.pop_back();
+            auto it = srvFreeSlots.begin();
+            UINT idx = *it;
+            srvFreeSlots.erase(it);
             return idx;
         }
         return srvOffset++;
+    }
+
+    // Allocates `count` CONTIGUOUS SRV heap slots, returning the base index.
+    // Required whenever a single BindGroup has 2+ non-sampler entries bound
+    // as one descriptor table: createBindGroupLayout()/
+    // createUniversalRootSignature() lay that table's ranges out
+    // contiguously and in descriptor.entries order, so the heap writes
+    // backing them must be contiguous too — allocSrvIndex() called
+    // repeatedly cannot guarantee that (its free-list reuse can hand back
+    // non-adjacent slots). Confirmed via the D3D12 debug layer misreporting
+    // descriptors after the first as uninitialized/wrong-dimension when this
+    // wasn't enforced. Prefers a contiguous run already in srvFreeSlots
+    // (the common case once a same-shaped BindGroup has been rebuilt once —
+    // see rebuildDirectXCombinedBindGroups()'s per-render() rebuilds)
+    // before falling back to bumping srvOffset, so this doesn't leak heap
+    // space the way always-bump-allocating would.
+    UINT allocSrvIndexRange(UINT count) {
+        std::lock_guard<std::mutex> lock(srvMutex);
+        if (count == 0) return srvOffset;
+        if (count == 1) {
+            if (!srvFreeSlots.empty()) {
+                auto it = srvFreeSlots.begin();
+                UINT idx = *it;
+                srvFreeSlots.erase(it);
+                return idx;
+            }
+            return srvOffset++;
+        }
+        if (srvFreeSlots.size() >= count) {
+            UINT runStart = 0, runLen = 0, prev = 0;
+            bool haveRun = false;
+            for (UINT v : srvFreeSlots) {
+                if (haveRun && v == prev + 1) {
+                    ++runLen;
+                } else {
+                    runStart = v;
+                    runLen = 1;
+                    haveRun = true;
+                }
+                prev = v;
+                if (runLen == count) {
+                    for (UINT i = 0; i < count; ++i) srvFreeSlots.erase(runStart + i);
+                    return runStart;
+                }
+            }
+        }
+        UINT base = srvOffset;
+        srvOffset += count;
+        return base;
     }
 
     // Thread-safe — see srvMutex's doc comment above. Attributes the free to
@@ -191,7 +271,7 @@ struct DeviceData {
         std::lock_guard<std::mutex> lock(srvMutex);
         auto& pending = srvPendingFreeSlots[gen];
         if (pending.empty()) return;
-        srvFreeSlots.insert(srvFreeSlots.end(), pending.begin(), pending.end());
+        for (UINT idx : pending) srvFreeSlots.insert(idx);
         pending.clear();
     }
 
@@ -214,10 +294,9 @@ struct DeviceData {
     }
     UINT srvCurrentIdx() const { return srvOffset == 0 ? 0 : srvOffset - 1; }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE allocSamplerCpu() {
+    D3D12_CPU_DESCRIPTOR_HANDLE samplerCpuAt(UINT idx) const {
         D3D12_CPU_DESCRIPTOR_HANDLE h = samplerHeap->GetCPUDescriptorHandleForHeapStart();
-        h.ptr += samplerOffset * samplerDescSize;
-        ++samplerOffset;
+        h.ptr += idx * samplerDescSize;
         return h;
     }
     D3D12_GPU_DESCRIPTOR_HANDLE samplerGpuAt(UINT idx) const {
@@ -225,7 +304,87 @@ struct DeviceData {
         h.ptr += idx * samplerDescSize;
         return h;
     }
-    UINT samplerCurrentIdx() const { return samplerOffset == 0 ? 0 : samplerOffset - 1; }
+
+    // Allocates one slot in the non-shader-visible sampler staging heap for
+    // a newly-created Sampler object's canonical descriptor. Persistent for
+    // the Sampler's lifetime — never reclaimed (mirrors the existing,
+    // pre-established persistent-resource pattern; Sampler objects are few
+    // and long-lived in practice, unlike per-BindGroup allocations below).
+    D3D12_CPU_DESCRIPTOR_HANDLE allocSamplerStagingCpu() {
+        D3D12_CPU_DESCRIPTOR_HANDLE h = samplerStagingHeap->GetCPUDescriptorHandleForHeapStart();
+        h.ptr += samplerStagingOffset * samplerStagingDescSize;
+        ++samplerStagingOffset;
+        return h;
+    }
+
+    // Thread-safe (see srvMutex's doc comment for why — the same
+    // background-thread-destruction concern applies here). Sorted for the
+    // same reason srvFreeSlots is: allocSamplerIndexRange() needs to scan
+    // for a run of N contiguous indices, since campello_renderer rebuilds
+    // combined-material BindGroups (with multiple distinct Sampler entries
+    // each) every render() call.
+    std::mutex        samplerMutex;
+    std::set<UINT>    samplerFreeSlots;
+    std::array<std::vector<UINT>, kFramesInFlight> samplerPendingFreeSlots;
+
+    // Allocates `count` CONTIGUOUS shader-visible sampler heap slots for one
+    // BindGroup's sampler entries — mirrors allocSrvIndexRange() exactly;
+    // see its doc comment for why contiguity is required (the root
+    // signature's sampler descriptor table range layout).
+    UINT allocSamplerIndexRange(UINT count) {
+        std::lock_guard<std::mutex> lock(samplerMutex);
+        if (count == 0) return samplerOffset;
+        if (count == 1) {
+            if (!samplerFreeSlots.empty()) {
+                auto it = samplerFreeSlots.begin();
+                UINT idx = *it;
+                samplerFreeSlots.erase(it);
+                return idx;
+            }
+            return samplerOffset++;
+        }
+        if (samplerFreeSlots.size() >= count) {
+            UINT runStart = 0, runLen = 0, prev = 0;
+            bool haveRun = false;
+            for (UINT v : samplerFreeSlots) {
+                if (haveRun && v == prev + 1) {
+                    ++runLen;
+                } else {
+                    runStart = v;
+                    runLen = 1;
+                    haveRun = true;
+                }
+                prev = v;
+                if (runLen == count) {
+                    for (UINT i = 0; i < count; ++i) samplerFreeSlots.erase(runStart + i);
+                    return runStart;
+                }
+            }
+        }
+        UINT base = samplerOffset;
+        samplerOffset += count;
+        return base;
+    }
+
+    // Thread-safe — mirrors freeSrvSlots(). See srvPendingFreeSlots' doc
+    // comment for why this can't recycle immediately.
+    void freeSamplerSlots(const std::vector<UINT>& indices) {
+        if (indices.empty()) return;
+        std::lock_guard<std::mutex> lock(samplerMutex);
+        auto& pending = samplerPendingFreeSlots[currentFrameGen.load()];
+        pending.insert(pending.end(), indices.begin(), indices.end());
+    }
+
+    // Thread-safe — mirrors recycleSrvSlots(gen). Called from
+    // beginFrameRing() once generation `gen`'s own fence is confirmed
+    // signaled.
+    void recycleSamplerSlots(UINT gen) {
+        std::lock_guard<std::mutex> lock(samplerMutex);
+        auto& pending = samplerPendingFreeSlots[gen];
+        if (pending.empty()) return;
+        for (UINT idx : pending) samplerFreeSlots.insert(idx);
+        pending.clear();
+    }
 
     // rtvExtraHeap slot reclamation — same rationale and lifecycle as
     // srvFreeSlots/srvPendingFreeSlots above, including the generation
@@ -491,6 +650,7 @@ struct DeviceData {
         waitForFenceValue(genFenceValue[nextGen]);
         recycleSrvSlots(nextGen);
         recycleRtvExtraSlots(nextGen);
+        recycleSamplerSlots(nextGen);
         currentFrameGen.store(nextGen);
         return nextGen;
     }
@@ -594,11 +754,14 @@ struct BindGroupHandle {
     D3D12_GPU_DESCRIPTOR_HANDLE samplerHandle = {};
 
     // srvHeap slot indices this bind group's non-sampler entries consumed
-    // (CBV/SRV/AS — samplers reuse the Sampler's own permanent slot, never
-    // allocate one here) — freed (deferred, via srvPendingFreeSlots) in
+    // (CBV/SRV/AS) — freed (deferred, via srvPendingFreeSlots) in
     // BindGroup::~BindGroup(). See DeviceData::srvPendingFreeSlots' doc
     // comment in common.hpp for why this can't be immediate.
     std::vector<UINT> srvSlotIndices;
+    // samplerHeap slot indices this bind group's sampler entries consumed —
+    // see allocSamplerIndexRange()'s doc comment. Freed the same way as
+    // srvSlotIndices.
+    std::vector<UINT> samplerSlotIndices;
     DeviceData*        deviceData = nullptr;
 };
 
@@ -607,9 +770,10 @@ struct PipelineLayoutHandle {
 };
 
 struct SamplerHandle {
+    // Canonical descriptor in samplerStagingHeap — copied into a
+    // per-BindGroup contiguous run of the shader-visible samplerHeap by
+    // createBindGroup(). See samplerStagingHeap's doc comment.
     D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
-    D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = {};
-    UINT                        heapIndex = 0;
 };
 
 struct QuerySetHandle {
