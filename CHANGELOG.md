@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.23.1] - 2026-08-17
+
 ### Fixed
 
 - **[Windows/DirectX] `Device::createTexture()` ignored the caller-supplied contract that `depth` is irrelevant for `TextureType::ttCube`** (the Vulkan backend hardcodes 6 array layers for cube textures regardless of `depth`, and every campello_renderer call site relies on that) — DirectX instead took `depth` literally, so a cube texture created with `depth=1` ended up with `DepthOrArraySize=1`. Per-face uploads then computed out-of-range subresource indices (`CalcSubresource` against a resource with far fewer subresources than the code assumed), which escalated to `DXGI_ERROR_DEVICE_HUNG` via the D3D12 debug layer's `GetCopyableFootprints`/`CopyTextureRegion` "Subresource is too large" errors. Also never special-cased `ttCube`/`ttCubeArray` in the SRV-creation switch, always falling into the generic Texture2D/Texture2DArray path and producing an SRV of the wrong `D3D12_SRV_DIMENSION`. Now hardcodes 6 array layers for `ttCube` (matching Vulkan) and emits `D3D12_SRV_DIMENSION_TEXTURECUBE`/`TEXTURECUBEARRAY` SRVs.
