@@ -70,6 +70,22 @@ if(NOT MSVC)
     set(CMAKE_EXE_LINKER_FLAGS_UBSAN
         "-fsanitize=undefined"
         CACHE STRING "Linker flags for UBSan builds" FORCE)
+
+    # TSan is mutually exclusive with ASan/LSan (both intercept the same
+    # allocator hooks) -- always use it as the sole -DCMAKE_BUILD_TYPE=TSAN
+    # profile, never combined with the flags above. Needed for a reliable
+    # verdict on data races (e.g. tests/platform/test_device_present_race.cpp):
+    # a plain run only *might* crash on a race, timing-dependent, but TSan's
+    # happens-before analysis flags unsynchronized access deterministically.
+    set(CMAKE_CXX_FLAGS_TSAN
+        "-fsanitize=thread -fno-omit-frame-pointer -O1 -g"
+        CACHE STRING "C++ flags for TSan builds" FORCE)
+    set(CMAKE_C_FLAGS_TSAN
+        "-fsanitize=thread -fno-omit-frame-pointer -O1 -g"
+        CACHE STRING "C flags for TSan builds" FORCE)
+    set(CMAKE_EXE_LINKER_FLAGS_TSAN
+        "-fsanitize=thread"
+        CACHE STRING "Linker flags for TSan builds" FORCE)
 endif()
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Android")

@@ -1,5 +1,6 @@
 #include "Metal.hpp"
 #include "render_pipeline_handle.hpp"
+#include <cmath>
 #include "bind_group_data.hpp"
 #include "buffer_handle.hpp"
 #include "texture_handle.hpp"
@@ -158,11 +159,23 @@ void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
 }
 
 void RenderPassEncoder::setScissorRect(float x, float y, float width, float height) {
+    // Round outward (floor the near edge, ceil the far edge) rather than
+    // truncating x/y and width/height independently. Truncating them
+    // separately only ever shrinks the right/bottom edge -- floor(x) can't
+    // lose coverage on the left, but floor(width) loses up to ~1px off the
+    // right on top of that, so thin content (e.g. a 1px border stroke)
+    // right at an ancestor's clip edge gets asymmetrically clipped away on
+    // the right/bottom while the left/top stays untouched.
+    NS::UInteger left   = (NS::UInteger)std::floor(x);
+    NS::UInteger top    = (NS::UInteger)std::floor(y);
+    NS::UInteger right  = (NS::UInteger)std::ceil(x + width);
+    NS::UInteger bottom = (NS::UInteger)std::ceil(y + height);
+
     MTL::ScissorRect rect;
-    rect.x      = (NS::UInteger)x;
-    rect.y      = (NS::UInteger)y;
-    rect.width  = (NS::UInteger)width;
-    rect.height = (NS::UInteger)height;
+    rect.x      = left;
+    rect.y      = top;
+    rect.width  = right - left;
+    rect.height = bottom - top;
     static_cast<MetalRenderEncoderData *>(native)->encoder->setScissorRect(rect);
 }
 

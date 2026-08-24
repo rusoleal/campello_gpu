@@ -85,7 +85,16 @@ struct MetalDeviceData {
 
     // Drawable scheduled via Device::scheduleNextPresent() — consumed on the
     // next Device::submit() call to attach presentDrawable: before commit().
-    void* pendingPresentDrawable = nullptr;
+    // Written from the raster thread (real per-frame drawable) AND from the
+    // UI thread (drawInMTKView:'s "buildFrame skipped" path calls
+    // scheduleNextPresent(nullptr) to avoid a dangling pointer) -- guard
+    // every read/release/retain/store of this field with
+    // pendingPresentDrawableMutex, or the two threads' unsynchronized
+    // read-release-retain-store sequences can double-release the same
+    // MTL::Drawable*, crashing later inside Metal's own presentDrawable:
+    // completion machinery when it touches the already-freed drawable.
+    void*      pendingPresentDrawable = nullptr;
+    std::mutex pendingPresentDrawableMutex;
 
     // Resource counters
     std::atomic<uint32_t> bufferCount{0};

@@ -917,11 +917,21 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     // the next vsync AFTER the GPU finishes, preventing "present before render"
     // artefacts.  The drawable was retained by scheduleNextPresent(), so release
     // it after attaching it to the command buffer.
-    if (deviceData->pendingPresentDrawable) {
-        auto *drawable = static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable);
-        cmdBuf->presentDrawable(drawable);
-        drawable->release();
-        deviceData->pendingPresentDrawable = nullptr;
+    //
+    // pendingPresentDrawableMutex guards this read-release-null sequence
+    // against a concurrent scheduleNextPresent() call from another thread
+    // (the UI thread calls scheduleNextPresent(nullptr) from drawInMTKView:
+    // whenever a frame is skipped) -- see the field's doc comment in
+    // common.hpp for why an unsynchronized race here double-releases the
+    // drawable.
+    {
+        std::lock_guard<std::mutex> lock(deviceData->pendingPresentDrawableMutex);
+        if (deviceData->pendingPresentDrawable) {
+            auto *drawable = static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable);
+            cmdBuf->presentDrawable(drawable);
+            drawable->release();
+            deviceData->pendingPresentDrawable = nullptr;
+        }
     }
 
     cmdBuf->commit();
@@ -934,11 +944,14 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     auto *cmdBuf     = static_cast<MTL::CommandBuffer *>(commandBuffer->native);
 
-    if (deviceData->pendingPresentDrawable) {
-        auto *drawable = static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable);
-        cmdBuf->presentDrawable(drawable);
-        drawable->release();
-        deviceData->pendingPresentDrawable = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(deviceData->pendingPresentDrawableMutex);
+        if (deviceData->pendingPresentDrawable) {
+            auto *drawable = static_cast<MTL::Drawable *>(deviceData->pendingPresentDrawable);
+            cmdBuf->presentDrawable(drawable);
+            drawable->release();
+            deviceData->pendingPresentDrawable = nullptr;
+        }
     }
 
     // Reset the fence before submitting so wait() blocks until *this*
@@ -983,6 +996,11 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
 void Device::scheduleNextPresent(void* nativeDrawable) {
     MetalAutoreleasePool pool;
     auto *deviceData = static_cast<MetalDeviceData *>(native);
+
+    // Called from both the raster thread (real per-frame drawable) and the
+    // UI thread (nullptr, from drawInMTKView:'s skipped-frame path) -- see
+    // pendingPresentDrawable's doc comment in common.hpp.
+    std::lock_guard<std::mutex> lock(deviceData->pendingPresentDrawableMutex);
 
     // Release any previously scheduled drawable that was not consumed.
     if (deviceData->pendingPresentDrawable) {

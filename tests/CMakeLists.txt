@@ -67,6 +67,13 @@ if(BUILD_INTEGRATION_TESTS)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         list(APPEND INTEGRATION_TEST_SOURCES platform/test_dmabuf.cpp)
     endif()
+    # test_device_present_race.cpp reaches into the internal metal-cpp
+    # headers (src/metal/Metal.hpp, src/metal/common.hpp) to build a real
+    # off-screen CAMetalDrawable -- Apple-only, matching its own #if
+    # defined(__APPLE__) guard.
+    if(APPLE)
+        list(APPEND INTEGRATION_TEST_SOURCES platform/test_device_present_race.cpp)
+    endif()
     add_executable(campello_gpu_integration_tests ${INTEGRATION_TEST_SOURCES})
     target_include_directories(campello_gpu_integration_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/inc
