@@ -627,6 +627,28 @@ namespace systems::leal::campello_gpu
         static std::shared_ptr<Device> createDefaultDevice(void *pd);
 
         /**
+         * @brief Creates a device on the system's default GPU adapter,
+         * presenting into a CoreWindow instead of an HWND.
+         *
+         * Windows/DirectX only — this method does not exist on other
+         * backends. Uses `CreateSwapChainForCoreWindow` instead of
+         * `CreateSwapChainForHwnd`, for platforms with no HWND (Microsoft
+         * GDK's Gaming.Desktop.x64 and, eventually, the Xbox console
+         * target — see TODO.md's Phase 4.5). `width`/`height` are supplied
+         * by the caller rather than queried back from the CoreWindow (it
+         * has no `GetClientRect`-equivalent Win32 call); pass the size the
+         * CoreWindow was created/resized to.
+         *
+         * @param coreWindow Platform window handle — an `IUnknown*`
+         *        (`ICoreWindow*`) on Windows/DirectX.
+         * @param width  Presentation surface width in pixels.
+         * @param height Presentation surface height in pixels.
+         * @return A new `Device`, or `nullptr` if no suitable adapter is found.
+         */
+        static std::shared_ptr<Device> createDefaultDeviceForCoreWindow(
+            void *coreWindow, uint32_t width, uint32_t height);
+
+        /**
          * @brief Creates a device on a specific adapter.
          *
          * @param adapter The adapter returned by `getAdapters()`.

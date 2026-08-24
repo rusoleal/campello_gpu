@@ -88,6 +88,28 @@ if(NOT MSVC)
         CACHE STRING "Linker flags for TSan builds" FORCE)
 endif()
 
+# ---------------------------------------------------------------------------
+# Microsoft GDK / Xbox partition build check (Windows only)
+#
+# CAMPELLO_GDK_GAMING_DESKTOP=ON — compiles the DirectX 12 backend against
+#   WINAPI_FAMILY=WINAPI_FAMILY_GAMES instead of the full desktop Win32 API
+#   surface, matching what a Gaming.Desktop.x64/Xbox build actually sees.
+#   See campello_editor's TODO.md Phase 4.5 for the full roadmap this is
+#   part of. Must be declared before windows.cmake is included below, since
+#   that file reads it.
+#
+# Deliberately does NOT require the Microsoft GDK to be installed:
+# WINAPI_FAMILY_GAMES itself is defined in the stock Windows SDK's
+# winapifamily.h starting at SDK 19041 (confirmed against
+# learn.microsoft.com), well before the GDK's own 22000+ requirement — this
+# option only restricts which Win32 declarations this library's *source*
+# can see, a pure compile-time partition-conformance check. campello_gpu
+# calls no GDK-specific runtime APIs itself (XGameRuntimeInitialize etc.
+# live in campello_widgets' app-shell layer, not here), so it needs neither
+# GDK headers/libs nor xgameplatform.lib/xgameruntime.lib to prove this.
+# ---------------------------------------------------------------------------
+option(CAMPELLO_GDK_GAMING_DESKTOP "Compile the Windows backend under WINAPI_FAMILY_GAMES (see TODO.md Phase 4.5 in campello_editor)" OFF)
+
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Android")
     include(android.cmake)
 elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")

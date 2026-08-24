@@ -37,6 +37,11 @@ target_link_libraries(${PROJECT_NAME}
     d3dcompiler
 )
 
+# See CAMPELLO_GDK_GAMING_DESKTOP's doc comment in the root CMakeLists.txt.
+if(CAMPELLO_GDK_GAMING_DESKTOP)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE WINAPI_FAMILY=WINAPI_FAMILY_GAMES)
+endif()
+
 target_include_directories(${PROJECT_NAME} PUBLIC
                             "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"
                             )

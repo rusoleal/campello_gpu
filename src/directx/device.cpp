@@ -180,7 +180,10 @@ static D3D12_PRIMITIVE_TOPOLOGY toPrimitiveTopology(PrimitiveTopology t) {
 // DeviceData creation helper
 // -----------------------------------------------------------------------
 
-static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
+static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd,
+                                     bool pdIsCoreWindow = false,
+                                     UINT coreWindowWidth = 0,
+                                     UINT coreWindowHeight = 0) {
     auto* data = new DeviceData();
     data->adapter = adapter;
 
@@ -318,28 +321,39 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
 
     // Swapchain (optional — only when a window handle is provided)
     if (pd != nullptr) {
-        HWND hwnd = static_cast<HWND>(pd);
-        data->hwnd = hwnd;
-        RECT rect = {};
-        GetClientRect(hwnd, &rect);
-        UINT w = std::max<UINT>(rect.right  - rect.left, 1u);
-        UINT h = std::max<UINT>(rect.bottom - rect.top,  1u);
-
         IDXGIFactory6* factory = nullptr;
         CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
 
         DXGI_SWAP_CHAIN_DESC1 scd = {};
         scd.BufferCount = DeviceData::kFrameCount;
-        scd.Width       = w;
-        scd.Height      = h;
         scd.Format      = DXGI_FORMAT_R8G8B8A8_UNORM;
         scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         scd.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         scd.SampleDesc.Count = 1;
 
         IDXGISwapChain1* sc1 = nullptr;
-        factory->CreateSwapChainForHwnd(data->queue, hwnd, &scd,
-                                        nullptr, nullptr, &sc1);
+        if (pdIsCoreWindow) {
+            // CoreWindow-based presentation -- no HWND to query a client
+            // rect from, so the size comes from the caller instead (see
+            // Device::createDefaultDeviceForCoreWindow's doc comment).
+            // Provable on Gaming.Desktop.x64 today; the console-only
+            // D3D12XboxCreateDevice/PresentX path is separate, gated work
+            // (TODO.md 4.5.2's third item / 4.5.6).
+            scd.Width  = std::max<UINT>(coreWindowWidth,  1u);
+            scd.Height = std::max<UINT>(coreWindowHeight, 1u);
+            auto* coreWindow = static_cast<IUnknown*>(pd);
+            factory->CreateSwapChainForCoreWindow(data->queue, coreWindow, &scd,
+                                                   nullptr, &sc1);
+        } else {
+            HWND hwnd = static_cast<HWND>(pd);
+            data->hwnd = hwnd;
+            RECT rect = {};
+            GetClientRect(hwnd, &rect);
+            scd.Width  = std::max<UINT>(rect.right  - rect.left, 1u);
+            scd.Height = std::max<UINT>(rect.bottom - rect.top,  1u);
+            factory->CreateSwapChainForHwnd(data->queue, hwnd, &scd,
+                                            nullptr, nullptr, &sc1);
+        }
         if (sc1) {
             sc1->QueryInterface(IID_PPV_ARGS(&data->swapChain));
             sc1->Release();
@@ -491,20 +505,47 @@ Device::~Device() {
     delete d;
 }
 
+// Xbox exposes exactly one GPU, so both call sites below select a single
+// adapter this same non-enumerating way -- "give me the adapter at this
+// preference" (first the high-performance one, falling back to
+// unspecified) -- rather than IDXGIFactory1::EnumAdapters1's
+// iteration-oriented API, which assumes a multi-adapter listing that
+// doesn't apply on a console. Provable today on Gaming.Desktop.x64; see
+// TODO.md 4.5.2.
+static IDXGIAdapter1* selectDefaultAdapter(IDXGIFactory6* factory) {
+    IDXGIAdapter1* adapter = nullptr;
+    if (FAILED(factory->EnumAdapterByGpuPreference(
+            0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter)))) {
+        factory->EnumAdapterByGpuPreference(
+            0, DXGI_GPU_PREFERENCE_UNSPECIFIED, IID_PPV_ARGS(&adapter));
+    }
+    return adapter;
+}
+
 std::shared_ptr<Device> Device::createDefaultDevice(void* pd) {
     IDXGIFactory6* factory = nullptr;
     if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) return nullptr;
 
-    IDXGIAdapter1* adapter = nullptr;
-    // Prefer the highest-performance adapter.
-    if (FAILED(factory->EnumAdapterByGpuPreference(
-            0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter)))) {
-        factory->EnumAdapters1(0, &adapter);
-    }
+    IDXGIAdapter1* adapter = selectDefaultAdapter(factory);
     factory->Release();
     if (!adapter) return nullptr;
 
     auto* data = createDeviceData(adapter, pd);
+    if (!data) { adapter->Release(); return nullptr; }
+    return std::shared_ptr<Device>(new Device(data));
+}
+
+std::shared_ptr<Device> Device::createDefaultDeviceForCoreWindow(
+        void* coreWindow, uint32_t width, uint32_t height) {
+    IDXGIFactory6* factory = nullptr;
+    if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) return nullptr;
+
+    IDXGIAdapter1* adapter = selectDefaultAdapter(factory);
+    factory->Release();
+    if (!adapter) return nullptr;
+
+    auto* data = createDeviceData(adapter, coreWindow, /*pdIsCoreWindow=*/true,
+                                   static_cast<UINT>(width), static_cast<UINT>(height));
     if (!data) { adapter->Release(); return nullptr; }
     return std::shared_ptr<Device>(new Device(data));
 }

@@ -182,6 +182,32 @@ jobs:
         run: cmake --build build --config Release
 
   # ---------------------------------------------------------------------------
+  # Windows / GDK partition build check — compile the DirectX 12 backend
+  # under WINAPI_FAMILY_GAMES (see TODO.md Phase 4.5 in campello_editor).
+  # No GDK install step: WINAPI_FAMILY_GAMES itself is part of the stock
+  # Windows SDK (since 19041), and this library calls no GDK-specific
+  # runtime APIs -- see CAMPELLO_GDK_GAMING_DESKTOP's doc comment in the
+  # root CMakeLists.txt for why that's enough to prove the DirectX
+  # backend's source doesn't reference anything outside the GAMES
+  # partition, without needing the actual GDK or Gaming.Desktop.x64
+  # toolset installed. Library only, same as build-windows above --
+  # no tests (this doesn't attempt to run the GAMES-restricted binary,
+  # only compile it).
+  # ---------------------------------------------------------------------------
+  build-windows-gdk:
+    name: Build check (Windows / DirectX 12 / GDK partition)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCAMPELLO_GDK_GAMING_DESKTOP=ON
+
+      - name: Build
+        run: cmake --build build --target campello_gpu --config Release
+
+  # ---------------------------------------------------------------------------
   # WASM / WebGPU build check — compile with Emscripten.
   # No tests are executed: integration tests need a browser/GPU, and gtest
   # under Emscripten requires additional runner setup. This job ensures the
