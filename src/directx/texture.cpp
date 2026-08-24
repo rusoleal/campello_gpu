@@ -67,17 +67,49 @@ std::shared_ptr<TextureView> Texture::createView(
         vh->cpuHandle = h->dsvHandle;
         // no GPU handle for DSV
     } else {
-        // SRV — allocate a shader-visible slot; we don't have access to DeviceData here,
-        // but TextureHandle::device lets us create an SRV on a shared heap.
-        // For simplicity the view gets the pre-allocated RTV handle as cpuHandle
-        // and the SRV is created separately.
-        //
         // In practice callers use the TextureView for render pass attachments (RTV)
         // or as a shader resource. We store the RTV handle (already allocated on
         // createTexture) and mark the type accordingly.
         if (h->rtvHandle.ptr != 0) {
-            vh->viewType  = ViewType::RTV;
-            vh->cpuHandle = h->rtvHandle;
+            vh->viewType = ViewType::RTV;
+            if (baseMipLevel == 0 && baseArrayLayer == 0) {
+                // Common case: the pre-created default RTV (Device::
+                // createTexture() calls CreateRenderTargetView with a null
+                // desc, which targets mip 0 / array slice 0) already covers
+                // this subresource — reuse it instead of allocating a new
+                // descriptor.
+                vh->cpuHandle = h->rtvHandle;
+            } else if (h->deviceData) {
+                // A view onto a non-default mip/array subresource needs its
+                // own RTV -- reusing h->rtvHandle here always rendered into
+                // mip 0 / layer 0 instead of the requested subresource,
+                // regardless of what the caller asked for. Caught by
+                // RenderPassEncoder.ClearingNonZeroMipLevelProducesCorrectContent.
+                UINT idx = h->deviceData->allocRtvExtraIndex();
+                if (idx == static_cast<UINT>(-1)) { delete vh; return nullptr; }
+                D3D12_CPU_DESCRIPTOR_HANDLE cpu = h->deviceData->rtvExtraCpuAt(idx);
+
+                uint32_t layers = (arrayLayerCount == static_cast<uint32_t>(-1))
+                    ? std::max(h->depthOrLayers - baseArrayLayer, 1u)
+                    : arrayLayerCount;
+
+                D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+                rtvDesc.Format = fmt;
+                if (h->depthOrLayers > 1 || baseArrayLayer != 0) {
+                    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+                    rtvDesc.Texture2DArray.MipSlice        = baseMipLevel;
+                    rtvDesc.Texture2DArray.FirstArraySlice = baseArrayLayer;
+                    rtvDesc.Texture2DArray.ArraySize       = layers;
+                } else {
+                    rtvDesc.ViewDimension      = D3D12_RTV_DIMENSION_TEXTURE2D;
+                    rtvDesc.Texture2D.MipSlice = baseMipLevel;
+                }
+                dev->CreateRenderTargetView(h->resource, &rtvDesc, cpu);
+
+                vh->cpuHandle     = cpu;
+                vh->rtvExtraIndex = idx;
+                vh->deviceData    = h->deviceData;
+            }
         } else {
             // Regular texture — create an SRV directly on the device's SRV heap.
             // We need the DeviceData for this; since we don't store it in TextureHandle,

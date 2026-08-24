@@ -4,6 +4,23 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.23.2] - 2026-08-24
+
+### Added
+
+- **`CAMPELLO_GDK_GAMING_DESKTOP` CMake option and `build-windows-gdk` CI job** — compiles the DirectX 12 backend under `WINAPI_FAMILY=WINAPI_FAMILY_GAMES` using the stock Windows SDK, as a partition-conformance check. Note: despite the option's name, this does **not** correspond to Microsoft GDK's Gaming.Desktop.x64 target — verified this session against the real, free, public Microsoft GDK (installed via `winget install Microsoft.Gaming.GDK`) that Gaming.Desktop.x64 actually uses `WINAPI_FAMILY_DESKTOP_APP` and needs no special handling at all; `campello_gpu` already builds, links, and passes its full integration-test suite unmodified under the real `Gaming.Desktop.x64` MSBuild platform. `WINAPI_FAMILY_GAMES` is the real Xbox **console** partition (part of the non-public GXDK, which this project has no access to), so this option/CI job is a best-effort stand-in check for that partition using only the stock SDK's copy of the same macro — see `TODO.md`'s "Windows / Xbox (Microsoft GDK) partition support" section for the full writeup.
+
+### Fixed
+
+- **[Windows/DirectX] `TextureView::fromNative(nullptr)` returned `nullptr` instead of a wrapper object**, unlike every other backend (Vulkan/Metal/WebGPU all construct the wrapper unconditionally, treating a null native handle as a degenerate-but-legal input). Fixed by removing the early return.
+- **[Windows/DirectX] `Device::createPipelineLayout()` failed (`nullptr`) for any `PipelineLayoutDescriptor` with two or more bind group layouts.** `Device::createBindGroupLayout()` always stamps its descriptor ranges' `RegisterSpace` at `0`, so two layouts each starting their own bindings at register 0 (the normal case) collided on the same `(register, space)` slot once composed into one root signature — `D3D12SerializeVersionedRootSignature` rejects that as an overlapping binding. Fixed by stamping each layout's ranges with `RegisterSpace` set to its position within `PipelineLayoutDescriptor::bindGroupLayouts` when building the root signature, matching the `spaceN` HLSL shaders compiled against this API are expected to declare per group.
+- **[Windows/DirectX] `Texture::createView()` ignored `baseMipLevel`/`baseArrayLayer` for render-target views**, always reusing the texture's single pre-created mip-0/layer-0 RTV regardless of what subresource the view actually requested — a view onto mip level 1 of a render target rendered into mip level 0 instead. Fixed by allocating a proper per-subresource RTV (from the same `rtvExtraHeap` used by mipmap generation) whenever the requested view isn't the default mip-0/layer-0 one, with lifetime cleanup on `~TextureView()` via a new `TextureViewHandle::rtvExtraIndex`.
+- **[Windows/DirectX] A Windows SDK bug left `HMONITOR` undeclared when compiling under `WINAPI_FAMILY_GAMES`** (`windef.h` only declares it under `WINAPI_PARTITION_APP`/`WINAPI_PARTITION_SYSTEM`, and `dxgi.h`'s own fallback only fires for `WINVER < 0x0500` — neither holds under `WINAPI_FAMILY_GAMES`), cascading into nonsensical MSVC parse errors at `DXGI_OUTPUT_DESC`'s `HMONITOR Monitor;` field. Fixed with a manual `typedef HANDLE HMONITOR` guarded to that partition, per a confirmed Microsoft Q&A report of the same issue.
+- **[macOS/Metal] `pendingPresentDrawable` was read/released/retained/stored from both the raster thread and the UI thread** (`drawInMTKView:`'s skipped-frame path) with no synchronization, letting the two threads double-release the same drawable and crash later inside Metal's own `presentDrawable:` completion machinery. Guarded with a mutex. Added a TSan build profile and a concurrency regression test (`test_device_present_race.cpp`) that reproduces the race against real drawables from an off-screen `CAMetalLayer`.
+- **[macOS/Metal] `RenderPassEncoder::setScissorRect()` truncated x/y/width/height independently**, which only ever shrinks the right/bottom edge. Now rounds outward (floor/ceil) so thin content isn't asymmetrically clipped.
+
+All four DirectX fixes above were verified by building and running `campello_gpu_integration_tests.exe` against real hardware (Intel Iris Graphics 550) both before and after: the pre-fix build reproduces all three test failures (confirmed pre-existing, not introduced by the GDK-partition work), and the post-fix build passes all 205 non-skipped integration tests, including under the real Gaming.Desktop.x64 GDK platform.
+
 ## [0.23.1] - 2026-08-17
 
 ### Fixed

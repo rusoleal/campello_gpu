@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22.1)
 
-project(campello_gpu VERSION 0.23.1)
+project(campello_gpu VERSION 0.23.2)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -89,24 +89,36 @@ if(NOT MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# Microsoft GDK / Xbox partition build check (Windows only)
+# Xbox console (GXDK) partition build check (Windows only)
 #
 # CAMPELLO_GDK_GAMING_DESKTOP=ON — compiles the DirectX 12 backend against
 #   WINAPI_FAMILY=WINAPI_FAMILY_GAMES instead of the full desktop Win32 API
-#   surface, matching what a Gaming.Desktop.x64/Xbox build actually sees.
-#   See campello_editor's TODO.md Phase 4.5 for the full roadmap this is
-#   part of. Must be declared before windows.cmake is included below, since
-#   that file reads it.
+#   surface. CORRECTED 2026-08-24: this does NOT match what a
+#   Gaming.Desktop.x64 build sees — confirmed against the real, free,
+#   public Microsoft GDK (installed and built against this session) that
+#   Gaming.Desktop.x64's own Platform.Common.props sets
+#   WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP, and that campello_gpu already
+#   builds, links, and passes its full integration-test suite as an
+#   ordinary HWND-based Win32 app under the real Gaming.Desktop.x64 MSBuild
+#   platform with zero source changes — this option isn't needed for that
+#   target at all. WINAPI_FAMILY_GAMES is the actual Xbox **console**
+#   partition (Gaming.Xbox.*.x64, part of the non-public GXDK, which this
+#   project has never had access to) — see TODO.md's "Windows / Xbox
+#   (Microsoft GDK) partition support" section for the full writeup this
+#   corrects, including where campello_editor's TODO.md Phase 4.5 roadmap
+#   originally got this from. Must be declared before windows.cmake is
+#   included below, since that file reads it.
 #
 # Deliberately does NOT require the Microsoft GDK to be installed:
 # WINAPI_FAMILY_GAMES itself is defined in the stock Windows SDK's
 # winapifamily.h starting at SDK 19041 (confirmed against
-# learn.microsoft.com), well before the GDK's own 22000+ requirement — this
-# option only restricts which Win32 declarations this library's *source*
-# can see, a pure compile-time partition-conformance check. campello_gpu
-# calls no GDK-specific runtime APIs itself (XGameRuntimeInitialize etc.
-# live in campello_widgets' app-shell layer, not here), so it needs neither
-# GDK headers/libs nor xgameplatform.lib/xgameruntime.lib to prove this.
+# learn.microsoft.com) — this option only restricts which Win32
+# declarations this library's *source* can see, a best-effort stand-in
+# compile-time partition-conformance check for the actual (unreachable)
+# GXDK console partition. campello_gpu calls no GDK-specific runtime APIs
+# itself (XGameRuntimeInitialize etc. live in campello_widgets' app-shell
+# layer, not here), so it needs neither GDK headers/libs nor
+# xgameplatform.lib/xgameruntime.lib to prove this.
 # ---------------------------------------------------------------------------
 option(CAMPELLO_GDK_GAMING_DESKTOP "Compile the Windows backend under WINAPI_FAMILY_GAMES (see TODO.md Phase 4.5 in campello_editor)" OFF)
 

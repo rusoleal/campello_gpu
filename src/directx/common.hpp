@@ -886,6 +886,19 @@ struct TextureViewHandle {
     // PRESENT<->RENDER_TARGET transition separately and must NOT be
     // transitioned to a shader-resource state.
     TextureHandle* sourceHandle = nullptr;
+
+    // rtvExtraHeap slot backing cpuHandle, for views onto a non-default
+    // (non-zero mip/array) render-target subresource — see Texture::
+    // createView()'s RTV branch. Sentinel (-1) means cpuHandle either isn't
+    // an RTV at all, or is TextureHandle::rtvHandle's shared default-view
+    // slot (owned/freed by the source Texture instead). An independent
+    // copy of the owning DeviceData* is kept (not read back through
+    // sourceHandle) for the same reason TextureHandle::deviceData is kept
+    // independently on the Vulkan backend's equivalent handle: this view's
+    // lifetime is not tied to its source Texture's, which may already be
+    // destroyed by the time ~TextureView() needs to free this slot.
+    UINT        rtvExtraIndex = static_cast<UINT>(-1);
+    DeviceData* deviceData    = nullptr;
 };
 
 struct ShaderModuleHandle {

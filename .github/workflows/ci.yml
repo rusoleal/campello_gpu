@@ -182,17 +182,23 @@ jobs:
         run: cmake --build build --config Release
 
   # ---------------------------------------------------------------------------
-  # Windows / GDK partition build check — compile the DirectX 12 backend
-  # under WINAPI_FAMILY_GAMES (see TODO.md Phase 4.5 in campello_editor).
-  # No GDK install step: WINAPI_FAMILY_GAMES itself is part of the stock
-  # Windows SDK (since 19041), and this library calls no GDK-specific
-  # runtime APIs -- see CAMPELLO_GDK_GAMING_DESKTOP's doc comment in the
-  # root CMakeLists.txt for why that's enough to prove the DirectX
-  # backend's source doesn't reference anything outside the GAMES
-  # partition, without needing the actual GDK or Gaming.Desktop.x64
-  # toolset installed. Library only, same as build-windows above --
-  # no tests (this doesn't attempt to run the GAMES-restricted binary,
-  # only compile it).
+  # Xbox console (GXDK) partition simulation — compile the DirectX 12 backend
+  # under WINAPI_FAMILY_GAMES (see TODO.md's "Windows / Xbox (Microsoft GDK)
+  # partition support" section for the full 2026-08-24 correction this
+  # comment reflects). WINAPI_FAMILY_GAMES is NOT what Gaming.Desktop.x64
+  # uses -- confirmed against the real, free, public Microsoft GDK: its own
+  # Platform.Common.props sets WINAPI_FAMILY_DESKTOP_APP, and campello_gpu
+  # already builds, links, and passes its full integration-test suite as an
+  # ordinary HWND-based Win32 app under the real Gaming.Desktop.x64 MSBuild
+  # platform with zero source changes -- no CAMPELLO_GDK_GAMING_DESKTOP
+  # needed for that target at all. WINAPI_FAMILY_GAMES is the actual Xbox
+  # **console** partition (part of the non-public GXDK, which this project
+  # has never had access to), so this job is a best-effort stand-in for that
+  # unreachable check using only the stock Windows SDK's copy of the same
+  # partition macro (shipped since SDK 19041) -- see
+  # CAMPELLO_GDK_GAMING_DESKTOP's doc comment in the root CMakeLists.txt.
+  # Library only, same as build-windows above -- no tests (this doesn't
+  # attempt to run the GAMES-restricted binary, only compile it).
   # ---------------------------------------------------------------------------
   build-windows-gdk:
     name: Build check (Windows / DirectX 12 / GDK partition)

@@ -134,6 +134,159 @@
       target, so CMake tried to *execute* the cross-compiled binary on the host right after linking
       to discover its test list, breaking any cross-compiled build (Android, iOS device) that
       enables `BUILD_TESTS`. Fixed by adding the same `DISCOVERY_MODE PRE_TEST`.
+- [ ] **[DirectX]** `Device::createTexture()` (`src/directx/device.cpp`, the color-render-target
+      branch around line 995-1000) hardcodes the resource's `D3D12_CLEAR_VALUE` to opaque black
+      (`Color[3] = 1.0f`, R/G/B left zero-initialized) for *every* render-target color texture,
+      regardless of what clear color the caller actually intends to use. `createTexture()`'s public
+      signature (`inc/campello_gpu/device.hpp`) has no clear-color parameter at all, so callers have
+      no way to influence this. Symptom: the D3D12 debug layer logs `ID3D12CommandList::
+      ClearRenderTargetView: The clear values do not match those passed to resource creation. The
+      clear operation is typically slower as a result; but will still clear to the desired value.`
+      on **every single frame** whenever the actual runtime clear color isn't pure black — confirmed
+      via `campello_renderer`'s Windows example (loads `CommercialRefrigerator.glb`, default clear
+      color `(0.08, 0.08, 0.10, 1.0)` — a dark gray, not black), where it fired on ~99% of captured
+      console lines during a normal run. **Not a correctness bug** — rendering is visually and
+      functionally correct, and this is a Debug-build/D3D12-debug-layer-only performance advisory
+      (invisible in Release builds without validation enabled) — but it's real console noise that
+      looks alarming and adds a small per-clear cost in every Debug build. Also likely affects the
+      swapchain-backed (no-colorView) render path the same way, though that path clears a
+      DXGI-provided backbuffer rather than a `createTexture()`-created resource — worth checking
+      separately whether DXGI backbuffers even support an app-specified optimized clear value at all
+      (may be a hard D3D12/DXGI limitation for direct-to-swapchain clears with non-black colors,
+      not fixable the same way as the offscreen-texture case). Suggested fix: thread an optional
+      clear-color hint through `createTexture()`'s public API (only meaningful for
+      `TextureUsage::renderTarget` color textures) and use it to populate `D3D12_CLEAR_VALUE::Color`
+      instead of hardcoding black; verify the swapchain path separately since it's a different code
+      path entirely. Found while investigating `campello_renderer`'s DirectX PBR port test suite
+      (session 2026-08-17) — see that repo's `test/main.cpp` `OffscreenRenderTest` fixture, which
+      also hits this same warning on every offscreen render.
+- [x] **[DirectX]** `TextureView::fromNative(nullptr)` (`src/directx/texture_view.cpp`) returned
+      `nullptr` instead of a wrapper object — the only backend of the four (Vulkan/Metal/WebGPU all
+      construct unconditionally) that special-cased a null native handle this way, breaking the
+      documented "degenerate but legal input" contract. Fixed by removing the early return.
+- [x] **[DirectX]** `Device::createPipelineLayout()`'s root-signature builder
+      (`createUniversalRootSignature()`, `src/directx/device.cpp`) always stamped
+      `RegisterSpace = 0` on every bind group layout's descriptor ranges
+      (`Device::createBindGroupLayout()`'s fixed default) — a `PipelineLayoutDescriptor` with two or
+      more bind group layouts that each start their own bindings at register 0 (the normal case,
+      mirroring how a Vulkan `set`/WGSL `@group` layout's bindings restart at 0 per group) produced
+      two root parameters claiming the same `(register, space)` slot, which
+      `D3D12SerializeVersionedRootSignature` rejects as an overlapping binding — silently returning
+      `nullptr` from `createPipelineLayout()` for any real multi-bind-group pipeline. Fixed by
+      stamping each layout's ranges with `RegisterSpace = <its index within
+      PipelineLayoutDescriptor::bindGroupLayouts>` when composing the root signature, matching the
+      `spaceN` HLSL shaders compiled against this API are expected to declare per group.
+- [x] **[DirectX]** `Texture::createView()`'s RTV branch (`src/directx/texture.cpp`) reused
+      `TextureHandle::rtvHandle` — the single mip‑0/layer‑0 RTV pre-created in `createTexture()` —
+      for *every* view onto a render-target texture, completely ignoring `baseMipLevel`/
+      `baseArrayLayer`. A view onto mip level 1 of a render target rendered into mip level 0
+      instead; the requested mip's actual data was left whatever the resource was initialized to.
+      Fixed by only reusing the cached default RTV when `baseMipLevel == 0 && baseArrayLayer == 0`;
+      otherwise a fresh `D3D12_RENDER_TARGET_VIEW_DESC` is built for the requested subresource and
+      allocated from the same `rtvExtraHeap` used by mipmap generation, freed on `~TextureView()`
+      via a new `TextureViewHandle::rtvExtraIndex` (mirrors `TextureHandle`'s existing slot-lifetime
+      pattern; needed a `DeviceData*` copied onto the view handle rather than read back through
+      `sourceHandle`, since a view's lifetime isn't tied to its source `Texture`'s).
+- [x] **All three above verified by real repro, not just read**, session 2026-08-24: built and ran
+      `campello_gpu_integration_tests.exe` on this session's actual Windows machine (Intel Iris
+      Graphics 550) both before and after the fix. Before: `TextureView.
+      FromNativeWithNullHandleReturnsNonNullWrapper`, `PipelineLayout.
+      CreateWithMultipleBindGroupLayoutsReturnsNonNull`, and `RenderPassEncoder.
+      ClearingNonZeroMipLevelProducesCorrectContent` failed (confirmed pre-existing — reproduced
+      the same three failures at commit `6381720`, before any of this session's GDK/Xbox work, via
+      a throwaway `git worktree`). After: all 205 non-skipped integration tests pass (43 raytracing
+      tests correctly skip — this iGPU has no DXR support), 0 failures.
+
+## Windows / Xbox (Microsoft GDK) partition support
+
+> Groundwork for a future Xbox target, tracked in more detail in campello_editor's own TODO.md
+> (Phase 4.5). **Correction (session 2026-08-24) — read this before touching anything below.**
+> The items below were originally written and merged (`106f09d`, `3c2d413`) on an *assumed*
+> premise — no actual GDK was available to check it against — that Gaming.Desktop.x64 restricts
+> the app to `WINAPI_FAMILY_GAMES` and presents through an `ICoreWindow` instead of an `HWND`,
+> the same way a UWP app does. **The public, free Microsoft GDK was installed this session**
+> (`winget install Microsoft.Gaming.GDK` — April 2026 GDK Update 3, `2604.3.7874`; no Xbox
+> developer/NDA account needed, this is the publicly redistributable Gaming.Desktop.x64 target)
+> along with its real `Gaming.Desktop.x64`/`v145` Visual Studio platform toolset (the
+> `VS2026PcCommon.vsix` + `VS2026PcEditionFilesV145.vsix` extensions bundled in the GDK download,
+> installed via `VSIXInstaller.exe /quiet`), and both assumptions turned out to be **wrong**:
+> - Microsoft's own shipped `Platform.Common.props` for `Gaming.Desktop.x64` sets
+>   `WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP` (plus `_GAMING_DESKTOP`) — **not**
+>   `WINAPI_FAMILY_GAMES`. Confirmed both by reading that props file directly (`C:\Program
+>   Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\Platforms\
+>   Gaming.Desktop.x64\260403\Platform.Common.props`) and by inspecting the real `/D` flags MSVC
+>   was actually invoked with for a `campello_gpu.vcxproj` built with `cmake -A Gaming.Desktop.x64`.
+> - `CoreWindow` does not appear anywhere in the GDK's own headers (`grep -rl CoreWindow` across
+>   `GRDK/GameKit/Include` and the GDK's `windows/include` returned nothing) — Gaming.Desktop.x64
+>   is an ordinary `HWND`-based Win32 app that happens to link Xbox Live/game services, not a
+>   UWP-style windowless app.
+> - `WINAPI_FAMILY_GAMES` is real, but it's the actual Xbox **console** partition
+>   (`Gaming.Xbox.*.x64`, part of the non-public GXDK) — which is *not* included in the public
+>   GDK (confirmed: no `GXDK` directory anywhere under the installed GDK root, only `GRDK`) and
+>   was never actually reachable in any prior session either.
+>
+> Net effect: `createDefaultDeviceForCoreWindow()` solves a problem Gaming.Desktop.x64 doesn't
+> have, and the `CAMPELLO_GDK_GAMING_DESKTOP=ON`/`build-windows-gdk` CI job — while it does
+> compile clean, both on the stock SDK and (verified this session) the real GDK toolset — proves
+> partition-conformance against the *console* partition, which nothing in this repo can actually
+> build or test without GXDK access. The plain, unmodified `windows.cmake` build (verified this
+> session to compile, link, run, and pass its full integration-test suite under the real
+> `Gaming.Desktop.x64` platform with zero changes) is what Gaming.Desktop.x64 actually needs today.
+> Left the code and CI job in place rather than deleting them — they're harmless, do compile, and
+> `WINAPI_FAMILY_GAMES` partition-conformance is still a real, worthwhile thing to check *if/when*
+> GXDK console access ever becomes available — but the doc comments below are corrected in place
+> so nobody re-trusts the original premise, and `Device::createDefaultDeviceForCoreWindow()`'s
+> header doc comment (`inc/campello_gpu/device.hpp`) needs the same correction — not yet done.
+
+- [x] `CAMPELLO_GDK_GAMING_DESKTOP` CMake option — compiles the DirectX 12 backend under
+      `WINAPI_FAMILY=WINAPI_FAMILY_GAMES` using the stock Windows SDK. **Correction**: this
+      partition does not describe Gaming.Desktop.x64 (see above) — it's a stand-in for the
+      unreachable Xbox console (GXDK) partition, kept because it's a real, harmless, still
+      meaningful-if-GXDK-ever-arrives check, not because Gaming.Desktop.x64 needs it. Fixed a real
+      Windows SDK bug surfaced by this (`HMONITOR` left undeclared under `WINAPI_FAMILY_GAMES` in
+      `dxgi.h`'s `DXGI_OUTPUT_DESC`, per a confirmed Microsoft Q&A report) via a manual `typedef
+      HANDLE HMONITOR` guarded to that partition in `src/directx/common.hpp` — this fix is real
+      and harmless regardless of the corrected premise.
+- [x] `Device::createDefaultDeviceForCoreWindow(coreWindow, width, height)` — **removed** (session
+      2026-08-24, same session as the correction above). It was a `CreateSwapChainForCoreWindow`-
+      based presentation path added on the premise that "GDK/Xbox present into an `ICoreWindow`,
+      not an `HWND`" — disproven against the real GDK (see above): Gaming.Desktop.x64 uses a plain
+      `HWND` like any desktop app, and the real Xbox console needs neither `HWND` nor `CoreWindow`
+      (it's `D3D12XboxCreateDevice`/`PresentX` with no window handle at all). Nothing in this repo
+      ever called it, and its only justification was wrong twice over, so it was deleted rather
+      than kept as unused public API: the declaration in `inc/campello_gpu/device.hpp`, the
+      implementation and `pdIsCoreWindow`/`coreWindowWidth`/`coreWindowHeight` parameters on
+      `createDeviceData()` in `src/directx/device.cpp`, all reverted to the plain HWND-only form
+      that existed before this work. The adapter-selection generalization from the same original
+      commit (`selectDefaultAdapter()`, shared between `createDefaultDevice()` and
+      `createDevice()`) was kept — `EnumAdapterByGpuPreference` over `EnumAdapters1` is a strict
+      improvement independent of the CoreWindow question, and both `createDefaultDevice()` call
+      sites still use it.
+- [x] CI job `build-windows-gdk` (`.github/workflows/ci.yml`) — compiles `campello_gpu` under
+      `CAMPELLO_GDK_GAMING_DESKTOP=ON` on every push; its header comment claiming this matches
+      "Gaming.Desktop.x64 and, eventually, the Xbox console target" needs correcting to just the
+      console target, per above. **Verified this session (2026-08-24), not just read**: confirmed
+      green on GitHub Actions via the Actions API, and reproduced locally with a real
+      `cl.exe`/MSBuild both before and after the three DirectX bug fixes below — no regression.
+- [x] **The real public Microsoft GDK was installed and built against this session (2026-08-24)**
+      — not just the stock-SDK `WINAPI_FAMILY_GAMES` simulation above. Installed via `winget
+      install Microsoft.Gaming.GDK` (April 2026 GDK Update 3, `2604.3.7874`, publicly
+      redistributable, no Xbox developer account needed for the Gaming.Desktop.x64 target), plus
+      its VS platform-toolset extensions (`GRDK/VS2026/VS2026PcCommon.vsix` +
+      `VS2026PcEditionFilesV145.vsix`, installed via `VSIXInstaller.exe /quiet`, which registers
+      `MSBuild/Microsoft/VC/v180/Platforms/Gaming.Desktop.x64`). Configured and built
+      `campello_gpu` with **no CMake changes at all** via `cmake -B build -G "Visual Studio 18
+      2026" -A Gaming.Desktop.x64` — compiled and linked clean using the real `v145` GDK toolset.
+      Built and ran `campello_gpu_integration_tests.exe` against this session's real GPU (Intel
+      Iris Graphics 550) under this real GDK platform: **all 205 non-skipped tests pass**, same
+      result as the plain `windows.cmake` build — confirming the existing HWND-based
+      `createDefaultDevice()` path (no GDK-specific code needed) already fully works for
+      Gaming.Desktop.x64 today. This is the finding that surfaced the CoreWindow/WINAPI_FAMILY
+      correction above.
+- [ ] The real Xbox console target (`D3D12XboxCreateDevice`/`PresentX`, the actual
+      `WINAPI_FAMILY_GAMES` / GXDK partition, distinct from the now-verified-plain-Win32
+      `Gaming.Desktop.x64`) remains out of scope — GXDK requires registered Xbox developer/NDA
+      access this session still doesn't have, unlike the freely downloadable GRDK used above.
 
 ## Missing implementations — Vulkan/Android
 
