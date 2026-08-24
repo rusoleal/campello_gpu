@@ -1,8 +1,10 @@
 #define NOMINMAX
 #include <functional>
-#include <d3d12.h>
-#include <dxgi1_6.h>
 #include "campello_gpu_config.h"
+// common.hpp pulls in d3d12.h/dxgi1_6.h itself (applying its HMONITOR
+// workaround for WINAPI_FAMILY_GAMES builds before dxgi1_6.h is parsed --
+// see its doc comment) -- must come before any direct include of those
+// headers in this file, not after.
 #include "common.hpp"
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/adapter.hpp>

@@ -2,6 +2,23 @@
 
 #define NOMINMAX
 #include <d3d12.h>
+
+// Windows SDK bug (confirmed against a Microsoft Q&A report of this exact
+// error, learn.microsoft.com/en-us/answers/questions/1024748): windef.h
+// only declares HMONITOR under WINAPI_PARTITION_APP|WINAPI_PARTITION_SYSTEM,
+// and dxgi.h's own fallback declaration only fires when WINVER < 0x0500 --
+// neither condition holds under WINAPI_FAMILY_GAMES, so HMONITOR is left
+// undeclared right where DXGI_OUTPUT_DESC declares its `HMONITOR Monitor;`
+// field, which cascades into nonsensical MSVC parse errors (C3646 "unknown
+// override specifier", C4430) at that line, not a real syntax problem in
+// this codebase. HANDLE itself isn't partition-gated, only the HMONITOR
+// alias is, so this manual declaration (the fix Microsoft's own thread
+// recommends) is safe under GAMES specifically.
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_GAMES && !defined(HMONITOR_DECLARED)
+#define HMONITOR_DECLARED
+typedef HANDLE HMONITOR;
+#endif
+
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <algorithm>
