@@ -150,9 +150,13 @@ VkRenderPass buildRenderPass(VkDevice device,
                                      VkFormat colorFormat,
                                      VkFormat depthFormat,
                                      VkAttachmentLoadOp colorLoadOp,
-                                     VkImageLayout colorFinalLayout)
+                                     VkImageLayout colorFinalLayout,
+                                     uint32_t sampleCount,
+                                     VkFormat resolveFormat)
 {
     std::vector<VkAttachmentDescription> attachments;
+    const bool hasResolve = (resolveFormat != VK_FORMAT_UNDEFINED);
+    const auto samples = static_cast<VkSampleCountFlagBits>(sampleCount);
 
     // A format of VK_FORMAT_UNDEFINED means "no color attachment" (depth-only,
     // or fully attachment-less passes) -- mirrors the existing hasDepth gate
@@ -165,9 +169,14 @@ VkRenderPass buildRenderPass(VkDevice device,
     if (hasColor) {
         VkAttachmentDescription colorAtt{};
         colorAtt.format         = colorFormat;
-        colorAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+        colorAtt.samples        = samples;
         colorAtt.loadOp         = colorLoadOp;
-        colorAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        // With a resolve attachment, this (transient, multisampled) attachment's
+        // own post-pass content is never read -- the resolve attachment built
+        // below is what a later sample/composite actually uses. See
+        // MetalDrawBackend's identical reasoning for its MSAA color texture.
+        colorAtt.storeOp        = hasResolve ? VK_ATTACHMENT_STORE_OP_DONT_CARE
+                                              : VK_ATTACHMENT_STORE_OP_STORE;
         colorAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         colorAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         // For LOAD: initial layout = the layout the image was left in after the previous pass.
@@ -175,7 +184,12 @@ VkRenderPass buildRenderPass(VkDevice device,
         colorAtt.initialLayout  = (colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
                                   ? colorFinalLayout
                                   : VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAtt.finalLayout    = colorFinalLayout;
+        // colorFinalLayout describes what the *sampled result* should end up as --
+        // when resolving, that's the resolve attachment below, not this transient
+        // one, so this attachment's own finalLayout is inconsequential (storeOp
+        // above is DONT_CARE); COLOR_ATTACHMENT_OPTIMAL is simply a legal choice.
+        colorAtt.finalLayout    = hasResolve ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                              : colorFinalLayout;
         attachments.push_back(colorAtt);
 
         colorRef.attachment = (uint32_t)attachments.size() - 1;
@@ -187,7 +201,9 @@ VkRenderPass buildRenderPass(VkDevice device,
     VkAttachmentReference   depthRef{};
     if (hasDepth) {
         depthAtt.format         = depthFormat;
-        depthAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+        // Every attachment in a subpass must share one sample count -- see
+        // RenderPipelineDescriptor::sampleCount's doc comment.
+        depthAtt.samples        = samples;
         depthAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAtt.storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         depthAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -199,10 +215,28 @@ VkRenderPass buildRenderPass(VkDevice device,
         depthRef.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
 
+    VkAttachmentReference resolveRef{};
+    if (hasResolve) {
+        VkAttachmentDescription resolveAtt{};
+        resolveAtt.format         = resolveFormat;
+        resolveAtt.samples        = VK_SAMPLE_COUNT_1_BIT;
+        // Fully overwritten by the resolve operation -- no need to load prior content.
+        resolveAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        resolveAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        resolveAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        resolveAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        resolveAtt.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        resolveAtt.finalLayout    = colorFinalLayout;
+        attachments.push_back(resolveAtt);
+        resolveRef.attachment = (uint32_t)attachments.size() - 1;
+        resolveRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount    = hasColor ? 1 : 0;
     subpass.pColorAttachments       = hasColor ? &colorRef : nullptr;
+    subpass.pResolveAttachments     = (hasColor && hasResolve) ? &resolveRef : nullptr;
     subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
 
     VkSubpassDependency dep{};
@@ -1301,8 +1335,11 @@ std::shared_ptr<Texture> Device::createTexture(
         imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 
     VkImage image;
-    if (vkCreateImage(deviceData->device, &imageInfo, nullptr, &image) != VK_SUCCESS)
+    VkResult createImageResult = vkCreateImage(deviceData->device, &imageInfo, nullptr, &image);
+    if (createImageResult != VK_SUCCESS)
     {
+        LOG_DEBUG("[campello_gpu] vkCreateImage FAILED result=%d format=%d samples=%u w=%u h=%u usage=0x%x",
+                   (int)createImageResult, (int)imageInfo.format, (unsigned)samples, width, height, (unsigned)imageUsage);
         return nullptr;
     }
 
@@ -2233,6 +2270,19 @@ static VkStencilOp toVkStencilOp(StencilOp op) {
     }
 }
 
+// RenderPipelineDescriptor::sampleCount only documents 1/4 (WebGPU's own
+// convention) as supported; map anything else to 1 rather than passing an
+// arbitrary uint32_t straight through as a VkSampleCountFlagBits bitmask.
+static VkSampleCountFlagBits toVkSampleCount(uint32_t count) {
+    switch (count) {
+        case 2:  return VK_SAMPLE_COUNT_2_BIT;
+        case 4:  return VK_SAMPLE_COUNT_4_BIT;
+        case 8:  return VK_SAMPLE_COUNT_8_BIT;
+        case 16: return VK_SAMPLE_COUNT_16_BIT;
+        default: return VK_SAMPLE_COUNT_1_BIT;
+    }
+}
+
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
 
     auto deviceData = (DeviceData *)this->native;
@@ -2397,7 +2447,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisampling.pNext = nullptr;
     multisampling.flags = 0;
-    multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    multisampling.rasterizationSamples = toVkSampleCount(descriptor.sampleCount);
     multisampling.sampleShadingEnable = false;
 
     VkPipelineDepthStencilStateCreateInfo depthStencil{};
@@ -2530,12 +2580,22 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         pipelineRenderingCreateInfo.stencilAttachmentFormat = stencilAttachmentFormat;
     } else {
         // Traditional render pass path: build a compatible render pass for pipeline creation.
-        // The pipeline is compatible with any render pass sharing the same attachment formats.
+        // The pipeline is compatible with any render pass sharing the same attachment
+        // formats/sample counts/resolve structure -- descriptor.sampleCount and a resolve
+        // attachment (whenever sampleCount > 1; every multisampled pipeline in this codebase
+        // is used with a resolve target, and the resolve format always matches the color
+        // format) must mirror what beginRenderPass() will actually build at draw time
+        // (see its identical buildRenderPass() call), or this pipeline is incompatible with
+        // the real render pass -- undefined at best, a driver-dependent black/blank result
+        // at worst (observed on an Adreno 618 device before this fix).
+        VkFormat resolveFormat = (descriptor.sampleCount > 1) ? colorAttachmentFormat : VK_FORMAT_UNDEFINED;
         compatibleRenderPass = buildRenderPass(deviceData->device,
                                                colorAttachmentFormat,
                                                depthAttachmentFormat,
                                                VK_ATTACHMENT_LOAD_OP_CLEAR,
-                                               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+                                               VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                               descriptor.sampleCount,
+                                               resolveFormat);
     }
 
     VkGraphicsPipelineCreateInfo pipelineInfo = {};
@@ -2557,14 +2617,17 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     pipelineInfo.basePipelineIndex = -1;
 
     VkPipeline pipeline;
-    if (vkCreateGraphicsPipelines(
+    VkResult createPipelineResult = vkCreateGraphicsPipelines(
         deviceData->device,
         VK_NULL_HANDLE,
         1,
         &pipelineInfo,
         nullptr,
         &pipeline
-    ) != VK_SUCCESS) {
+    );
+    if (createPipelineResult != VK_SUCCESS) {
+        LOG_DEBUG("[campello_gpu] vkCreateGraphicsPipelines FAILED result=%d sampleCount=%u",
+                   (int)createPipelineResult, (unsigned)descriptor.sampleCount);
         if (compatibleRenderPass != VK_NULL_HANDLE)
             vkDestroyRenderPass(deviceData->device, compatibleRenderPass, nullptr);
         return nullptr;

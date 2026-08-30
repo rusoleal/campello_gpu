@@ -113,6 +113,16 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     uint32_t   offscreenArrayLayer = 0;
     uint32_t   offscreenMipLevel   = 0;
 
+    // MSAA resolve target (ColorAttachment::resolveTarget), if any -- see the
+    // resolve-attachment-info population and pre-pass transition below.
+    // Tracked separately from offscreenImage/offscreenOwnerTexture above: end()
+    // must transition *this* (the single-sample result) to
+    // SHADER_READ_ONLY_OPTIMAL, not the transient multisampled attachment.
+    VkImage        resolveImage         = VK_NULL_HANDLE;
+    TextureHandle *resolveOwnerTexture  = nullptr;
+    uint32_t       resolveArrayLayer    = 0;
+    uint32_t       resolveMipLevel      = 0;
+
     const bool useTraditional = data->deviceData && !data->deviceData->hasDynamicRendering;
 
     if (!hasExplicitView && data->swapchain != VK_NULL_HANDLE) {
@@ -258,6 +268,48 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                                  0, 0, nullptr, 0, nullptr, 1, &barrier);
         }
+
+        // MSAA resolve target, if the caller set ColorAttachment::resolveTarget
+        // (see RenderPipelineDescriptor::sampleCount's doc comment -- this is
+        // only meaningful alongside a multisampled pipeline/attachment). Same
+        // "manually transition offscreen image" reasoning as firstImage above,
+        // just always treated as a first-use/clear case: a resolve target's
+        // whole purpose is to receive this pass's resolved result, so there is
+        // no "preserving prior content" case to consider here the way
+        // loadOp::load's offscreen-accumulation case above has.
+        //
+        // Populated for BOTH paths (useTraditional or not) -- rpeHandle below
+        // needs these regardless, and RenderPassEncoder::end() reads them to
+        // update TextureHandle::currentLayout either way. Only the manual
+        // barrier is dynamic-rendering-only: the traditional VkRenderPass built
+        // in the useTraditional branch below already carries this exact
+        // UNDEFINED → COLOR_ATTACHMENT_OPTIMAL transition via the resolve
+        // attachment's own initialLayout (see buildRenderPass()), so a second,
+        // manual one here would be redundant.
+        if (descriptor.colorAttachments[0].resolveTarget) {
+            auto *rvh = (TextureViewHandle *)descriptor.colorAttachments[0].resolveTarget->native;
+            resolveImage        = rvh->image;
+            resolveOwnerTexture = rvh->ownerTexture;
+            resolveArrayLayer   = rvh->baseArrayLayer;
+            resolveMipLevel     = rvh->baseMipLevel;
+
+            if (!useTraditional) {
+                VkImageMemoryBarrier resolveBarrier{};
+                resolveBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                resolveBarrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+                resolveBarrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                resolveBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                resolveBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                resolveBarrier.image               = resolveImage;
+                resolveBarrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, resolveMipLevel, 1, resolveArrayLayer, 1 };
+                resolveBarrier.srcAccessMask       = VK_ACCESS_NONE;
+                resolveBarrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                vkCmdPipelineBarrier(data->commandBuffer,
+                                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     0, 0, nullptr, 0, nullptr, 1, &resolveBarrier);
+            }
+        }
     } else {
         // ── No-attachment path ────────────────────────────────────────────────
         renderExtent = { 1, 1 };
@@ -272,11 +324,18 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rpeHandle->offscreenTextureHandle = isSwapchain ? nullptr : offscreenOwnerTexture;
     rpeHandle->offscreenBaseArrayLayer = offscreenArrayLayer;
     rpeHandle->offscreenBaseMipLevel   = offscreenMipLevel;
+    rpeHandle->resolveImage            = resolveImage;
+    rpeHandle->resolveTextureHandle    = resolveOwnerTexture;
+    rpeHandle->resolveBaseArrayLayer   = resolveArrayLayer;
+    rpeHandle->resolveBaseMipLevel     = resolveMipLevel;
     // Keep the offscreen TextureView alive for the duration of the pass.
     // vkCmdBeginRenderingKHR records the raw VkImageView; if the CPU-side
     // TextureView is destroyed first the validation layer looks up a freed handle.
     if (hasExplicitView) {
         rpeHandle->offscreenViewRef = descriptor.colorAttachments[0].view;
+        if (descriptor.colorAttachments[0].resolveTarget) {
+            rpeHandle->resolveViewRef = descriptor.colorAttachments[0].resolveTarget;
+        }
     }
     if (descriptor.occlusionQuerySet) {
         rpeHandle->queryPool = ((QuerySetHandle *)descriptor.occlusionQuerySet->native)->queryPool;
@@ -318,25 +377,47 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             // RenderPassKey already treat VK_FORMAT_UNDEFINED as "no
             // attachment of this kind".
             VkFormat colorFormat = VK_FORMAT_UNDEFINED;
+            uint32_t colorSampleCount = 1;
             if (isSwapchain) {
                 colorFormat = data->deviceData->surfaceFormat.format;
             } else if (!descriptor.colorAttachments.empty()) {
-                colorFormat = ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->format;
+                auto *cvh = (TextureViewHandle *)descriptor.colorAttachments[0].view->native;
+                colorFormat = cvh->format;
+                // ownerTexture is null only for views made via TextureView::fromNative()
+                // (see that field's doc comment) -- not a path used for render targets here.
+                if (cvh->ownerTexture) colorSampleCount = cvh->ownerTexture->samples;
             }
             VkAttachmentLoadOp colorLoadOp = colorLoadClear ? VK_ATTACHMENT_LOAD_OP_CLEAR
                                                              : VK_ATTACHMENT_LOAD_OP_LOAD;
 
-            const RenderPassKey rpKey{colorFormat, depthFormat, colorLoadOp, finalLayout};
+            // MSAA resolve target (ColorAttachment::resolveTarget), traditional-render-pass
+            // equivalent of the dynamic-rendering path's resolveImageView wiring above -- see
+            // this device.cpp's buildRenderPass() call and RenderPassKey's doc comments for why
+            // both sampleCount and resolveFormat must be part of the render pass identity, and
+            // Device::createRenderPipeline()'s identical call for why they must also match what
+            // the pipeline itself was built compatible with.
+            VkFormat    resolveFormat = VK_FORMAT_UNDEFINED;
+            VkImageView resolveImageView = VK_NULL_HANDLE;
+            if (!isSwapchain && !descriptor.colorAttachments.empty() &&
+                descriptor.colorAttachments[0].resolveTarget) {
+                auto *rvh = (TextureViewHandle *)descriptor.colorAttachments[0].resolveTarget->native;
+                resolveFormat    = rvh->format;
+                resolveImageView = rvh->imageView;
+            }
+
+            const RenderPassKey rpKey{colorFormat, depthFormat, colorLoadOp, finalLayout,
+                                       colorSampleCount, resolveFormat};
             auto& rpCache = data->deviceData->offscreenRenderPassCache;
             auto  rpIt    = rpCache.find(rpKey);
             if (rpIt != rpCache.end()) {
                 rp = rpIt->second;
             } else {
-                rp = buildRenderPass(data->device, colorFormat, depthFormat, colorLoadOp, finalLayout);
+                rp = buildRenderPass(data->device, colorFormat, depthFormat, colorLoadOp, finalLayout,
+                                      colorSampleCount, resolveFormat);
                 rpCache.emplace(rpKey, rp);
             }
 
-            VkImageView attachments[2];
+            VkImageView attachments[3];
             uint32_t    attachCount = 0;
             if (!descriptor.colorAttachments.empty()) {
                 attachments[attachCount++] = isSwapchain
@@ -345,6 +426,10 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             }
             if (depthView != VK_NULL_HANDLE)
                 attachments[attachCount++] = depthView;
+            // Must come last -- matches buildRenderPass()'s attachment push order
+            // (color, then depth, then resolve) exactly.
+            if (resolveImageView != VK_NULL_HANDLE)
+                attachments[attachCount++] = resolveImageView;
 
             VkFramebufferCreateInfo fbInfo{};
             fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -411,9 +496,16 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             colorAttachments[a].sType              = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             colorAttachments[a].imageView          = attachView;
             colorAttachments[a].imageLayout        = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorAttachments[a].resolveMode        = VK_RESOLVE_MODE_NONE;
-            colorAttachments[a].resolveImageView   = VK_NULL_HANDLE;
-            colorAttachments[a].resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (!isSwapchain && descriptor.colorAttachments[a].resolveTarget) {
+                auto *rvh = (TextureViewHandle *)descriptor.colorAttachments[a].resolveTarget->native;
+                colorAttachments[a].resolveMode        = VK_RESOLVE_MODE_AVERAGE_BIT;
+                colorAttachments[a].resolveImageView   = rvh->imageView;
+                colorAttachments[a].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            } else {
+                colorAttachments[a].resolveMode        = VK_RESOLVE_MODE_NONE;
+                colorAttachments[a].resolveImageView   = VK_NULL_HANDLE;
+                colorAttachments[a].resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            }
             colorAttachments[a].loadOp             = getLoadOp(descriptor.colorAttachments[a].loadOp);
             colorAttachments[a].storeOp            = getStoreOp(descriptor.colorAttachments[a].storeOp);
             colorAttachments[a].clearValue.color   = { .float32 = {

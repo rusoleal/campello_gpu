@@ -90,6 +90,22 @@ namespace systems::leal::campello_gpu {
          * Required when the pipeline uses `setBindGroup()`.
          */
         std::shared_ptr<PipelineLayout> layout;
+
+        /**
+         * @brief Rasterization sample count for MSAA.
+         *
+         * Must match the sample count of every attachment (color and depth/
+         * stencil) in any render pass this pipeline is used with — a mismatch
+         * is a hard validation failure on both Metal and Vulkan. Following
+         * WebGPU's own convention, only `1` (no multisampling, the default)
+         * and `4` are supported; other values are not validated here but may
+         * be rejected or silently clamped by a given backend.
+         *
+         * When a render pass's `ColorAttachment.resolveTarget` is set, this
+         * pipeline's `sampleCount` must be greater than 1 — the resolve step
+         * only makes sense when rendering to a multisampled attachment.
+         */
+        uint32_t sampleCount = 1;
     };
 
 }

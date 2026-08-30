@@ -78,6 +78,13 @@ void RenderPassEncoder::end() {
         if (!data->isSwapchain && data->offscreenTextureHandle) {
             data->offscreenTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
+        // MSAA resolve target, if this pass had one — buildRenderPass() gives the resolve
+        // attachment the same finalLayout (SHADER_READ_ONLY_OPTIMAL for the offscreen case),
+        // applied automatically by vkCmdEndRenderPass; mirror it into currentLayout exactly
+        // like the dynamic-rendering path's identical post-pass update below.
+        if (!data->isSwapchain && data->resolveTextureHandle) {
+            data->resolveTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         return;
     }
 
@@ -126,6 +133,30 @@ void RenderPassEncoder::end() {
                              0, 0, nullptr, 0, nullptr, 1, &barrier);
         if (data->offscreenTextureHandle) {
             data->offscreenTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+
+        // MSAA resolve target, if this pass had one -- the actual single-
+        // sample result a subsequent draw will sample, as opposed to the
+        // transient multisampled `offscreenImage` just transitioned above
+        // (whose own post-resolve content is irrelevant and never sampled).
+        if (data->resolveImage != VK_NULL_HANDLE) {
+            VkImageMemoryBarrier resolveBarrier{};
+            resolveBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            resolveBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            resolveBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            resolveBarrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, data->resolveBaseMipLevel, 1, data->resolveBaseArrayLayer, 1 };
+            resolveBarrier.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            resolveBarrier.oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            resolveBarrier.image               = data->resolveImage;
+            resolveBarrier.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            resolveBarrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(data->commandBuffer,
+                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &resolveBarrier);
+            if (data->resolveTextureHandle) {
+                data->resolveTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
         }
     }
 }

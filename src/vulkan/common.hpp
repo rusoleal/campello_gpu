@@ -105,12 +105,21 @@ namespace systems::leal::campello_gpu {
         VkFormat            depthFormat;
         VkAttachmentLoadOp  colorLoadOp;
         VkImageLayout       colorFinalLayout;
+        // MSAA support -- both change the render pass's actual attachment/subpass
+        // structure (sample count on every attachment, plus an extra resolve
+        // attachment + subpass resolve reference), so they must be part of the
+        // cache key like the other four fields. resolveFormat ==
+        // VK_FORMAT_UNDEFINED means "no resolve attachment" (the pre-MSAA case).
+        uint32_t            sampleCount;
+        VkFormat            resolveFormat;
 
         bool operator==(const RenderPassKey& other) const noexcept {
             return colorFormat == other.colorFormat &&
                    depthFormat == other.depthFormat &&
                    colorLoadOp == other.colorLoadOp &&
-                   colorFinalLayout == other.colorFinalLayout;
+                   colorFinalLayout == other.colorFinalLayout &&
+                   sampleCount == other.sampleCount &&
+                   resolveFormat == other.resolveFormat;
         }
     };
 
@@ -120,6 +129,8 @@ namespace systems::leal::campello_gpu {
             h = h * 31 + std::hash<int>{}((int)k.depthFormat);
             h = h * 31 + std::hash<int>{}((int)k.colorLoadOp);
             h = h * 31 + std::hash<int>{}((int)k.colorFinalLayout);
+            h = h * 31 + std::hash<unsigned>{}((unsigned)k.sampleCount);
+            h = h * 31 + std::hash<int>{}((int)k.resolveFormat);
             return h;
         }
     };
@@ -534,8 +545,17 @@ namespace systems::leal::campello_gpu {
 
 // Render-pass builder helper (defined in device.cpp, used by command_encoder.cpp).
 // Builds a single-subpass VkRenderPass with one color attachment and optional depth.
+// sampleCount > 1 requests a multisampled color (and, if present, depth) attachment;
+// resolveFormat != VK_FORMAT_UNDEFINED additionally adds a single-sample resolve
+// attachment (subpass.pResolveAttachments) that receives the averaged result --
+// mirrors dynamic-rendering's ColorAttachment::resolveTarget for the traditional
+// vkCmdBeginRenderPass path, which has no equivalent field of its own.
+// colorFinalLayout applies to the resolve attachment (the image actually sampled
+// afterward) when resolveFormat is set, not to the transient MSAA color attachment.
 VkRenderPass buildRenderPass(VkDevice device,
                               VkFormat colorFormat,
                               VkFormat depthFormat,
                               VkAttachmentLoadOp colorLoadOp,
-                              VkImageLayout colorFinalLayout);
+                              VkImageLayout colorFinalLayout,
+                              uint32_t sampleCount = 1,
+                              VkFormat resolveFormat = VK_FORMAT_UNDEFINED);

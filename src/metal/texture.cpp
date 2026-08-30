@@ -167,6 +167,15 @@ std::shared_ptr<TextureView> Texture::createView(
     auto handle = (MetalTextureHandle *)native;
     auto *tex = handle->texture;
 
+    // Metal does not support creating a texture view over a multisampled
+    // texture at all (newTextureView: fails validation with
+    // MTLTextureType2DMultisample sources) -- unlike single-sample textures,
+    // there's no format/type reinterpretation to request here, so just hand
+    // back the multisample texture itself as an identity "view".
+    if (tex->sampleCount() > 1) {
+        return TextureView::fromNative(tex);
+    }
+
     uint32_t resolvedMipCount = (mipLevelCount == static_cast<uint32_t>(-1))
                                   ? (tex->mipmapLevelCount() - baseMipLevel)
                                   : mipLevelCount;

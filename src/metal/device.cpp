@@ -549,6 +549,11 @@ std::shared_ptr<Texture> Device::createTexture(
                            pixelFormat == PixelFormat::depth24plus_stencil8  ||
                            pixelFormat == PixelFormat::depth32float_stencil8 ||
                            pixelFormat == PixelFormat::stencil8);
+    // Multisampled textures must use StorageModePrivate too -- Managed/Shared MSAA
+    // surfaces are rejected by Metal's texture validation (observed as an abort in
+    // newTextureWithDescriptor: on Intel integrated GPUs). MSAA attachments are
+    // GPU-only intermediates anyway (never read back directly), so Private is correct.
+    bool isMultisampled = samples > 1;
     MTL::StorageMode colorStorageMode;
 #if TARGET_OS_IOS || TARGET_OS_SIMULATOR
     // MTLStorageModeManaged is macOS-only; use Shared on iOS/Simulator.
@@ -556,8 +561,8 @@ std::shared_ptr<Texture> Device::createTexture(
 #else
     colorStorageMode = MTL::StorageModeManaged;
 #endif
-    pTextureDesc->setStorageMode(isDepthStencil ? MTL::StorageModePrivate
-                                                : colorStorageMode);
+    pTextureDesc->setStorageMode((isDepthStencil || isMultisampled) ? MTL::StorageModePrivate
+                                                                    : colorStorageMode);
 
     switch (type) {
         case TextureType::tt1d:
@@ -756,6 +761,11 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         pipelineDesc->setDepthAttachmentPixelFormat(
             toMTLPixelFormat(dev, descriptor.depthStencil->format));
     }
+
+    // MSAA sample count -- must match every attachment's sample count in any
+    // render pass this pipeline is used with (see RenderPipelineDescriptor::
+    // sampleCount's doc comment).
+    pipelineDesc->setSampleCount(descriptor.sampleCount);
 
     // Vertex descriptor
     if (!descriptor.vertex.buffers.empty()) {

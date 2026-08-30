@@ -32,6 +32,17 @@ namespace systems::leal::campello_gpu {
         // vkCmdBeginRenderingKHR records the raw VkImageView; destroying the TextureView
         // before the pass ends would make the validation layer look up a freed handle.
         std::shared_ptr<void> offscreenViewRef;
+        // MSAA resolve target (ColorAttachment::resolveTarget), if any -- mirrors
+        // offscreenImage/offscreenTextureHandle/offscreenBase*/offscreenViewRef
+        // above exactly, but end() must transition *this* image (the single-
+        // sample resolved result a subsequent draw will actually sample) to
+        // SHADER_READ_ONLY_OPTIMAL, not the transient multisampled attachment
+        // those other fields track.
+        VkImage          resolveImage          = VK_NULL_HANDLE;
+        TextureHandle*   resolveTextureHandle  = nullptr;
+        uint32_t         resolveBaseArrayLayer = 0;
+        uint32_t         resolveBaseMipLevel   = 0;
+        std::shared_ptr<void> resolveViewRef;
         // Occlusion queries
         VkQueryPool      queryPool             = VK_NULL_HANDLE;
         // True when using traditional vkCmdBeginRenderPass / vkCmdEndRenderPass.
