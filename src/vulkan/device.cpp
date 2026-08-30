@@ -2212,6 +2212,27 @@ static VkBlendFactor toVkBlendFactor(BlendFactor f) {
     }
 }
 
+// campello_gpu::StencilOp's declared enum order does not match VkStencilOp's
+// real values (VK_STENCIL_OP_KEEP=0, ZERO=1, REPLACE=2, INCREMENT_AND_CLAMP=3,
+// DECREMENT_AND_CLAMP=4, INVERT=5, INCREMENT_AND_WRAP=6, DECREMENT_AND_WRAP=7)
+// -- a raw static_cast silently produces the wrong operation (e.g.
+// StencilOp::incrementWrap, value 4, would cast to
+// VK_STENCIL_OP_DECREMENT_AND_CLAMP). Needs an explicit translation, same as
+// toVkBlendFactor() above and the DirectX backend's toD3D12StencilOp().
+static VkStencilOp toVkStencilOp(StencilOp op) {
+    switch (op) {
+        case StencilOp::keep:           return VK_STENCIL_OP_KEEP;
+        case StencilOp::zero:           return VK_STENCIL_OP_ZERO;
+        case StencilOp::replace:        return VK_STENCIL_OP_REPLACE;
+        case StencilOp::incrementClamp: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+        case StencilOp::decrementClamp: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+        case StencilOp::invert:         return VK_STENCIL_OP_INVERT;
+        case StencilOp::incrementWrap:  return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+        case StencilOp::decrementWrap:  return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+        default:                        return VK_STENCIL_OP_KEEP;
+    }
+}
+
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
 
     auto deviceData = (DeviceData *)this->native;
@@ -2246,7 +2267,13 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
 
     std::vector<VkDynamicState> dynamicStates = {
             VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR
+            VK_DYNAMIC_STATE_SCISSOR,
+            // Unused (a no-op) for pipelines with no depthStencil/stencil
+            // test, but required for RenderPassEncoder::setStencilReference()
+            // to be valid to record at all against a pipeline that *does*
+            // have one -- front/back.reference below is otherwise baked
+            // into the pipeline as a static 0.
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE
     };
 
     VkPipelineDynamicStateCreateInfo dynamicState{};
@@ -2385,9 +2412,9 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         if (ds.stencilFront.has_value()) {
             const auto &sf = *ds.stencilFront;
             depthStencil.front.compareOp  = static_cast<VkCompareOp>(sf.compare);
-            depthStencil.front.failOp     = static_cast<VkStencilOp>(sf.failOp);
-            depthStencil.front.passOp     = static_cast<VkStencilOp>(sf.passOp);
-            depthStencil.front.depthFailOp = static_cast<VkStencilOp>(sf.depthFailOp);
+            depthStencil.front.failOp     = toVkStencilOp(sf.failOp);
+            depthStencil.front.passOp     = toVkStencilOp(sf.passOp);
+            depthStencil.front.depthFailOp = toVkStencilOp(sf.depthFailOp);
             depthStencil.front.compareMask = ds.stencilReadMask;
             depthStencil.front.writeMask   = ds.stencilWriteMask;
             depthStencil.front.reference   = 0;
@@ -2395,9 +2422,9 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         if (ds.stencilBack.has_value()) {
             const auto &sb = *ds.stencilBack;
             depthStencil.back.compareOp   = static_cast<VkCompareOp>(sb.compare);
-            depthStencil.back.failOp      = static_cast<VkStencilOp>(sb.failOp);
-            depthStencil.back.passOp      = static_cast<VkStencilOp>(sb.passOp);
-            depthStencil.back.depthFailOp  = static_cast<VkStencilOp>(sb.depthFailOp);
+            depthStencil.back.failOp      = toVkStencilOp(sb.failOp);
+            depthStencil.back.passOp      = toVkStencilOp(sb.passOp);
+            depthStencil.back.depthFailOp  = toVkStencilOp(sb.depthFailOp);
             depthStencil.back.compareMask  = ds.stencilReadMask;
             depthStencil.back.writeMask    = ds.stencilWriteMask;
             depthStencil.back.reference    = 0;

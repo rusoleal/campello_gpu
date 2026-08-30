@@ -86,6 +86,28 @@ static MTL::CompareFunction toMTLCompare(CompareOp op) {
     }
 }
 
+static MTL::StencilOperation toMTLStencilOp(StencilOp op) {
+    switch (op) {
+        case StencilOp::zero:           return MTL::StencilOperationZero;
+        case StencilOp::replace:        return MTL::StencilOperationReplace;
+        case StencilOp::incrementClamp: return MTL::StencilOperationIncrementClamp;
+        case StencilOp::decrementClamp: return MTL::StencilOperationDecrementClamp;
+        case StencilOp::invert:         return MTL::StencilOperationInvert;
+        case StencilOp::incrementWrap:  return MTL::StencilOperationIncrementWrap;
+        case StencilOp::decrementWrap:  return MTL::StencilOperationDecrementWrap;
+        default:                        return MTL::StencilOperationKeep;
+    }
+}
+
+static MTL::StencilDescriptor* toMTLStencilDescriptor(const StencilDescriptor& sd) {
+    auto *desc = MTL::StencilDescriptor::alloc()->init();
+    desc->setStencilCompareFunction(toMTLCompare(sd.compare));
+    desc->setStencilFailureOperation(toMTLStencilOp(sd.failOp));
+    desc->setDepthFailureOperation(toMTLStencilOp(sd.depthFailOp));
+    desc->setDepthStencilPassOperation(toMTLStencilOp(sd.passOp));
+    return desc;
+}
+
 static MTL::VertexFormat toMTLVertexFormat(ComponentType comp, AccessorType acc, bool normalized) {
     switch (acc) {
         case AccessorType::acScalar:
@@ -770,9 +792,31 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     // on the encoder via setDepthStencilState: for depth testing to work.
     MTL::DepthStencilState *depthStencilState = nullptr;
     if (descriptor.depthStencil) {
+        const auto &ds = *descriptor.depthStencil;
         auto *dsDesc = MTL::DepthStencilDescriptor::alloc()->init();
-        dsDesc->setDepthWriteEnabled(descriptor.depthStencil->depthWriteEnabled);
-        dsDesc->setDepthCompareFunction(toMTLCompare(descriptor.depthStencil->depthCompare));
+        dsDesc->setDepthWriteEnabled(ds.depthWriteEnabled);
+        dsDesc->setDepthCompareFunction(toMTLCompare(ds.depthCompare));
+
+        // Stencil testing/writes are configured on separate per-face
+        // MTL::StencilDescriptor objects -- previously never populated here,
+        // so `stencilFront`/`stencilBack` were silently ignored and every
+        // pipeline requesting stencil ops got Metal's default nil (no
+        // stencil test, no stencil writes) behavior instead.
+        if (ds.stencilFront) {
+            auto *front = toMTLStencilDescriptor(*ds.stencilFront);
+            front->setReadMask(ds.stencilReadMask);
+            front->setWriteMask(ds.stencilWriteMask);
+            dsDesc->setFrontFaceStencil(front);
+            front->release();
+        }
+        if (ds.stencilBack) {
+            auto *back = toMTLStencilDescriptor(*ds.stencilBack);
+            back->setReadMask(ds.stencilReadMask);
+            back->setWriteMask(ds.stencilWriteMask);
+            dsDesc->setBackFaceStencil(back);
+            back->release();
+        }
+
         depthStencilState = dev->newDepthStencilState(dsDesc);
         dsDesc->release();
     }
