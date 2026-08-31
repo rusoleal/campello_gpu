@@ -4,6 +4,22 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-31
+
+### Added
+
+- **MSAA support** (`RenderPipelineDescriptor.sampleCount`, `resolveTarget`) — WebGPU-shaped multisample plumbing across the Metal and Vulkan backends, used by `campello_widgets`' `Path.fillType()` antialiasing. Metal wires `sampleCount` into pipeline state creation; Vulkan wires `resolveTarget` through both the `VK_KHR_dynamic_rendering` path and the traditional `vkCmdBeginRenderPass`/`VkFramebuffer` fallback path (`buildRenderPass()`, the pipeline-compatibility render pass, the draw-time render pass/framebuffer, `RenderPassKey`'s cache key, and `RenderPassEncoder::end()`'s layout tracking).
+
+### Fixed
+
+- **[Metal] `createTexture()` forced `StorageModeManaged` on MSAA textures**, which Metal's validator rejects (multisample textures require `StorageModePrivate`) — aborted on Intel integrated GPUs.
+- **[Metal] `Texture::createView()` called `newTextureView()` on a multisampled texture**, which Metal disallows entirely regardless of storage mode. Fixed via an identity-view fast path through the existing `TextureView::fromNative()`.
+- **[Vulkan] `resolveTarget` was only wired into the `VK_KHR_dynamic_rendering` path.** Devices without that extension (e.g. Adreno 618, Vulkan 1.1, no ext) fall back to traditional `vkCmdBeginRenderPass`/`VkFramebuffer`, which never got a resolve attachment — silently produced a blank (never-resolved) result on real hardware, with no error anywhere.
+- **[Metal] `MTLDepthStencilState` was only ever built from `depthWriteEnabled`/`depthCompareFunction`** — `descriptor.depthStencil->stencilFront`/`stencilBack` were read from the public API but never applied to the `MTLDepthStencilDescriptor`, so any pipeline requesting stencil ops silently got Metal's default (stencil test always passes, no stencil writes). Fixed by wiring `frontFaceStencil`/`backFaceStencil` via new `toMTLStencilDescriptor()`/`toMTLStencilOp()`.
+- **[Vulkan] `StencilOp`'s declared enum order didn't match `VkStencilOp`'s real spec values** (e.g. `StencilOp::incrementWrap`, value 4, cast to `VK_STENCIL_OP_DECREMENT_AND_CLAMP`, also value 4) — a raw `static_cast` was silently applying the wrong stencil operation. Fixed with a real translation function (`toVkStencilOp()`), matching the pattern the DirectX backend already used correctly. Also added `VK_DYNAMIC_STATE_STENCIL_REFERENCE` to the pipeline's dynamic state list, required for `RenderPassEncoder::setStencilReference()` to be valid to record against a pipeline that has depth-stencil state at all (previously only the static reference=0 baked into the pipeline took effect).
+
+Stencil fixes verified via `campello_widgets`' `Path.fillType()` (stencil-then-cover fill) gallery demo, screenshot-checked on macOS/Metal and a physical Android/Vulkan device. MSAA verified via macOS/Metal gallery screenshot (585/585 tests passing) and Android/Vulkan on-device screenshot plus a scroll-stress pass with no crash/corruption.
+
 ## [0.23.2] - 2026-08-24
 
 ### Added
