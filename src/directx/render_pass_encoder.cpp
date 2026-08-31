@@ -78,11 +78,19 @@ void RenderPassEncoder::end() {
     // doc comment in common.hpp for why this is necessary at all on D3D12.
     if (!native) return;
     auto* h = static_cast<RenderPassEncoderHandle*>(native);
-    if (h->colorAttachmentTextures.empty()) return;
 
+    // Regular (non-MSAA-resolved) color attachments: RENDER_TARGET -> a
+    // shader-readable state. Attachments with a resolve target are handled
+    // separately below via the RESOLVE_SOURCE/RESOLVE_DEST sequence
+    // ResolveSubresource requires, so they're skipped here.
     std::vector<D3D12_RESOURCE_BARRIER> barriers;
     barriers.reserve(h->colorAttachmentTextures.size());
     for (TextureHandle* th : h->colorAttachmentTextures) {
+        bool isResolveSource = false;
+        for (const auto& rt : h->resolveTargets) {
+            if (rt.msaaSource == th) { isResolveSource = true; break; }
+        }
+        if (isResolveSource) continue;
         if (th->currentState == D3D12_RESOURCE_STATE_RENDER_TARGET) {
             D3D12_RESOURCE_BARRIER barrier = {};
             barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -98,6 +106,68 @@ void RenderPassEncoder::end() {
     }
     if (!barriers.empty())
         h->cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+
+    // MSAA resolve targets, if this pass had any -- mirrors the Vulkan
+    // backend's resolveImage handling (commit 2d5732c). ResolveSubresource
+    // requires the source in RESOLVE_SOURCE and the destination in
+    // RESOLVE_DEST; both end up in the same shader-readable state the plain
+    // color-attachment path above uses, so a later pass/download() can
+    // treat every offscreen texture the same way regardless of how it got
+    // its final content.
+    if (!h->resolveTargets.empty()) {
+        std::vector<D3D12_RESOURCE_BARRIER> pre;
+        pre.reserve(h->resolveTargets.size() * 2);
+        for (auto& rt : h->resolveTargets) {
+            D3D12_RESOURCE_BARRIER b = {};
+            b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+            b.Transition.pResource   = rt.msaaSource->resource;
+            b.Transition.StateBefore = rt.msaaSource->currentState;
+            b.Transition.StateAfter  = D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+            pre.push_back(b);
+            rt.msaaSource->currentState = D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+
+            b.Transition.pResource   = rt.resolveDest->resource;
+            b.Transition.StateBefore = rt.resolveDest->currentState;
+            b.Transition.StateAfter  = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+            pre.push_back(b);
+            rt.resolveDest->currentState = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+        }
+        h->cmdList->ResourceBarrier(static_cast<UINT>(pre.size()), pre.data());
+
+        for (const auto& rt : h->resolveTargets) {
+            h->cmdList->ResolveSubresource(
+                rt.resolveDest->resource, 0,
+                rt.msaaSource->resource, 0,
+                rt.format);
+        }
+
+        std::vector<D3D12_RESOURCE_BARRIER> post;
+        post.reserve(h->resolveTargets.size() * 2);
+        for (auto& rt : h->resolveTargets) {
+            D3D12_RESOURCE_BARRIER b = {};
+            b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+            b.Transition.pResource   = rt.msaaSource->resource;
+            b.Transition.StateBefore = D3D12_RESOURCE_STATE_RESOLVE_SOURCE;
+            b.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            post.push_back(b);
+            rt.msaaSource->currentState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+
+            b.Transition.pResource   = rt.resolveDest->resource;
+            b.Transition.StateBefore = D3D12_RESOURCE_STATE_RESOLVE_DEST;
+            b.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            post.push_back(b);
+            rt.resolveDest->currentState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        }
+        h->cmdList->ResourceBarrier(static_cast<UINT>(post.size()), post.data());
+    }
 }
 
 void RenderPassEncoder::endOcclusionQuery() {

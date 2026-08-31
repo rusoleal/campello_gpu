@@ -2,6 +2,69 @@
 
 ## Bugs (breaking / incorrect behavior)
 
+- [x] **[Windows/DirectX]** **v0.24.0's MSAA feature (`RenderPipelineDescriptor::sampleCount`,
+      `ColorAttachment::resolveTarget`, commit `2d5732c`) was completely unimplemented on
+      DirectX** — that commit's own title said `feat(metal,vulkan)`; no `src/directx/*` file had
+      been touched at all, despite the fields living in the shared, cross-platform public header
+      with no per-backend guard. **Reproduced on real hardware first (2026-08-31, Intel Iris
+      Graphics 550)** with a standalone verification program before writing any fix: the resolve
+      texture came back all zeros in every case (no `ResolveSubresource` call anywhere in the
+      backend), and `Device::createRenderPipeline()` hardcoded `psd.SampleDesc.Count = 1`
+      regardless of `descriptor.sampleCount` — the D3D12 debug layer flagged a real validation
+      **error**: `"The render target sample desc in slot 0 does not match that specified by the
+      current pipeline state (pipeline state = count 1, render target view = count 4)"`.
+      **Fixed, same session**: `createRenderPipeline()` now sets `psd.SampleDesc.Count =
+      std::max(descriptor.sampleCount, 1u)`. `RenderPassEncoderHandle` gained a `resolveTargets`
+      list (`{msaaSource, resolveDest, format}` per color attachment with a non-null
+      `resolveTarget`), populated in `CommandEncoder::beginRenderPass()`; `RenderPassEncoder::
+      end()` now issues the real `ResolveSubresource` call, correctly sequenced through the
+      `RESOLVE_SOURCE`/`RESOLVE_DEST` states D3D12 requires (barrier in, resolve, barrier both to
+      the same shader-readable state the plain color-attachment path already uses) — mirrors the
+      Vulkan backend's `resolveImage`/`resolveTextureHandle` handling in the same-named function
+      (commit `2d5732c`). **Re-verified on the same real hardware after the fix**, same
+      verification program, both a Release and a Debug (D3D12 debug layer on) build: a resolve-only
+      clear produces the exact expected resolved clear color, and a real draw (`sampleCount=4`
+      pipeline, full-screen triangle) into a fresh MSAA target with a resolve target produces the
+      exact expected fragment-shader color after resolve — both `PASS`, 0 failures. Also reran the
+      full `campello_gpu_integration_tests.exe` suite afterward: still 205/205 passing, no
+      regression. `tests/` still has no permanent unit-test coverage for `sampleCount`/
+      `resolveTarget` on any backend — worth adding one, not done this session (the verification
+      program was throwaway, not committed).
+- [x] **[Windows/DirectX]** `Texture::download()` (`src/directx/texture.cpp`) hardcoded its
+      COMMON→COPY_SOURCE transition barrier's `StateBefore` to `D3D12_RESOURCE_STATE_COMMON`
+      unconditionally, and unconditionally transitioned back to `COMMON` afterward — **without ever
+      reading or updating `TextureHandle::currentState`**. Correct only for a texture that had
+      never been rendered into; wrong for any texture just used as a render target (`RenderPassEncoder::
+      end()` correctly leaves those in `PIXEL_SHADER_RESOURCE|NON_PIXEL_SHADER_RESOURCE`, not
+      `COMMON`) — `download()`'s false `StateBefore` claim got queued as a D3D12 debug-layer error
+      (this backend only drains debug messages once per `Device::submit()`, so the message surfaced
+      later than it actually fired, initially misread as an MSAA-specific issue — see the two now-
+      superseded entries this replaces), and its unconditional "restore to COMMON" left
+      `TextureHandle::currentState` stale afterward, so the *next* pass reusing that texture
+      barriered from the wrong assumed state. General, pre-existing bug, unrelated to MSAA — just
+      never surfaced before because it takes both the D3D12 debug layer (Debug config only, not
+      exercised by the Release-config test suite) *and* a texture that's downloaded after rendering
+      and then reused in a later pass within the same process, a combination no existing test
+      happened to hit. **Root-caused via elimination, not guesswork** (session 2026-08-31): a
+      resolve-only-clear-reused-twice repro (no draw) showed no warning; a non-MSAA draw-reused-
+      twice repro (no resolve) also showed no warning; re-reading `download()`'s source pinned the
+      exact mismatch to its hardcoded `COMMON` assumption, confirmed by the fact that the only run
+      producing the warning was the one that called `download()` between two render passes on the
+      same texture. **Fixed**: `download()` now reads `h->currentState` as the real `StateBefore`
+      and restores that same value afterward (rather than hardcoding `COMMON` both ways), leaving
+      `currentState` accurate with no extra bookkeeping needed since it's restored to what it
+      already was. **Verified on the same real hardware**: reran the exact original repro (resolve-
+      only clear → `download()` → pipeline+draw+resolve → `download()` → a third clear+resolve →
+      `download()` again) in Debug config — the barrier warning is gone across all three passes,
+      every downloaded pixel value exactly matches expectations. Full integration suite reran
+      afterward: still 205/205 passing, no regression.
+- [x] **[Windows/DirectX]** Spot-checked commit `b50262a`'s claim that DirectX's stencil-face-state
+      handling was "already used correctly" (session 2026-08-31, verifying rather than trusting the
+      commit message) — confirmed accurate: `toD3D12StencilOp()` (`src/directx/device.cpp:115`) is
+      a real explicit switch with correct mappings (no raw enum `static_cast`, unlike the Vulkan bug
+      that same commit fixed), and `stencilFront`/`stencilBack` are already wired into
+      `psd.DepthStencilState` in `createRenderPipeline()`. No bug found here.
+
 - [x] **[Vulkan]** `Device::~Device()` — leaked `VkSwapchainKHR`, `VkSemaphore` ×2, all `VkImageView` swapchain views, `VkSurfaceKHR`, `VkDescriptorPool`; now fully destroyed in order with `vkDeviceWaitIdle` guard
 - [x] **[Vulkan]** `createRenderPipeline()` `stageCount` hardcoded to `2` — vertex-only pipelines (no fragment shader) would pass a wrong count; now uses `shaderStages.size()`
 - [x] **[Vulkan]** `createTexture()` default view always used `VK_IMAGE_ASPECT_COLOR_BIT` for all formats — depth/stencil textures now correctly use `DEPTH_BIT`, `STENCIL_BIT`, or both based on format

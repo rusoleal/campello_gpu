@@ -59,6 +59,7 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = {};
     bool hasDSV = false;
     std::vector<TextureHandle*> colorAttachmentTextures;
+    std::vector<RenderPassEncoderHandle::ResolveTarget> resolveTargets;
 
     for (const auto& ca : descriptor.colorAttachments) {
         if (!ca.view || !ca.view->native) {
@@ -110,6 +111,16 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
                 th->currentState = D3D12_RESOURCE_STATE_RENDER_TARGET;
             }
             colorAttachmentTextures.push_back(th);
+
+            // MSAA resolve target -- the actual end-of-pass ResolveSubresource
+            // call happens in RenderPassEncoder::end(), once the pass's draws
+            // have actually written into `th`.
+            if (ca.resolveTarget && ca.resolveTarget->native) {
+                auto* rtvh = static_cast<TextureViewHandle*>(ca.resolveTarget->native);
+                if (rtvh->sourceHandle) {
+                    resolveTargets.push_back({ th, rtvh->sourceHandle, tvh->format });
+                }
+            }
         }
 
         if (ca.loadOp == LoadOp::clear) {
@@ -144,6 +155,7 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
     ph->cmdList     = list;
     ph->deviceData  = h->deviceData;
     ph->colorAttachmentTextures = std::move(colorAttachmentTextures);
+    ph->resolveTargets          = std::move(resolveTargets);
     if (descriptor.occlusionQuerySet && descriptor.occlusionQuerySet->native) {
         auto* qsh      = static_cast<QuerySetHandle*>(descriptor.occlusionQuerySet->native);
         ph->queryHeap  = qsh->queryHeap;

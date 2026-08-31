@@ -1020,6 +1020,22 @@ struct RenderPassEncoderHandle {
     // shader-readable state in end(). See TextureHandle::currentState's doc
     // comment.
     std::vector<TextureHandle*> colorAttachmentTextures;
+
+    // MSAA resolve targets for this pass's color attachments, populated by
+    // beginRenderPass() whenever ColorAttachment::resolveTarget is set.
+    // msaaSource is also present in colorAttachmentTextures above (it still
+    // needs the RENDER_TARGET transition at pass-begin), but end() handles
+    // its end-of-pass transition separately here via the RESOLVE_SOURCE/
+    // RESOLVE_DEST states ResolveSubresource requires, rather than
+    // colorAttachmentTextures' generic RENDER_TARGET->PIXEL_SHADER_RESOURCE
+    // path — mirrors the Vulkan backend's resolveImage/resolveTextureHandle
+    // handling in RenderPassEncoder::end() (see commit 2d5732c).
+    struct ResolveTarget {
+        TextureHandle* msaaSource;
+        TextureHandle* resolveDest;
+        DXGI_FORMAT    format;
+    };
+    std::vector<ResolveTarget> resolveTargets;
 };
 
 struct ComputePassEncoderHandle {

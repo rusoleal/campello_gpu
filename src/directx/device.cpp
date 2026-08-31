@@ -1363,7 +1363,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
     }
 
     psd.SampleMask        = UINT_MAX;
-    psd.SampleDesc.Count  = 1;
+    psd.SampleDesc.Count  = std::max(descriptor.sampleCount, 1u);
 
     ID3D12PipelineState* pso = nullptr;
     if (FAILED(dev->CreateGraphicsPipelineState(&psd, IID_PPV_ARGS(&pso)))) {

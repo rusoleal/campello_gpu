@@ -393,11 +393,24 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
         return false;
     }
 
-    // Transition texture to COPY_SOURCE
+    // Transition texture to COPY_SOURCE from whatever it's actually in right
+    // now -- hardcoding COMMON here was wrong for any texture that had just
+    // been rendered into (RenderPassEncoder::end() leaves those in
+    // PIXEL_SHADER_RESOURCE|NON_PIXEL_SHADER_RESOURCE, not COMMON): the
+    // false StateBefore claim gets queued as a D3D12 debug-layer error
+    // (this backend only drains debug messages once per Device::submit(),
+    // so it surfaces later than it actually fires), and unconditionally
+    // restoring to COMMON below left TextureHandle::currentState stale
+    // regardless of where the texture actually started -- a later pass
+    // reusing this texture would then barrier from the stale tracked state
+    // instead of the real one. Reproduced on real hardware (Intel Iris
+    // Graphics 550) via a texture rendered into, downloaded, then reused as
+    // a render target in a second pass.
+    D3D12_RESOURCE_STATES originalState = h->currentState;
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource   = h->resource;
-    barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateBefore = originalState;
     barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
     barrier.Transition.Subresource = subresource;
     list->ResourceBarrier(1, &barrier);
@@ -415,9 +428,12 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
 
     list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
 
-    // Transition texture back to COMMON
+    // Transition texture back to its original state (not hardcoded COMMON)
+    // -- keeps TextureHandle::currentState accurate for whatever the next
+    // caller does with this texture; no update to h->currentState needed
+    // since it's restored to exactly the value it already held.
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
-    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COMMON;
+    barrier.Transition.StateAfter  = originalState;
     list->ResourceBarrier(1, &barrier);
 
     if (FAILED(list->Close())) {
