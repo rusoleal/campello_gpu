@@ -24,4 +24,24 @@ namespace systems::leal::campello_gpu {
         intersection  = 0x80, ///< Intersection shader stage — custom primitive intersection test (ray tracing).
     };
 
+    /// Combines two stage flags — see `ShaderStage`'s doc comment. `enum
+    /// class` has no implicit bitwise operators, so this (and `operator&`/
+    /// `operator|=` below) is required for the documented usage to compile.
+    constexpr ShaderStage operator|(ShaderStage lhs, ShaderStage rhs) noexcept
+    {
+        return static_cast<ShaderStage>(static_cast<unsigned>(lhs) | static_cast<unsigned>(rhs));
+    }
+
+    /// Tests whether `rhs`'s bit(s) are set in `lhs`.
+    constexpr ShaderStage operator&(ShaderStage lhs, ShaderStage rhs) noexcept
+    {
+        return static_cast<ShaderStage>(static_cast<unsigned>(lhs) & static_cast<unsigned>(rhs));
+    }
+
+    constexpr ShaderStage& operator|=(ShaderStage& lhs, ShaderStage rhs) noexcept
+    {
+        lhs = lhs | rhs;
+        return lhs;
+    }
+
 }
