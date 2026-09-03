@@ -4,6 +4,12 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-09-03
+
+### Fixed
+
+- **`ShaderStage` had no bitwise operators**, despite its own doc comment documenting it as a combinable bitmask (`entry.visibility = ShaderStage::vertex | ShaderStage::fragment;`) — a scoped `enum class` gets no implicit bitwise operators from the language, so the documented usage never actually compiled. Surfaced downstream in `campello_widgets` while wiring up a bind group visible to both the vertex and fragment stages. Added `operator|`, `operator&`, and `operator|=`.
+
 ## [0.24.0] - 2026-08-31
 
 ### Added
