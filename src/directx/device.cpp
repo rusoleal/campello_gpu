@@ -1760,6 +1760,14 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     ID3D12Resource*            readbackBuffer = nullptr;
 
     if (auto retiring = std::move(d->genCommandBuffer[gen])) {
+        // The GPU has finished this command buffer, so its timestamps are readable
+        // without waiting. This is the time for the whole command list, which holds
+        // all of a frame's passes, so it's what getPassPerformanceStats() reports.
+        if (const uint64_t gpuTimeNs = retiring->getGPUExecutionTime()) {
+            d->renderPassTimeNs += gpuTimeNs;
+            d->renderPassSampleCount++;
+        }
+
         auto* cbh = static_cast<CommandBufferHandle*>(retiring->native);
         alloc          = cbh->allocator;
         list           = cbh->cmdList;
