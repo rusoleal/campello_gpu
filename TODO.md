@@ -310,6 +310,7 @@
       `dxgi.h`'s `DXGI_OUTPUT_DESC`, per a confirmed Microsoft Q&A report) via a manual `typedef
       HANDLE HMONITOR` guarded to that partition in `src/directx/common.hpp` — this fix is real
       and harmless regardless of the corrected premise.
+- [x] `Device::createDefaultDeviceForCoreWindow(coreWindow, width, height)` — **restored for UWP** (2026-11-05). The removal below was right for the GDK, but UWP apps, including Xbox in Developer Mode, have no HWND and do need this path. Verified on an Xbox Series X, along with a fallback to feature level 11_0, the only level UWP exposes there.
 - [x] `Device::createDefaultDeviceForCoreWindow(coreWindow, width, height)` — **removed** (session
       2026-08-24, same session as the correction above). It was a `CreateSwapChainForCoreWindow`-
       based presentation path added on the premise that "GDK/Xbox present into an `ICoreWindow`,

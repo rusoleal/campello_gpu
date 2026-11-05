@@ -36,7 +36,27 @@ typedef HANDLE HMONITOR;
 #include <campello_gpu/metrics.hpp>
 #include <campello_gpu/command_buffer.hpp>
 
+// UWP (including Xbox in Developer Mode): no HWND, GetClientRect or
+// CreateSwapChainForHwnd. A swapchain comes from a CoreWindow instead -- see
+// Device::createDefaultDeviceForCoreWindow().
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP
+#define CAMPELLO_DX_UWP 1
+#else
+#define CAMPELLO_DX_UWP 0
+#endif
+
 namespace systems::leal::campello_gpu {
+
+// Prefers 12_0, then falls back to 11_0: UWP on Xbox Series X|S only exposes
+// hardware feature level 11_0 (12_0 and 11_1 return DXGI_ERROR_UNSUPPORTED,
+// measured with examples/xbox_probe in campello_renderer).
+inline HRESULT createD3D12Device(IUnknown* adapter, ID3D12Device** device) {
+    HRESULT hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(device));
+    if (FAILED(hr)) {
+        hr = D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(device));
+    }
+    return hr;
+}
 
 // -----------------------------------------------------------------------
 // Central device state
@@ -72,6 +92,7 @@ struct DeviceData {
     // mismatched render-pass attachments, corrupting draw-call/barrier
     // state and crashing with STATUS_ACCESS_VIOLATION inside this DLL.
     void ensureSwapchainSize() {
+#if !CAMPELLO_DX_UWP
         if (!swapChain || !hwnd) return;
 
         RECT rect = {};
@@ -104,6 +125,7 @@ struct DeviceData {
             }
             frameIndex = swapChain->GetCurrentBackBufferIndex();
         }
+#endif
     }
 
     // Frame-in-flight ring. Tied explicitly to kFrameCount (rather than an

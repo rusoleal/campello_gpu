@@ -182,7 +182,10 @@ static D3D12_PRIMITIVE_TOPOLOGY toPrimitiveTopology(PrimitiveTopology t) {
 // DeviceData creation helper
 // -----------------------------------------------------------------------
 
-static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
+static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd,
+                                    bool pdIsCoreWindow = false,
+                                    UINT coreWindowWidth = 0,
+                                    UINT coreWindowHeight = 0) {
     auto* data = new DeviceData();
     data->adapter = adapter;
 
@@ -205,8 +208,7 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
     }
 #endif
 
-    if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0,
-                                  IID_PPV_ARGS(&data->device)))) {
+    if (FAILED(createD3D12Device(adapter, &data->device))) {
         delete data;
         return nullptr;
     }
@@ -330,16 +332,27 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd) {
         scd.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         scd.SampleDesc.Count = 1;
 
-        HWND hwnd = static_cast<HWND>(pd);
-        data->hwnd = hwnd;
-        RECT rect = {};
-        GetClientRect(hwnd, &rect);
-        scd.Width  = std::max<UINT>(rect.right  - rect.left, 1u);
-        scd.Height = std::max<UINT>(rect.bottom - rect.top,  1u);
-
         IDXGISwapChain1* sc1 = nullptr;
-        factory->CreateSwapChainForHwnd(data->queue, hwnd, &scd,
-                                        nullptr, nullptr, &sc1);
+        if (pdIsCoreWindow) {
+            // A CoreWindow has no client rect to query, so the caller supplies
+            // the size. Zero-initialized scd.Scaling is DXGI_SCALING_STRETCH,
+            // the mode a CoreWindow swapchain needs.
+            scd.Width  = std::max<UINT>(coreWindowWidth,  1u);
+            scd.Height = std::max<UINT>(coreWindowHeight, 1u);
+            factory->CreateSwapChainForCoreWindow(data->queue, static_cast<IUnknown*>(pd),
+                                                  &scd, nullptr, &sc1);
+        } else {
+#if !CAMPELLO_DX_UWP
+            HWND hwnd = static_cast<HWND>(pd);
+            data->hwnd = hwnd;
+            RECT rect = {};
+            GetClientRect(hwnd, &rect);
+            scd.Width  = std::max<UINT>(rect.right  - rect.left, 1u);
+            scd.Height = std::max<UINT>(rect.bottom - rect.top,  1u);
+            factory->CreateSwapChainForHwnd(data->queue, hwnd, &scd,
+                                            nullptr, nullptr, &sc1);
+#endif
+        }
         if (sc1) {
             sc1->QueryInterface(IID_PPV_ARGS(&data->swapChain));
             sc1->Release();
@@ -540,6 +553,23 @@ std::shared_ptr<Device> Device::createDefaultDevice(void* pd) {
     return std::shared_ptr<Device>(new Device(data));
 }
 
+std::shared_ptr<Device> Device::createDefaultDeviceForCoreWindow(void* coreWindow,
+                                                                 uint32_t width,
+                                                                 uint32_t height) {
+    if (!coreWindow) return nullptr;
+
+    IDXGIFactory6* factory = nullptr;
+    if (FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) return nullptr;
+
+    IDXGIAdapter1* adapter = selectDefaultAdapter(factory);
+    factory->Release();
+    if (!adapter) return nullptr;
+
+    auto* data = createDeviceData(adapter, coreWindow, true, width, height);
+    if (!data) { adapter->Release(); return nullptr; }
+    return std::shared_ptr<Device>(new Device(data));
+}
+
 std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> adapter, void* pd) {
     if (!adapter || !adapter->native) return nullptr;
     auto* dxgiAdapter = static_cast<IDXGIAdapter1*>(adapter->native);
@@ -633,6 +663,7 @@ std::string Device::getEngineVersion() {
 #endif
         D3D_FEATURE_LEVEL_12_1,
         D3D_FEATURE_LEVEL_12_0,
+        D3D_FEATURE_LEVEL_11_0,
     };
     for (auto level : levels) {
         if (SUCCEEDED(D3D12CreateDevice(nullptr, level,
@@ -643,6 +674,7 @@ std::string Device::getEngineVersion() {
 #endif
                 case D3D_FEATURE_LEVEL_12_1: return "Direct3D 12.1";
                 case D3D_FEATURE_LEVEL_12_0: return "Direct3D 12.0";
+                case D3D_FEATURE_LEVEL_11_0: return "Direct3D 12 (feature level 11_0)";
                 default: break;
             }
         }

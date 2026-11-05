@@ -22,8 +22,7 @@ std::set<Feature> Adapter::getFeatures() {
 
     // Create a temporary device to query features
     ID3D12Device* tmpDevice = nullptr;
-    if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0,
-                                  IID_PPV_ARGS(&tmpDevice)))) {
+    if (FAILED(createD3D12Device(adapter, &tmpDevice))) {
         return features;
     }
 
