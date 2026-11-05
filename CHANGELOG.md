@@ -4,6 +4,27 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-05
+
+### Added
+
+- **UWP support on DirectX, including Xbox in Developer Mode.** Configure with
+  `CMAKE_SYSTEM_NAME=WindowsStore`. Tested on an Xbox Series X and a Windows PC.
+- **`Device::createDefaultDeviceForCoreWindow(coreWindow, width, height)`** presents into a CoreWindow,
+  because UWP has no HWND. It was removed in 0.23.2 because the GDK doesn't need it; it's back for UWP only.
+  The swapchain keeps its size and stretches to fill the window.
+
+### Changed
+
+- **Device creation falls back from feature level 12_0 to 11_0.** UWP on Xbox Series X only exposes 11_0.
+  This also lets the device be created on PC hardware limited to 11_0, which wasn't possible before.
+
+### Fixed
+
+- **`Device::getPassPerformanceStats()` always read zero on DirectX** because nothing fed it. It now reports
+  each command buffer's GPU time, in the render pass fields. This covers the whole command list, not
+  individual passes.
+
 ## [0.24.1] - 2026-09-03
 
 ### Fixed
