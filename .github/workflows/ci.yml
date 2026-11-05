@@ -214,6 +214,25 @@ jobs:
         run: cmake --build build --target campello_gpu --config Release
 
   # ---------------------------------------------------------------------------
+  # UWP build check (Windows PC and Xbox Developer Mode). Library only: there's no
+  # console in CI, so this catches desktop-only APIs reaching the UWP build, such
+  # as HWND calls outside the CAMPELLO_DX_UWP guards.
+  # ---------------------------------------------------------------------------
+  build-windows-uwp:
+    name: Build check (Windows / DirectX 12 / UWP)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure
+        shell: cmd
+        run: cmake -B build -A x64 -DCMAKE_SYSTEM_NAME=WindowsStore -DCMAKE_SYSTEM_VERSION=10.0
+
+      - name: Build
+        run: cmake --build build --target campello_gpu --config Release
+
+  # ---------------------------------------------------------------------------
   # WASM / WebGPU build check — compile with Emscripten.
   # No tests are executed: integration tests need a browser/GPU, and gtest
   # under Emscripten requires additional runner setup. This job ensures the
