@@ -200,8 +200,12 @@ void CommandEncoder::copyTextureToBuffer(
         bytesPerRow * height              // destinationBytesPerImage (for 3D/array)
     );
 
-    // Synchronize for CPU read access if using managed storage
-    blitEncoder->synchronizeResource(buf);
+    // Synchronize for CPU read access -- only valid (and only needed) for
+    // managed-storage buffers. Shared-storage buffers are always coherent, and
+    // Metal API validation aborts on synchronizeResource: for them.
+    if (buf->storageMode() == MTL::StorageModeManaged) {
+        blitEncoder->synchronizeResource(buf);
+    }
 
     blitEncoder->endEncoding();
 }
