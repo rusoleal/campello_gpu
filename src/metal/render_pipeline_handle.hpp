@@ -7,4 +7,9 @@
 struct MetalRenderPipelineData {
     MTL::RenderPipelineState *pipelineState;
     MTL::DepthStencilState   *depthStencilState; // nullptr when no depth descriptor was set
+    // Rasterizer state. Metal keeps cull mode and winding on the render
+    // command encoder rather than in the pipeline state object, so they are
+    // remembered here and applied by RenderPassEncoder::setPipeline.
+    MTL::CullMode             cullMode = MTL::CullModeNone;
+    MTL::Winding              winding  = MTL::WindingCounterClockwise;
 };

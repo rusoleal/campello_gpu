@@ -28,6 +28,9 @@ struct MetalRenderEncoderData {
     // Pipeline state cache — avoids redundant setRenderPipelineState calls.
     MTL::RenderPipelineState  *currentPipelineState = nullptr;
     MTL::DepthStencilState    *currentDepthStencilState = nullptr;
+    // Encoder rasterizer state; Metal's defaults are no culling, clockwise.
+    MTL::CullMode              currentCullMode = MTL::CullModeNone;
+    MTL::Winding               currentWinding  = MTL::WindingClockwise;
 
     // Resource binding cache — avoids redundant encoder calls that trigger
     // Metal API Validation asserts.
@@ -155,6 +158,14 @@ void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     if (handle->depthStencilState && data->currentDepthStencilState != handle->depthStencilState) {
         enc->setDepthStencilState(handle->depthStencilState);
         data->currentDepthStencilState = handle->depthStencilState;
+    }
+    if (data->currentCullMode != handle->cullMode) {
+        enc->setCullMode(handle->cullMode);
+        data->currentCullMode = handle->cullMode;
+    }
+    if (data->currentWinding != handle->winding) {
+        enc->setFrontFacingWinding(handle->winding);
+        data->currentWinding = handle->winding;
     }
 }
 
