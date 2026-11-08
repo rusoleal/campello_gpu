@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-08
+
 ### Changed
 
 - **[WebGPU] Ported to Dawn's `emdawnwebgpu` Emscripten port** (`--use-port=emdawnwebgpu`),
