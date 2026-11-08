@@ -227,7 +227,15 @@ endif()
 
 if(BUILD_TESTS)
     enable_testing()
-    add_subdirectory(tests)
+    if(${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten")
+        # GoogleTest can't run in a browser page; the WebGPU backend has its
+        # own self-checking browser test instead (tests/webgpu/).
+        if(BUILD_INTEGRATION_TESTS)
+            add_subdirectory(tests/webgpu)
+        endif()
+    else()
+        add_subdirectory(tests)
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

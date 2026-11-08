@@ -233,13 +233,13 @@ jobs:
         run: cmake --build build --target campello_gpu --config Release
 
   # ---------------------------------------------------------------------------
-  # WASM / WebGPU build check — compile with Emscripten.
-  # No tests are executed: integration tests need a browser/GPU, and gtest
-  # under Emscripten requires additional runner setup. This job ensures the
-  # WebGPU backend compiles cleanly and the async ASYNCIFY paths are valid.
+  # WASM / WebGPU — build with Emscripten, then run the browser test.
+  # tests/webgpu/webgpu_browser_test runs in headless Chrome (GoogleTest can't
+  # run in a browser page). The runner has no GPU, so Chrome uses its bundled
+  # SwiftShader (CPU Vulkan) as the WebGPU adapter.
   # ---------------------------------------------------------------------------
   build-wasm:
-    name: Build check (WASM / WebGPU)
+    name: WASM / WebGPU (build + browser test)
     runs-on: ubuntu-latest
 
     steps:
@@ -252,8 +252,29 @@ jobs:
           version: 4.0.10
           actions-cache-folder: 'emsdk-cache'
 
-      - name: Configure (emcmake)
-        run: emcmake cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+      # run_in_browser.mjs needs Node >= 22 (global WebSocket).
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-      - name: Build library
+      - name: Configure (emcmake)
+        run: >
+          emcmake cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_INTEGRATION_TESTS=ON -DBUILD_EXAMPLES=ON
+
+      - name: Build library, example and browser test
         run: cmake --build build --config Release
+
+      - name: Run browser test (headless Chrome, SwiftShader)
+        env:
+          CHROME_FLAGS: >-
+            --no-sandbox
+            --use-webgpu-adapter=swiftshader
+            --enable-features=Vulkan
+            --use-vulkan=swiftshader
+            --use-angle=swiftshader
+        run: |
+          export CHROME_PATH="$(command -v google-chrome)"
+          "$CHROME_PATH" --version
+          ctest --test-dir build --verbose --timeout 300

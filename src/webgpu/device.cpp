@@ -1099,13 +1099,28 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> adapter, v
     auto* adapterHandle = adapter ? static_cast<AdapterHandle*>(adapter->native) : nullptr;
     if (!adapterHandle || !adapterHandle->adapter) return nullptr;
 
-    WGPUDevice device = requestDevice(adapterHandle->adapter);
-    if (!device) return nullptr;
+    // WebGPU adapters are single-use: after one requestDevice() the adapter is
+    // "consumed". Other backends allow several devices per Adapter, so for
+    // every device after the first, request a fresh adapter for the same GPU.
+    WGPUAdapter wgpuAdapter = nullptr;
+    if (adapterHandle->consumed) {
+        wgpuAdapter = requestAdapter();  // owned by the device below
+        if (!wgpuAdapter) return nullptr;
+    } else {
+        wgpuAdapter = adapterHandle->adapter;
+        wgpuAdapterAddRef(wgpuAdapter);
+    }
+
+    WGPUDevice device = requestDevice(wgpuAdapter);
+    adapterHandle->consumed = true;  // even a failed request consumes it
+    if (!device) {
+        wgpuAdapterRelease(wgpuAdapter);
+        return nullptr;
+    }
 
     auto dev = std::shared_ptr<Device>(new Device(device));
     auto* deviceData = static_cast<WebGPUDeviceData*>(dev->native);
-    wgpuAdapterAddRef(adapterHandle->adapter);
-    deviceData->adapter = adapterHandle->adapter;
+    deviceData->adapter = wgpuAdapter;
 
     if (pd != nullptr && !createSurface(deviceData, static_cast<const char*>(pd))) {
         return nullptr;

@@ -223,6 +223,9 @@ struct WebGPUDeviceData {
 
 struct AdapterHandle {
     WGPUAdapter adapter = nullptr;
+    // A WebGPU adapter can create only one device ("consumed" afterwards);
+    // Device::createDevice() requests a fresh adapter once this is set.
+    bool consumed = false;
 };
 
 struct BufferHandle {

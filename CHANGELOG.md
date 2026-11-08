@@ -4,6 +4,20 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **[WebGPU] Browser test in CI.** `tests/webgpu/webgpu_browser_test` covers device creation,
+  compute, buffer/texture readback, depth and MSAA passes, the canvas surface and resizing, and
+  the error counter. `tests/webgpu/run_in_browser.mjs` runs it in headless Chrome, and the WASM CI
+  job now runs it on every push. Locally: configure with `emcmake cmake -DBUILD_INTEGRATION_TESTS=ON`,
+  then `ctest` (needs Node 22+ and Chrome).
+
+### Fixed
+
+- **[WebGPU] A second `Device::createDevice()` with the same `Adapter` failed**, because a WebGPU
+  adapter can create only one device. The backend now requests a fresh adapter for the same GPU
+  once the first one is used.
+
 ## [0.26.0] - 2026-11-08
 
 ### Changed
