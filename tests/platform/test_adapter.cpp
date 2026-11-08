@@ -5,7 +5,7 @@
 // GetAdaptersReturnsAtLeastOneOnSupportedPlatform test gates it behind
 // __ANDROID__/__APPLE__/_WIN32 and skips on Linux — leaving this working
 // codepath completely untested there. These tests exercise it directly on
-// every platform that has a real Vulkan/Metal/DirectX backend.
+// every platform that has a real Vulkan/Metal/DirectX/WebGPU backend.
 
 #include <gtest/gtest.h>
 #include <campello_gpu/device.hpp>
@@ -18,22 +18,14 @@ using namespace systems::leal::campello_gpu;
 // ---------------------------------------------------------------------------
 
 TEST(Adapter, GetAdaptersReturnsAtLeastOneAdapter) {
-#if defined(__EMSCRIPTEN__)
-    GTEST_SKIP() << "getAdapters not implemented on this platform yet";
-#else
     auto adapters = Device::getAdapters();
     EXPECT_FALSE(adapters.empty()) << "Expected at least one GPU adapter";
-#endif
 }
 
 TEST(Adapter, GetAdaptersIsStableAcrossCalls) {
-#if defined(__EMSCRIPTEN__)
-    GTEST_SKIP() << "getAdapters not implemented on this platform yet";
-#else
     auto first  = Device::getAdapters();
     auto second = Device::getAdapters();
     EXPECT_EQ(first.size(), second.size());
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -41,9 +33,6 @@ TEST(Adapter, GetAdaptersIsStableAcrossCalls) {
 // ---------------------------------------------------------------------------
 
 TEST(Adapter, GetFeaturesOnEveryAdapterDoesNotThrow) {
-#if defined(__EMSCRIPTEN__)
-    GTEST_SKIP() << "getAdapters not implemented on this platform yet";
-#else
     auto adapters = Device::getAdapters();
     if (adapters.empty()) GTEST_SKIP() << "No adapters available";
 
@@ -51,7 +40,6 @@ TEST(Adapter, GetFeaturesOnEveryAdapterDoesNotThrow) {
         ASSERT_NE(adapter, nullptr);
         EXPECT_NO_THROW(adapter->getFeatures());
     }
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -61,33 +49,25 @@ TEST(Adapter, GetFeaturesOnEveryAdapterDoesNotThrow) {
 
 static void* platformWindowHandle() {
 #if defined(__EMSCRIPTEN__)
-    return (void*)"#canvas";
+    return const_cast<char*>("#canvas");
 #else
     return nullptr;
 #endif
 }
 
 TEST(Adapter, CreateDeviceFromExplicitFirstAdapterReturnsNonNull) {
-#if defined(__EMSCRIPTEN__)
-    GTEST_SKIP() << "getAdapters not implemented on this platform yet";
-#else
     auto adapters = Device::getAdapters();
     if (adapters.empty()) GTEST_SKIP() << "No adapters available";
 
     auto device = Device::createDevice(adapters[0], platformWindowHandle());
     EXPECT_NE(device, nullptr);
-#endif
 }
 
 TEST(Adapter, DeviceCreatedFromExplicitAdapterHasNonEmptyName) {
-#if defined(__EMSCRIPTEN__)
-    GTEST_SKIP() << "getAdapters not implemented on this platform yet";
-#else
     auto adapters = Device::getAdapters();
     if (adapters.empty()) GTEST_SKIP() << "No adapters available";
 
     auto device = Device::createDevice(adapters[0], platformWindowHandle());
     ASSERT_NE(device, nullptr);
     EXPECT_FALSE(device->getName().empty());
-#endif
 }

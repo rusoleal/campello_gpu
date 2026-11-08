@@ -11,6 +11,7 @@ QuerySet::~QuerySet() {
     auto* handle = static_cast<QuerySetHandle*>(native);
     if (handle->deviceData) {
         handle->deviceData->querySetCount--;
+        handle->deviceData->querySetBytes.fetch_sub(static_cast<uint64_t>(handle->count) * sizeof(uint64_t));
     }
     if (handle->querySet) {
         wgpuQuerySetRelease(handle->querySet);

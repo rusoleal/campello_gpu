@@ -463,9 +463,12 @@
 - [x] `wasm.cmake`: replace `-sUSE_WEBGPU=1` with `--use-port=emdawnwebgpu` — it is needed
       at **compile** time too (it provides the headers), not only in `target_link_options`;
       also expose it as an `INTERFACE` option so consumers linking `campello_gpu` get it
-- [ ] Decide on `-sASYNCIFY` vs `-sJSPI` for the blocking paths (`waitForIdle`, `Buffer::download`,
+- [x] Decide on `-sASYNCIFY` vs `-sJSPI` for the blocking paths (`waitForIdle`, `Buffer::download`,
       `Texture::download`, `CommandBuffer::getGPUExecutionTime`). Keep ASYNCIFY as the default
       (widest browser support); optionally add a CMake option for JSPI
+      — done: ASYNCIFY stays the default; `-DCAMPELLO_GPU_WASM_JSPI=ON` switches to JSPI (about
+      half the wasm size). Test builds use native wasm exceptions under JSPI (GoogleTest's
+      `-fexceptions` trampolines would otherwise suspend outside `main()`). CI builds and tests both
 - [x] `wasm.cmake` builds `SHARED` while TODO notes/CI refer to `libcampello_gpu.a` — confirm
       what Emscripten actually emits and switch to `STATIC` explicitly if that is the intent
 - [x] `examples/wasm/CMakeLists.txt`: same flag migration as above
@@ -529,20 +532,32 @@
       `bgra8unorm-storage`, `indirect-first-instance`; and request adapter limits instead of defaults
 - [x] **`Feature::subgroupOperations`** — re-enable via `WGPUFeatureName_Subgroups` once on
       `emdawnwebgpu` (blocked only by the 3.1.74 header; see the fp16/subgroup section below)
-- [ ] **`Device::getMemoryInfo()`** — returns only `hasUnifiedMemory = true`; at minimum report
+- [x] **`Device::getMemoryInfo()`** — returns only `hasUnifiedMemory = true`; at minimum report
       tracked allocation totals (already counted in `getResourceMemoryStats()`) and document that
       the web exposes no budget
+      — done: `currentAllocatedSize` = tracked buffer + texture + query-set bytes;
+      `hasUnifiedMemory` = false (CPU access is always by copy); size/budget stay 0 (unknown on the
+      web). Also fixed: `totalTrackedBytes` was never filled and query-set bytes never counted
 - [x] **`createShaderModule(const uint8_t*, uint64_t)`** returns `nullptr` — document as WGSL-only,
       or accept the bytes as UTF-8 WGSL text so cross-backend callers have one code path
-- [ ] **`TextureView::fromNative()` / external textures** — accept a `WGPUTexture`/`WGPUTextureView`
+- [x] **`TextureView::fromNative()` / external textures** — accept a `WGPUTexture`/`WGPUTextureView`
       so consumers can interop with JS-created textures (canvas, video frames)
+      — done: web-only `Device::getNativeWGPUDevice()` and `Device::createTextureFromWGPUTexture()`,
+      plus `Module.campelloGpu` (`src/webgpu/campello_gpu_web.js`: `importTexture`,
+      `importTextureView`, `getJsObject`). Tested in `webgpu_browser_test` with a texture created
+      in JavaScript
 - [x] **`RGB10A2Uint`** (`conversions.cpp:139`) — now in core WebGPU as `rgb10a2uint`; map it
-- [ ] Audit the remaining `conversions.cpp` pixel/vertex formats against the current spec
+- [x] Audit the remaining `conversions.cpp` pixel/vertex formats against the current spec
       (e.g. `unorm10-10-10-2`, `unorm8x4-bgra`, single-component 8/16-bit vertex formats)
+      — done: every `PixelFormat` has a forward mapping; the reverse map gained all 36
+      block-compressed formats. Left unmapped: 16-bit unorm/snorm textures (no enum in the targeted
+      webgpu.h, only experimental Chromium features) and vertex formats `ComponentType` can't
+      express (float16, 10-10-10-2, BGRA8)
 - [ ] Push constants: keep the no-op, but track the gpuweb "immediate data" proposal
       (`wgpuRenderPassEncoderSetImmediateData` in Dawn) and implement when it is in the port
-- [ ] Ray tracing / cooperative matrix: stay unsupported (no WebGPU equivalent). Make sure every
+- [x] Ray tracing / cooperative matrix: stay unsupported (no WebGPU equivalent). Make sure every
       RT entry point fails cleanly (`nullptr` / no-op) and `getFeatures()` never advertises them
+      — confirmed by the GoogleTest suite in the browser: every ray-tracing test skips cleanly
 
 ### Example
 - [x] `examples/wasm/` currently can't create a device under the legacy path: `index.html` never
@@ -568,11 +583,18 @@
       configured with `-DBUILD_INTEGRATION_TESTS=ON` under Emscripten. Its first run caught a
       real bug: a second `createDevice()` on the same `Adapter` failed because WebGPU adapters
       are single-use; fixed by requesting a fresh adapter once one is consumed
-- [ ] Run `tests/platform/` against a real WebGPU implementation in CI: headless Chrome with
+- [x] Run `tests/platform/` against a real WebGPU implementation in CI: headless Chrome with
       `--enable-unsafe-webgpu` (SwiftShader/Vulkan) via Puppeteer/Playwright, or Node + Dawn.
       gtest needs a browser runner (`-sEXIT_RUNTIME`, results reported via console/exit code)
-- [ ] Add per-backend skips for RT/cooperative-matrix/push-constant tests on WebGPU, mirroring
+      — done: target `webgpu_gtest_suite` (tests/webgpu/) builds tests/platform/ for the web with a
+      browser `main()`; 247 tests, 203 pass, 44 skip (ray tracing + 1 threaded test), 0 fail.
+      It found and fixed: downloads from `mapRead` buffers, invalid pipelines returning non-null,
+      cube textures not getting 6 layers, `resolveQuerySet` needing `QueryResolve`, anisotropy
+      with a non-linear mip filter, empty shader bytes
+- [x] Add per-backend skips for RT/cooperative-matrix/push-constant tests on WebGPU, mirroring
       `tests/platform/test_raytracing.cpp`
+      — not needed: those tests already skip via feature checks, or pass (push constants are a
+      no-op, as the tests expect)
 - [x] Keep `build-wasm` as a compile gate, and add the browser test job as a separate required job
       — done in the same job instead: `build-wasm` now builds the library, example and browser
       test, then runs the test in headless Chrome on SwiftShader (the runner has no GPU)

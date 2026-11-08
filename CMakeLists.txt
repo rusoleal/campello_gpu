@@ -228,9 +228,9 @@ endif()
 if(BUILD_TESTS)
     enable_testing()
     # Universal tests everywhere (under Emscripten they run in Node, CMake's
-    # cross-compiling emulator there). GPU tests: tests/platform/ (GoogleTest)
-    # on native backends; on the web a self-checking browser test instead,
-    # since GoogleTest can't run inside a browser page.
+    # cross-compiling emulator there). GPU tests: tests/platform/ (GoogleTest);
+    # on the web tests/webgpu/ builds that same suite plus a browser test,
+    # and runs both in headless Chrome (they need a page with WebGPU).
     add_subdirectory(tests)
     if(${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten" AND BUILD_INTEGRATION_TESTS)
         add_subdirectory(tests/webgpu)

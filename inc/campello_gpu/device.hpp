@@ -363,6 +363,40 @@ namespace systems::leal::campello_gpu
         DrmDeviceNode getDrmDeviceNode();
 #endif
 
+#if defined(__EMSCRIPTEN__)
+        /**
+         * @brief Web/WebGPU only: the `WGPUDevice` behind this device.
+         *
+         * For interop with code that uses webgpu.h or JavaScript directly. In
+         * JavaScript, `Module.campelloGpu.getJsObject(handle)` returns the
+         * matching `GPUDevice` (e.g. to create textures from video frames with
+         * `queue.copyExternalImageToTexture()`). campello_gpu keeps ownership.
+         *
+         * Exists only in Emscripten builds — a web-platform concept with no
+         * equivalent on the native backends.
+         *
+         * @return The device's `WGPUDevice`, as `void*`.
+         */
+        void *getNativeWGPUDevice();
+
+        /**
+         * @brief Web/WebGPU only: wraps an existing `WGPUTexture` as a `Texture`.
+         *
+         * Typically a JavaScript `GPUTexture` imported with
+         * `Module.campelloGpu.importTexture(texture)`, which returns the handle.
+         * The texture must have been created on this device's `GPUDevice` (see
+         * `getNativeWGPUDevice()`). Size, format, mip count, sample count and
+         * usage are read from the texture itself.
+         *
+         * campello_gpu adds its own reference: the caller still owns theirs
+         * and releases it when done (`wgpuTextureRelease()`).
+         *
+         * @param wgpuTexture A `WGPUTexture`, as `void*`.
+         * @return A new `Texture`, or `nullptr` if `wgpuTexture` is null.
+         */
+        std::shared_ptr<Texture> createTextureFromWGPUTexture(void *wgpuTexture);
+#endif
+
         /**
          * @brief Creates an uninitialised GPU buffer.
          *

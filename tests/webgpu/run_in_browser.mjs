@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-// Runs the WebGPU browser test page in headless Chrome and turns its console
-// output into an exit code. No npm dependencies: it serves the files with
+// Runs a WebGPU test page in headless Chrome and turns its console output
+// into an exit code. Works for webgpu_browser_test (PASS/FAIL lines) and for
+// webgpu_gtest_suite (GoogleTest output); both end with
+// "CAMPELLO_WEBGPU_TESTS_DONE failures=<n> [tests=<n>]". No npm dependencies: it serves the files with
 // node:http and drives Chrome through the DevTools protocol (Node >= 22 for
 // the global WebSocket).
 //
@@ -133,7 +135,8 @@ function onConsoleText(text) {
   for (const line of text.split('\n')) {
     if (line.length === 0) continue;
     console.log(line);
-    if (line.startsWith('PASS ')) summary.pass++;
+    // PASS/FAIL lines (webgpu_browser_test) or GoogleTest's per-test results.
+    if (line.startsWith('PASS ') || line.startsWith('[       OK ]')) summary.pass++;
     if (line.startsWith('FAIL ')) summary.fail++;
     const done = line.match(/^CAMPELLO_WEBGPU_TESTS_DONE failures=(\d+)/);
     if (done) {

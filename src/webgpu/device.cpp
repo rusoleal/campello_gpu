@@ -57,12 +57,17 @@
 
 using namespace systems::leal::campello_gpu;
 
+// Defined in campello_gpu_web.js: publishes Module.campelloGpu.
+extern "C" void campello_gpu_web_init(void);
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
+// `depth` is the depth of a 3D texture or the layer count of an array/cube;
+// only a 3D texture's depth shrinks with each mip level.
 static uint64_t calculateTextureSize(uint32_t width, uint32_t height, uint32_t depth,
-                                      uint32_t mipLevels, PixelFormat format) {
+                                      uint32_t mipLevels, PixelFormat format, bool is3D) {
     uint64_t size = 0;
     uint32_t w = width, h = height, d = depth;
     if (isCompressedFormat(format)) {
@@ -74,7 +79,7 @@ static uint64_t calculateTextureSize(uint32_t width, uint32_t height, uint32_t d
             size += (uint64_t)blocksX * blocksY * d * blockBytes;
             if (w > 1) w /= 2;
             if (h > 1) h /= 2;
-            if (d > 1) d /= 2;
+            if (is3D && d > 1) d /= 2;
         }
     } else {
         uint32_t bytesPerPixel = getPixelFormatSize(format) / 8;
@@ -82,7 +87,7 @@ static uint64_t calculateTextureSize(uint32_t width, uint32_t height, uint32_t d
             size += (uint64_t)w * h * d * bytesPerPixel;
             if (w > 1) w /= 2;
             if (h > 1) h /= 2;
-            if (d > 1) d /= 2;
+            if (is3D && d > 1) d /= 2;
         }
     }
     return size;
@@ -246,6 +251,28 @@ static bool createSurface(WebGPUDeviceData* deviceData, const char* canvasSelect
     return true;
 }
 
+// WebGPU reports validation errors asynchronously: creating an invalid
+// pipeline returns a non-null *error object* that only fails when used. The
+// other backends return nullptr instead, so pipeline creation is wrapped in a
+// validation error scope and the result awaited (blocking via ASYNCIFY).
+// Errors caught this way are printed but don't reach the uncaptured-error
+// callback, so they don't count towards validationErrorCount().
+static void pushValidationScope(WGPUDevice device) {
+    wgpuDevicePushErrorScope(device, WGPUErrorFilter_Validation);
+}
+
+static bool popValidationScope(WGPUDevice device, const char* what) {
+    WGPUAsyncResult result;
+    wgpuDevicePopErrorScope(device, makeCallbackInfo<WGPUPopErrorScopeCallbackInfo>(&result));
+    waitForAsync(result);
+    if (result.status != static_cast<int>(WGPUPopErrorScopeStatus_Success)) {
+        return true;  // scope couldn't be read (e.g. device lost); don't guess
+    }
+    if (result.value == static_cast<int>(WGPUErrorType_NoError)) return true;
+    fprintf(stderr, "[WebGPU] %s failed: %s\n", what, result.message.c_str());
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // Device
 // ---------------------------------------------------------------------------
@@ -259,6 +286,7 @@ Device::Device(void* pd) {
     deviceData->timestampQueryEnabled =
         wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_TimestampQuery);
     native = deviceData;
+    campello_gpu_web_init();
 }
 
 Device::~Device() {
@@ -335,9 +363,16 @@ std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties(
 }
 
 DeviceMemoryInfo Device::getMemoryInfo() {
+    auto* deviceData = static_cast<WebGPUDeviceData*>(native);
     DeviceMemoryInfo info{};
-    // WebGPU does not expose detailed memory info.
-    info.hasUnifiedMemory = true;
+    // The web exposes no device memory size, budget or working set, so
+    // totalDeviceMemory / availableDeviceMemory / recommendedMaxWorkingSet
+    // stay 0 (unknown). What is known is what this device allocated.
+    info.currentAllocatedSize = deviceData->bufferBytes.load() + deviceData->textureBytes.load() +
+                                deviceData->querySetBytes.load();
+    // CPU access always goes through copies (mapAsync / queue writes), never
+    // shared memory, whatever the GPU's actual architecture.
+    info.hasUnifiedMemory = false;
     return info;
 }
 
@@ -402,6 +437,8 @@ ResourceMemoryStats Device::getResourceMemoryStats() {
     rms.accelerationStructureBytes = deviceData->accelerationStructureBytes.load();
     rms.shaderModuleBytes = deviceData->shaderModuleBytes.load();
     rms.querySetBytes = deviceData->querySetBytes.load();
+    rms.totalTrackedBytes = rms.bufferBytes + rms.textureBytes +
+                            rms.accelerationStructureBytes + rms.querySetBytes;
     rms.peakBufferBytes = deviceData->peakBufferBytes.load();
     rms.peakTextureBytes = deviceData->peakTextureBytes.load();
     rms.peakAccelerationStructureBytes = deviceData->peakAccelerationStructureBytes.load();
@@ -478,6 +515,45 @@ MetricsWithTiming Device::getMetricsWithTiming() {
     return mwt;
 }
 
+// Builds the TextureHandle for a WGPUTexture (taking over one reference):
+// metadata, the default view and the resource/memory bookkeeping. Shared by
+// createTexture() and createTextureFromWGPUTexture().
+static TextureHandle* makeTextureHandle(WebGPUDeviceData* deviceData, WGPUTexture texture,
+                                        TextureType type, PixelFormat pixelFormat,
+                                        uint32_t width, uint32_t height, uint32_t depth,
+                                        uint32_t mipLevels, uint32_t samples,
+                                        TextureUsage usageMode, WGPUTextureFormat format) {
+    auto* handle = new TextureHandle();
+    handle->texture = texture;
+    handle->width = width;
+    handle->height = height;
+    handle->depth = depth;
+    handle->arrayLayers = depth; // For array textures, depth is array layer count
+    handle->mipLevels = mipLevels;
+    handle->samples = samples;
+    handle->pixelFormat = pixelFormat;
+    handle->usage = usageMode;
+    handle->textureType = type;
+    handle->allocatedSize = calculateTextureSize(width, height, depth, mipLevels, pixelFormat,
+                                                 type == TextureType::tt3d);
+    handle->deviceData = deviceData;
+
+    WGPUTextureViewDescriptor viewDesc{};
+    viewDesc.format = format;
+    viewDesc.dimension = toWGPUTextureViewDimension(type, (type == TextureType::tt3d) ? 1 : depth);
+    viewDesc.baseMipLevel = 0;
+    viewDesc.mipLevelCount = mipLevels;
+    viewDesc.baseArrayLayer = 0;
+    viewDesc.arrayLayerCount = (type == TextureType::tt3d) ? 1 : depth;
+    viewDesc.aspect = WGPUTextureAspect_All;
+    handle->defaultView = wgpuTextureCreateView(texture, &viewDesc);
+
+    deviceData->textureCount++;
+    deviceData->textureBytes.fetch_add(handle->allocatedSize);
+    updatePeakMemory(deviceData);
+    return handle;
+}
+
 std::shared_ptr<Texture> Device::createTexture(
     TextureType type, PixelFormat pixelFormat,
     uint32_t width, uint32_t height, uint32_t depth,
@@ -486,11 +562,22 @@ std::shared_ptr<Texture> Device::createTexture(
 
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
 
+    // Layer count per type, matching the native backends: a cube always has
+    // 6 faces whatever `depth` says, a cube array 6 x N (default one cube).
+    uint32_t layers = depth;
+    switch (type) {
+        case TextureType::tt1d: layers = 1; break;
+        case TextureType::ttCube: layers = 6; break;
+        case TextureType::ttCubeArray: layers = (depth >= 6) ? depth - depth % 6 : 6; break;
+        default: break;
+    }
+    depth = std::max(layers, 1u);
+
     WGPUTextureDescriptor desc{};
     desc.dimension = toWGPUTextureDimension(type);
     desc.format = toWGPUTextureFormat(pixelFormat);
     desc.size.width = width;
-    desc.size.height = height;
+    desc.size.height = (type == TextureType::tt1d) ? 1 : height;
     desc.size.depthOrArrayLayers = depth;
     desc.mipLevelCount = mipLevels;
     desc.sampleCount = samples;
@@ -505,35 +592,8 @@ std::shared_ptr<Texture> Device::createTexture(
     WGPUTexture texture = wgpuDeviceCreateTexture(deviceData->device, &desc);
     if (!texture) return nullptr;
 
-    auto* handle = new TextureHandle();
-    handle->texture = texture;
-    handle->width = width;
-    handle->height = height;
-    handle->depth = depth;
-    handle->arrayLayers = depth; // For array textures, depth is array layer count
-    handle->mipLevels = mipLevels;
-    handle->samples = samples;
-    handle->pixelFormat = pixelFormat;
-    handle->usage = usageMode;
-    handle->textureType = type;
-    handle->allocatedSize = calculateTextureSize(width, height, depth, mipLevels, pixelFormat);
-    handle->deviceData = deviceData;
-
-    // Create default view
-    WGPUTextureViewDescriptor viewDesc{};
-    viewDesc.format = desc.format;
-    viewDesc.dimension = toWGPUTextureViewDimension(type, (type == TextureType::tt3d) ? 1 : depth);
-    viewDesc.baseMipLevel = 0;
-    viewDesc.mipLevelCount = mipLevels;
-    viewDesc.baseArrayLayer = 0;
-    viewDesc.arrayLayerCount = (type == TextureType::tt3d) ? 1 : depth;
-    viewDesc.aspect = WGPUTextureAspect_All;
-    handle->defaultView = wgpuTextureCreateView(texture, &viewDesc);
-
-    deviceData->textureCount++;
-    deviceData->textureBytes.fetch_add(handle->allocatedSize);
-    updatePeakMemory(deviceData);
-
+    TextureHandle* handle = makeTextureHandle(deviceData, texture, type, pixelFormat, width, height,
+                                              depth, mipLevels, samples, usageMode, desc.format);
     return std::shared_ptr<Texture>(new Texture(handle));
 }
 
@@ -544,14 +604,15 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     desc.size = size;
     desc.usage = toWGPUBufferUsage(usage);
     // Buffer::upload() is a queue write (needs CopyDst) and download() a copy
-    // (needs CopySrc). Add them implicitly, within WebGPU's rule that MapRead
+    // (needs CopySrc), and the native backends can resolve queries into any
+    // buffer. Add those usages implicitly, within WebGPU's rule that MapRead
     // may only be combined with CopyDst and MapWrite only with CopySrc.
     if (desc.usage & WGPUBufferUsage_MapRead) {
         desc.usage |= WGPUBufferUsage_CopyDst;
     } else if (desc.usage & WGPUBufferUsage_MapWrite) {
         desc.usage |= WGPUBufferUsage_CopySrc;
     } else {
-        desc.usage |= WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc;
+        desc.usage |= WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc | WGPUBufferUsage_QueryResolve;
     }
     desc.mappedAtCreation = false;
 
@@ -560,6 +621,7 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
 
     auto* handle = new BufferHandle();
     handle->buffer = buffer;
+    handle->usage = desc.usage;
     handle->size = size;
     handle->allocatedSize = size;
     handle->deviceData = deviceData;
@@ -576,9 +638,13 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
 std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t* buffer, uint64_t size) {
     // Browsers only accept WGSL (no SPIR-V), so the byte buffer is treated as
     // UTF-8 WGSL source text. This lets callers that load shaders from files
-    // use one code path on every backend.
-    if (!buffer || size == 0) return nullptr;
-    std::string source(reinterpret_cast<const char*>(buffer), static_cast<size_t>(size));
+    // use one code path on every backend. Like the other backends, any bytes
+    // give a module; invalid source surfaces when a pipeline uses it (empty
+    // input is a valid, empty WGSL module).
+    std::string source;
+    if (buffer && size > 0) {
+        source.assign(reinterpret_cast<const char*>(buffer), static_cast<size_t>(size));
+    }
     return createShaderModule(source.c_str());
 }
 
@@ -733,8 +799,14 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     }
     desc.layout = layout;
 
+    pushValidationScope(deviceData->device);
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(deviceData->device, &desc);
+    bool valid = popValidationScope(deviceData->device, "createRenderPipeline");
     if (!pipeline) return nullptr;
+    if (!valid) {
+        wgpuRenderPipelineRelease(pipeline);
+        return nullptr;
+    }
 
     auto* handle = new RenderPipelineHandle();
     handle->pipeline = pipeline;
@@ -762,8 +834,14 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     desc.compute.entryPoint = toStringView(descriptor.compute.entryPoint);
     desc.layout = layout;
 
+    pushValidationScope(deviceData->device);
     WGPUComputePipeline pipeline = wgpuDeviceCreateComputePipeline(deviceData->device, &desc);
+    bool valid = popValidationScope(deviceData->device, "createComputePipeline");
     if (!pipeline) return nullptr;
+    if (!valid) {
+        wgpuComputePipelineRelease(pipeline);
+        return nullptr;
+    }
 
     auto* handle = new ComputePipelineHandle();
     handle->pipeline = pipeline;
@@ -919,6 +997,17 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor& descript
     desc.lodMinClamp = static_cast<float>(descriptor.lodMinClamp);
     desc.lodMaxClamp = static_cast<float>(descriptor.lodMaxClamp);
     desc.maxAnisotropy = static_cast<uint16_t>(std::max<double>(descriptor.maxAnisotropy, 1.0));  // 0 is invalid
+    // WebGPU only allows anisotropy when min, mag *and* mip filtering are all
+    // linear (Metal/Vulkan don't require the mip filter). With linear min/mag,
+    // use linear mip filtering so the requested anisotropy still applies;
+    // otherwise anisotropy can't be used and is dropped.
+    if (desc.maxAnisotropy > 1) {
+        if (desc.minFilter == WGPUFilterMode_Linear && desc.magFilter == WGPUFilterMode_Linear) {
+            desc.mipmapFilter = WGPUMipmapFilterMode_Linear;
+        } else {
+            desc.maxAnisotropy = 1;
+        }
+    }
     if (descriptor.compare.has_value()) {
         desc.compare = toWGPUCompareFunction(descriptor.compare.value());
     }
@@ -955,6 +1044,8 @@ std::shared_ptr<QuerySet> Device::createQuerySet(const QuerySetDescriptor& descr
     handle->deviceData = deviceData;
 
     deviceData->querySetCount++;
+    // Both occlusion and timestamp queries resolve to 8 bytes each.
+    deviceData->querySetBytes.fetch_add(static_cast<uint64_t>(descriptor.count) * sizeof(uint64_t));
     return std::shared_ptr<QuerySet>(new QuerySet(handle));
 }
 
@@ -1141,6 +1232,39 @@ std::vector<std::shared_ptr<Adapter>> Device::getAdapters() {
     adapter->native = handle;
     adapters.push_back(adapter);
     return adapters;
+}
+
+void* Device::getNativeWGPUDevice() {
+    return static_cast<WebGPUDeviceData*>(native)->device;
+}
+
+std::shared_ptr<Texture> Device::createTextureFromWGPUTexture(void* wgpuTexture) {
+    auto* deviceData = static_cast<WebGPUDeviceData*>(native);
+    auto texture = static_cast<WGPUTexture>(wgpuTexture);
+    if (!texture) return nullptr;
+
+    // Read the texture's shape from WebGPU itself.
+    uint32_t width = wgpuTextureGetWidth(texture);
+    uint32_t height = wgpuTextureGetHeight(texture);
+    uint32_t depth = wgpuTextureGetDepthOrArrayLayers(texture);
+    uint32_t mipLevels = wgpuTextureGetMipLevelCount(texture);
+    uint32_t samples = wgpuTextureGetSampleCount(texture);
+    WGPUTextureFormat format = wgpuTextureGetFormat(texture);
+
+    // A 2D texture with 6 layers can't be told apart from a cube here; it
+    // stays tt2d (a 2D array), which is what its default view will be.
+    TextureType type = TextureType::tt2d;
+    switch (wgpuTextureGetDimension(texture)) {
+        case WGPUTextureDimension_1D: type = TextureType::tt1d; break;
+        case WGPUTextureDimension_3D: type = TextureType::tt3d; break;
+        default: break;
+    }
+
+    wgpuTextureAddRef(texture);  // the caller keeps their own reference
+    TextureHandle* handle = makeTextureHandle(
+        deviceData, texture, type, wgpuFormatToPixelFormat(format), width, height, depth,
+        mipLevels, samples, fromWGPUTextureUsage(wgpuTextureGetUsage(texture)), format);
+    return std::shared_ptr<Texture>(new Texture(handle));
 }
 
 std::string Device::getEngineVersion() {

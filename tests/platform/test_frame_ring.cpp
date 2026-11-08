@@ -45,6 +45,8 @@ static std::shared_ptr<Device> tryCreateDevice() {
     return Device::createDefaultDevice(nullptr);
 #elif defined(__linux__)
     return Device::createDefaultDevice(nullptr);
+#elif defined(__EMSCRIPTEN__)
+    return Device::createDefaultDevice(nullptr);
 #else
     return nullptr;
 #endif
@@ -149,6 +151,10 @@ TEST(FrameRing, ConcurrentTextureUploadDuringFrameSubmissionDoesNotCrash) {
     auto buffer = device->createBuffer(1024, BufferUsage::storage);
     ASSERT_NE(buffer, nullptr);
 
+#if defined(__EMSCRIPTEN__)
+    // The web build is single-threaded (no -pthread / SharedArrayBuffer).
+    GTEST_SKIP() << "Needs threads; the WebGPU/WASM build is single-threaded";
+#endif
     constexpr int kIterations = 30;
     std::atomic<bool> uploadFailed{false};
 

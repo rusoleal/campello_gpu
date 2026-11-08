@@ -4,11 +4,25 @@
 // against unavailable device creation with GTEST_SKIP().
 
 #include <gtest/gtest.h>
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/constants/buffer_usage.hpp>
 
 using namespace systems::leal::campello_gpu;
+
+// downloadAsync() calls back before returning on the native backends, but on
+// WebGPU the readback is genuinely asynchronous: yield to the browser
+// (ASYNCIFY) until the callback has run.
+static void waitForCallback(const bool& called) {
+#if defined(__EMSCRIPTEN__)
+    for (int i = 0; i < 5000 && !called; ++i) emscripten_sleep(1);
+#else
+    (void)called;
+#endif
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -22,6 +36,8 @@ static std::shared_ptr<Device> tryCreateDevice() {
 #elif defined(_WIN32)
     return Device::createDefaultDevice(nullptr);
 #elif defined(__linux__)
+    return Device::createDefaultDevice(nullptr);
+#elif defined(__EMSCRIPTEN__)
     return Device::createDefaultDevice(nullptr);
 #else
     return nullptr;
@@ -247,6 +263,7 @@ TEST(Buffer, AsyncDownloadRoundtrip) {
             callbackResult = success;
         });
 
+    waitForCallback(callbackOk);
     EXPECT_TRUE(callbackOk);
     EXPECT_TRUE(callbackResult);
     EXPECT_EQ(uploadData, downloadData);

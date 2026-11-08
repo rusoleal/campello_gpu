@@ -19,9 +19,8 @@ target_link_libraries(campello_wasm_example
     campello_gpu
 )
 
+# --use-port=emdawnwebgpu and the ASYNCIFY/JSPI flag come from campello_gpu.
 target_link_options(campello_wasm_example PRIVATE
-    --use-port=emdawnwebgpu
-    -sASYNCIFY
     -sALLOW_MEMORY_GROWTH=1
     # index.html is an Emscripten shell template: emcc substitutes its
     # {{{ SCRIPT }}} placeholder with the generated loader script.
@@ -43,8 +42,6 @@ target_link_libraries(campello_wasm_compute
 )
 
 target_link_options(campello_wasm_compute PRIVATE
-    --use-port=emdawnwebgpu
-    -sASYNCIFY
     -sALLOW_MEMORY_GROWTH=1
     --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/compute.html
 )

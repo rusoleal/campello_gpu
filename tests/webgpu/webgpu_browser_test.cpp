@@ -1,12 +1,14 @@
-// WebGPU backend browser test.
+// WebGPU backend browser test: web-specific checks the cross-platform
+// GoogleTest suite (webgpu_gtest_suite) doesn't cover — the canvas surface and
+// resizing, JavaScript texture interop, GPU timing and the error counter.
 //
-// GoogleTest can't run inside a browser page, so this is a self-contained
-// program: every check prints "PASS <name>" or "FAIL <name>", and the run ends
-// with "CAMPELLO_WEBGPU_TESTS_DONE failures=<n>". run_in_browser.mjs loads the
-// page in headless Chrome and turns that output into an exit code.
+// A self-contained program: every check prints "PASS <name>" or
+// "FAIL <name>", and the run ends with "CAMPELLO_WEBGPU_TESTS_DONE
+// failures=<n>". run_in_browser.mjs loads the page in headless Chrome and
+// turns that output into an exit code.
 //
 // Blocking calls (device creation, download(), waitForIdle()) yield to the
-// browser through ASYNCIFY, so the checks read top to bottom.
+// browser (ASYNCIFY or JSPI), so the checks read top to bottom.
 
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/adapter.hpp>
@@ -31,6 +33,7 @@
 #include <campello_gpu/descriptors/render_pipeline_descriptor.hpp>
 #include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
 #include <emscripten.h>
+#include <webgpu/webgpu.h>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -233,6 +236,48 @@ static void testDownloadAsync(std::shared_ptr<Device> device) {
     check(done && ok && memcmp(src, dst, sizeof(src)) == 0, "buffer: downloadAsync() delivers data");
 }
 
+// Creates a 16x8 rgba8unorm texture in JavaScript on campello's own GPUDevice
+// and imports it as a WGPUTexture handle (owned by the caller).
+EM_JS(void*, createTextureInJavaScript, (void* devicePtr), {
+    var device = Module.campelloGpu.getJsObject(devicePtr);
+    var texture = device.createTexture({
+        size: [16, 8],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+    });
+    return Module.campelloGpu.importTexture(texture);
+});
+
+static void testJavaScriptInterop(std::shared_ptr<Device> device) {
+    void* devicePtr = device->getNativeWGPUDevice();
+    check(devicePtr != nullptr, "interop: getNativeWGPUDevice()");
+
+    void* handle = createTextureInJavaScript(devicePtr);
+    auto tex = device->createTextureFromWGPUTexture(handle);
+    wgpuTextureRelease(static_cast<WGPUTexture>(handle));  // tex keeps its own reference
+    check(tex != nullptr, "interop: wrap a JavaScript GPUTexture");
+    if (!tex) return;
+    check(tex->getWidth() == 16 && tex->getHeight() == 8 && tex->getMipLevelCount() == 1 &&
+          tex->getFormat() == PixelFormat::rgba8unorm && tex->getDimension() == TextureType::tt2d,
+          "interop: wrapped texture reports the JavaScript texture's shape");
+
+    std::vector<uint8_t> pixels(16 * 8 * 4), back(pixels.size(), 0);
+    for (size_t i = 0; i < pixels.size(); i++) pixels[i] = uint8_t(i * 3 + 1);
+    check(tex->upload(0, pixels.size(), pixels.data()) &&
+          tex->download(0, 0, back.data(), back.size()) && pixels == back,
+          "interop: upload/download through the wrapped texture");
+}
+
+static void testMemoryInfo(std::shared_ptr<Device> device) {
+    auto before = device->getMemoryInfo().currentAllocatedSize;
+    auto buffer = device->createBuffer(1 << 20, BufferUsage::storage);
+    auto after = device->getMemoryInfo().currentAllocatedSize;
+    check(after >= before + (1 << 20), "memory: getMemoryInfo() tracks allocations");
+    auto stats = device->getResourceMemoryStats();
+    check(stats.totalTrackedBytes >= stats.bufferBytes + stats.textureBytes && stats.totalTrackedBytes > 0,
+          "memory: totalTrackedBytes is filled in");
+}
+
 static void renderToCanvas(std::shared_ptr<Device> device, std::shared_ptr<RenderPipeline> pipeline) {
     auto view = device->getSwapchainTextureView();
     if (!view) return;
@@ -309,6 +354,8 @@ int main() {
     testDepthPass(device);
     testMsaa(device);
     testDownloadAsync(device);
+    testJavaScriptInterop(device);
+    testMemoryInfo(device);
     testCanvas(adapters[0]);
 
     device->waitForIdle();
