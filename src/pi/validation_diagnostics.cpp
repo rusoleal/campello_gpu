@@ -1,8 +1,9 @@
 #include <campello_gpu/validation_diagnostics.hpp>
 
-// Fallback for backends without a Vulkan validation messenger (Metal,
-// DirectX, WebGPU) -- see validation_diagnostics.hpp's doc comment. The
-// Vulkan backend provides its own definitions in src/vulkan/device.cpp.
+// Fallback for backends without a validation-error source (Metal, DirectX)
+// -- see validation_diagnostics.hpp's doc comment. The Vulkan backend
+// provides its own definitions in src/vulkan/device.cpp, and the WebGPU
+// backend in src/webgpu/device.cpp.
 
 namespace systems::leal::campello_gpu {
 

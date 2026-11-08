@@ -14,6 +14,11 @@ namespace systems::leal::campello_gpu {
      * from, so a test asserting on this value is only meaningful in a
      * validation-enabled build.
      *
+     * On WebGPU (Emscripten) this instead counts uncaptured WebGPU errors
+     * (validation, out-of-memory, internal) reported by the device's
+     * uncaptured-error callback, in every build. Metal and DirectX always
+     * return 0.
+     *
      * Intended for tests: reset before an operation under test, then assert
      * this is still 0 afterward, instead of relying on a human reading
      * stderr for "[Vulkan ERROR]" lines.

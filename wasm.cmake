@@ -2,10 +2,11 @@
 
 message(STATUS "Building campello_gpu for Emscripten (WebGPU)")
 
-add_library(${PROJECT_NAME} SHARED
+# Emscripten has no dynamic linking here, so the library is static (CMake
+# would silently turn SHARED into STATIC anyway).
+add_library(${PROJECT_NAME} STATIC
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
-    src/pi/validation_diagnostics.cpp
     src/webgpu/conversions.cpp
     src/webgpu/device.cpp
     src/webgpu/adapter.cpp
@@ -30,8 +31,21 @@ add_library(${PROJECT_NAME} SHARED
     src/webgpu/fence.cpp
 )
 
-target_link_options(${PROJECT_NAME} PRIVATE
-    -sUSE_WEBGPU=1
+# Dawn's emdawnwebgpu port provides <webgpu/webgpu.h> (upstream webgpu.h)
+# and its JS implementation; it replaces the legacy -sUSE_WEBGPU binding,
+# which Emscripten deprecated and removed. Requires Emscripten >= 4.0.10.
+# The flag is needed when compiling (headers) and linking, by this library
+# and by anything that links it, hence PUBLIC.
+#
+# ASYNCIFY backs the blocking calls (device creation, Buffer/Texture::download,
+# waitForIdle, getGPUExecutionTime) that yield to the browser event loop.
+# validationErrorCount() is defined by src/webgpu/device.cpp (uncaptured
+# WebGPU errors), so src/pi/validation_diagnostics.cpp isn't built here.
+target_compile_options(${PROJECT_NAME} PUBLIC
+    --use-port=emdawnwebgpu
+)
+target_link_options(${PROJECT_NAME} PUBLIC
+    --use-port=emdawnwebgpu
     -sASYNCIFY
 )
 

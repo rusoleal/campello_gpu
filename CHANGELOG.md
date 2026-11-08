@@ -4,9 +4,50 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **[WebGPU] Ported to Dawn's `emdawnwebgpu` Emscripten port** (`--use-port=emdawnwebgpu`),
+  replacing the legacy `-sUSE_WEBGPU` binding that Emscripten deprecated and removed. Requires
+  Emscripten 4.0.10 or later; CI now builds with 4.0.10. `wasm.cmake` exports the port flag and
+  `-sASYNCIFY` to consumers, so apps linking `campello_gpu` no longer set them themselves.
+- **[WebGPU] The library now creates its own adapter and device.** `Device::getAdapters()` returns
+  the browser's adapter (previously always empty), `createDevice()` honours it, and the host page
+  no longer has to pre-create a device in JavaScript. Every optional feature the adapter supports
+  is requested, along with the adapter's full limits.
+- **[WebGPU] Buffers and textures implicitly get the copy usages** that `upload()`/`download()`
+  need on WebGPU, so the same code works as on the other backends.
+- **[WebGPU] `createShaderModule(const uint8_t*, size)` accepts WGSL source bytes** instead of
+  returning `nullptr`.
+- **[WebGPU] `CommandEncoder::writeTimestamp()` is a no-op.** Encoder-level timestamps were
+  removed from the WebGPU spec; use `BeginRenderPassDescriptor::timestampWrites`.
+
+### Added
+
+- **[WebGPU] `Feature::subgroupOperations`** (`subgroups`), now that the header defines it.
+- **[WebGPU] `validationErrorCount()` counts uncaptured WebGPU errors**, which are also printed to
+  stderr.
+- **[WebGPU] `rgb10a2uint` texture format** and single-component 8/16-bit vertex formats.
+
 ### Fixed
 
 - **[Metal] `Texture::download()` and `CommandEncoder::copyTextureToBuffer()` aborted under Metal API Validation.** Both called `synchronizeResource:` on buffers in shared storage, which Metal only allows for managed storage ("synchronizeResource: only applies when ... StorageModeManaged"). `Texture::download()`'s readback buffer is always shared, so the call is removed there; `copyTextureToBuffer()` now calls it only for managed buffers. Shared buffers are CPU-coherent once the command buffer completes, so results are unchanged. Found in campello_bim, whose viewport snapshot reads back a render target.
+- **[WebGPU] `getPassPerformanceStats()` always read zero.** Each render and compute pass is now
+  timed with pass timestamps (when `timestamp-query` is available), and the results are added
+  once the GPU finishes the submitted work. `getGPUExecutionTime()` uses the same data.
+- **[WebGPU] MSAA pipelines were silently single-sampled**: `RenderPipelineDescriptor::sampleCount`
+  was ignored.
+- **[WebGPU] The canvas swapchain was fixed at 800×600.** It now matches the canvas size and
+  follows resizes, using the browser's preferred canvas format.
+- **[WebGPU] `submit()` presented after every submission.** The browser presents the canvas once
+  per frame by itself.
+- **[WebGPU] Depth/stencil attachments without a stencil (or depth) aspect, or marked read-only,
+  failed validation** because load/store ops were always set.
+- **[WebGPU] 2D textures with several layers got a 2D default view** (invalid) instead of a
+  2D-array view.
+- **[WebGPU] The WASM example page never loaded its script.** The build copied `index.html` over
+  Emscripten's output, leaving the raw `{{{ SCRIPT }}}` placeholder; it's now a `--shell-file`.
+- **[WebGPU] `wasm.cmake` declared the library `SHARED`**, which CMake silently built as static
+  with a warning. It's now `STATIC`.
 
 ## [0.25.0] - 2026-11-05
 

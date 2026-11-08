@@ -20,18 +20,16 @@ target_link_libraries(campello_wasm_example
 )
 
 target_link_options(campello_wasm_example PRIVATE
-    -sUSE_WEBGPU=1
+    --use-port=emdawnwebgpu
     -sASYNCIFY
     -sALLOW_MEMORY_GROWTH=1
+    # index.html is an Emscripten shell template: emcc substitutes its
+    # {{{ SCRIPT }}} placeholder with the generated loader script.
+    --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/index.html
 )
+set_property(TARGET campello_wasm_example APPEND PROPERTY LINK_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/index.html)
 
 set_target_properties(campello_wasm_example PROPERTIES
     SUFFIX ".html"
-)
-
-# Copy the HTML shell next to the output
-add_custom_command(TARGET campello_wasm_example POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_SOURCE_DIR}/index.html
-        $<TARGET_FILE_DIR:campello_wasm_example>/campello_wasm_example.html
 )

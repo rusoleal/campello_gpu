@@ -4,7 +4,6 @@
 #include "texture_handle.hpp"
 #include "texture_view_handle.hpp"
 #include "common.hpp"
-#include <emscripten.h>
 #include <algorithm>
 #include <cstring>
 
@@ -42,7 +41,6 @@ std::shared_ptr<TextureView> Texture::createView(
 
     WGPUTextureViewDescriptor desc{};
     desc.format = toWGPUTextureFormat(format);
-    desc.dimension = toWGPUTextureViewDimension(dimension);
     desc.baseMipLevel = baseMipLevel;
     desc.mipLevelCount = (mipLevelCount == static_cast<uint32_t>(-1))
                           ? (handle->mipLevels - baseMipLevel)
@@ -51,6 +49,8 @@ std::shared_ptr<TextureView> Texture::createView(
     desc.arrayLayerCount = (arrayLayerCount == static_cast<uint32_t>(-1))
                            ? (handle->arrayLayers - baseArrayLayer)
                            : arrayLayerCount;
+    if (handle->textureType == TextureType::tt3d) desc.arrayLayerCount = 1;
+    desc.dimension = toWGPUTextureViewDimension(dimension, desc.arrayLayerCount);
 
     switch (aspect) {
         case Aspect::depthOnly: desc.aspect = WGPUTextureAspect_DepthOnly; break;
@@ -64,6 +64,8 @@ std::shared_ptr<TextureView> Texture::createView(
     auto* viewHandle = new TextureViewHandle();
     viewHandle->view = view;
     viewHandle->ownsView = true;
+    viewHandle->format = (desc.format != WGPUTextureFormat_Undefined)
+                         ? desc.format : toWGPUTextureFormat(handle->pixelFormat);
     return std::shared_ptr<TextureView>(new TextureView(viewHandle));
 }
 
@@ -88,13 +90,13 @@ bool Texture::upload(uint64_t offset, uint64_t length, void* data) {
         uint64_t mipSize = static_cast<uint64_t>(blocksX) * blocksY * d * blockBytes;
         if (bufOffset + mipSize > offset + length) break;
 
-        WGPUImageCopyTexture dst{};
+        WGPUTexelCopyTextureInfo dst{};
         dst.texture = handle->texture;
         dst.mipLevel = mip;
         dst.origin = { 0, 0, 0 };
         dst.aspect = WGPUTextureAspect_All;
 
-        WGPUTextureDataLayout layout{};
+        WGPUTexelCopyBufferLayout layout{};
         layout.offset = bufOffset;
         layout.bytesPerRow = blocksX * blockBytes;
         layout.rowsPerImage = blocksY;
@@ -117,22 +119,19 @@ bool Texture::upload(uint64_t offset, uint64_t length, void* data) {
     return true;
 }
 
-// Helper for async buffer mapping with ASYNCIFY
-struct MapContext {
-    bool done = false;
-    WGPUBufferMapAsyncStatus status = WGPUBufferMapAsyncStatus_Unknown;
+// One mip/layer readback: the texture is copied into a MapRead buffer whose
+// rows are padded to WebGPU's 256-byte bytesPerRow alignment, then unpadded
+// into the caller's tightly packed buffer.
+struct TextureReadback {
+    WGPUBuffer buffer = nullptr;
+    uint32_t blockRows = 0;
+    uint32_t unpaddedBytesPerRow = 0;
+    uint32_t paddedBytesPerRow = 0;
+    uint64_t bufferSize = 0;
 };
 
-static void onBufferMapped(WGPUBufferMapAsyncStatus status, void* userdata) {
-    auto* ctx = static_cast<MapContext*>(userdata);
-    ctx->status = status;
-    ctx->done = true;
-}
-
-bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void* data, uint64_t length) {
-    auto* handle = static_cast<TextureHandle*>(native);
-    if (!handle->deviceData || !handle->deviceData->device || !handle->deviceData->queue) return false;
-
+static bool submitTextureReadback(TextureHandle* handle, uint32_t mipLevel, uint32_t arrayLayer,
+                                  uint64_t length, TextureReadback& rb) {
     bool compressed = isCompressedFormat(handle->pixelFormat);
     auto blockDim = compressed ? getPixelFormatBlockDimensions(handle->pixelFormat)
                                : PixelFormatBlockDimensions{1, 1};
@@ -141,38 +140,35 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void* data, uint6
 
     uint32_t mipW = std::max(1u, handle->width >> mipLevel);
     uint32_t mipH = std::max(1u, handle->height >> mipLevel);
-
     uint32_t blocksX = (mipW + blockDim.width - 1) / blockDim.width;
     uint32_t blocksY = (mipH + blockDim.height - 1) / blockDim.height;
 
-    // WebGPU requires bytesPerRow to be a multiple of 256 for copyTextureToBuffer.
-    uint32_t unpaddedBytesPerRow = blocksX * blockBytes;
-    uint32_t paddedBytesPerRow = ((unpaddedBytesPerRow + 255) / 256) * 256;
-    uint64_t bufferSize = static_cast<uint64_t>(paddedBytesPerRow) * blocksY;
+    rb.blockRows = blocksY;
+    rb.unpaddedBytesPerRow = blocksX * blockBytes;
+    rb.paddedBytesPerRow = ((rb.unpaddedBytesPerRow + 255) / 256) * 256;
+    rb.bufferSize = static_cast<uint64_t>(rb.paddedBytesPerRow) * blocksY;
 
-    if (length < static_cast<uint64_t>(unpaddedBytesPerRow) * blocksY) return false;
+    if (length < static_cast<uint64_t>(rb.unpaddedBytesPerRow) * blocksY) return false;
 
-    // 1. Create readback buffer
     WGPUBufferDescriptor bufDesc{};
-    bufDesc.size = bufferSize;
+    bufDesc.size = rb.bufferSize;
     bufDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-    WGPUBuffer readback = wgpuDeviceCreateBuffer(handle->deviceData->device, &bufDesc);
-    if (!readback) return false;
+    rb.buffer = wgpuDeviceCreateBuffer(handle->deviceData->device, &bufDesc);
+    if (!rb.buffer) return false;
 
-    // 2. Record copy texture -> buffer
     WGPUCommandEncoderDescriptor encDesc{};
     WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(handle->deviceData->device, &encDesc);
 
-    WGPUImageCopyTexture src{};
+    WGPUTexelCopyTextureInfo src{};
     src.texture = handle->texture;
     src.mipLevel = mipLevel;
     src.origin = { 0, 0, arrayLayer };
     src.aspect = WGPUTextureAspect_All;
 
-    WGPUImageCopyBuffer dst{};
-    dst.buffer = readback;
+    WGPUTexelCopyBufferInfo dst{};
+    dst.buffer = rb.buffer;
     dst.layout.offset = 0;
-    dst.layout.bytesPerRow = paddedBytesPerRow;
+    dst.layout.bytesPerRow = rb.paddedBytesPerRow;
     dst.layout.rowsPerImage = blocksY;
 
     WGPUExtent3D extent{};
@@ -186,61 +182,47 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void* data, uint6
     WGPUCommandBuffer cmdBuffer = wgpuCommandEncoderFinish(encoder, &cmdDesc);
     wgpuCommandEncoderRelease(encoder);
 
-    // 3. Submit and wait
     wgpuQueueSubmit(handle->deviceData->queue, 1, &cmdBuffer);
     wgpuCommandBufferRelease(cmdBuffer);
+    return true;
+}
 
-    // Wait for GPU completion
-    MapContext idleCtx;
-    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue,
-        [](WGPUQueueWorkDoneStatus status, void* userdata) {
-            (void)status;
-            auto* ctx = static_cast<MapContext*>(userdata);
-            ctx->done = true;
-        }, &idleCtx);
-
-    while (!idleCtx.done) {
-        emscripten_sleep(1);
-    }
-
-    // 4. Map buffer and read data
-    MapContext mapCtx;
-    wgpuBufferMapAsync(readback, WGPUMapMode_Read, 0, bufferSize, onBufferMapped, &mapCtx);
-
-    while (!mapCtx.done) {
-        emscripten_sleep(1);
-    }
-
-    if (mapCtx.status != WGPUBufferMapAsyncStatus_Success) {
-        wgpuBufferRelease(readback);
-        return false;
-    }
-
-    const uint8_t* mapped = static_cast<const uint8_t*>(wgpuBufferGetConstMappedRange(readback, 0, bufferSize));
+static bool copyOutReadback(const TextureReadback& rb, void* data) {
+    const uint8_t* mapped = static_cast<const uint8_t*>(
+        wgpuBufferGetConstMappedRange(rb.buffer, 0, static_cast<size_t>(rb.bufferSize)));
     if (mapped) {
-        // Copy row by row to handle potential padding
         uint8_t* out = static_cast<uint8_t*>(data);
-        for (uint32_t row = 0; row < blocksY; ++row) {
-            memcpy(out + row * unpaddedBytesPerRow, mapped + row * paddedBytesPerRow, unpaddedBytesPerRow);
+        for (uint32_t row = 0; row < rb.blockRows; ++row) {
+            memcpy(out + static_cast<size_t>(row) * rb.unpaddedBytesPerRow,
+                   mapped + static_cast<size_t>(row) * rb.paddedBytesPerRow,
+                   rb.unpaddedBytesPerRow);
         }
     }
-
-    wgpuBufferUnmap(readback);
-    wgpuBufferRelease(readback);
-
+    wgpuBufferUnmap(rb.buffer);
     return mapped != nullptr;
 }
 
-// Async download — chains wgpuQueueOnSubmittedWorkDone -> wgpuBufferMapAsync -> user callback
-struct TextureDownloadAsyncData {
-    WGPUBuffer readback;
-    void* data;
-    uint32_t blockRows;
-    uint32_t unpaddedBytesPerRow;
-    uint32_t paddedBytesPerRow;
-    uint64_t bufferSize;
-    std::function<void(bool)> callback;
-};
+bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void* data, uint64_t length) {
+    auto* handle = static_cast<TextureHandle*>(native);
+    if (!handle->deviceData || !handle->deviceData->device || !handle->deviceData->queue) return false;
+
+    TextureReadback rb;
+    if (!submitTextureReadback(handle, mipLevel, arrayLayer, length, rb)) {
+        if (rb.buffer) wgpuBufferRelease(rb.buffer);
+        return false;
+    }
+
+    // mapAsync resolves once the GPU has finished the submitted copy.
+    WGPUAsyncResult result;
+    wgpuBufferMapAsync(rb.buffer, WGPUMapMode_Read, 0, static_cast<size_t>(rb.bufferSize),
+                       makeCallbackInfo<WGPUBufferMapCallbackInfo>(&result));
+    waitForAsync(result);
+
+    bool ok = result.status == static_cast<int>(WGPUMapAsyncStatus_Success) &&
+              copyOutReadback(rb, data);
+    wgpuBufferRelease(rb.buffer);
+    return ok;
+}
 
 void Texture::downloadAsync(uint32_t mipLevel, uint32_t arrayLayer, void* data, uint64_t length,
                             std::function<void(bool)> callback) {
@@ -250,99 +232,21 @@ void Texture::downloadAsync(uint32_t mipLevel, uint32_t arrayLayer, void* data, 
         return;
     }
 
-    bool compressed = isCompressedFormat(handle->pixelFormat);
-    auto blockDim = compressed ? getPixelFormatBlockDimensions(handle->pixelFormat)
-                               : PixelFormatBlockDimensions{1, 1};
-    uint32_t blockBytes = compressed ? getPixelFormatBlockBytes(handle->pixelFormat)
-                                     : getPixelFormatSize(handle->pixelFormat) / 8;
-
-    uint32_t mipW = std::max(1u, handle->width >> mipLevel);
-    uint32_t mipH = std::max(1u, handle->height >> mipLevel);
-
-    uint32_t blocksX = (mipW + blockDim.width - 1) / blockDim.width;
-    uint32_t blocksY = (mipH + blockDim.height - 1) / blockDim.height;
-
-    uint32_t unpaddedBytesPerRow = blocksX * blockBytes;
-    uint32_t paddedBytesPerRow = ((unpaddedBytesPerRow + 255) / 256) * 256;
-    uint64_t bufferSize = static_cast<uint64_t>(paddedBytesPerRow) * blocksY;
-
-    if (length < static_cast<uint64_t>(unpaddedBytesPerRow) * blocksY) {
+    TextureReadback rb;
+    if (!submitTextureReadback(handle, mipLevel, arrayLayer, length, rb)) {
+        if (rb.buffer) wgpuBufferRelease(rb.buffer);
         callback(false);
         return;
     }
 
-    // 1. Create readback buffer
-    WGPUBufferDescriptor bufDesc{};
-    bufDesc.size = bufferSize;
-    bufDesc.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-    WGPUBuffer readback = wgpuDeviceCreateBuffer(handle->deviceData->device, &bufDesc);
-    if (!readback) {
-        callback(false);
-        return;
-    }
-
-    // 2. Record copy texture -> buffer
-    WGPUCommandEncoderDescriptor encDesc{};
-    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(handle->deviceData->device, &encDesc);
-
-    WGPUImageCopyTexture src{};
-    src.texture = handle->texture;
-    src.mipLevel = mipLevel;
-    src.origin = { 0, 0, arrayLayer };
-    src.aspect = WGPUTextureAspect_All;
-
-    WGPUImageCopyBuffer dst{};
-    dst.buffer = readback;
-    dst.layout.offset = 0;
-    dst.layout.bytesPerRow = paddedBytesPerRow;
-    dst.layout.rowsPerImage = blocksY;
-
-    WGPUExtent3D extent{};
-    extent.width = mipW;
-    extent.height = mipH;
-    extent.depthOrArrayLayers = 1;
-
-    wgpuCommandEncoderCopyTextureToBuffer(encoder, &src, &dst, &extent);
-
-    WGPUCommandBufferDescriptor cmdDesc{};
-    WGPUCommandBuffer cmdBuffer = wgpuCommandEncoderFinish(encoder, &cmdDesc);
-    wgpuCommandEncoderRelease(encoder);
-
-    // 3. Submit
-    wgpuQueueSubmit(handle->deviceData->queue, 1, &cmdBuffer);
-    wgpuCommandBufferRelease(cmdBuffer);
-
-    // 4. Chain async
-    auto* asyncData = new TextureDownloadAsyncData{
-        readback, data, blocksY, unpaddedBytesPerRow, paddedBytesPerRow, bufferSize, std::move(callback)
-    };
-
-    wgpuQueueOnSubmittedWorkDone(handle->deviceData->queue,
-        [](WGPUQueueWorkDoneStatus, void* userdata) {
-            auto* d = static_cast<TextureDownloadAsyncData*>(userdata);
-            wgpuBufferMapAsync(d->readback, WGPUMapMode_Read, 0, d->bufferSize,
-                [](WGPUBufferMapAsyncStatus status, void* userdata2) {
-                    auto* d2 = static_cast<TextureDownloadAsyncData*>(userdata2);
-                    if (status == WGPUBufferMapAsyncStatus_Success) {
-                        const uint8_t* mapped = static_cast<const uint8_t*>(
-                            wgpuBufferGetConstMappedRange(d2->readback, 0, d2->bufferSize));
-                        if (mapped) {
-                            uint8_t* out = static_cast<uint8_t*>(d2->data);
-                            for (uint32_t row = 0; row < d2->blockRows; ++row) {
-                                memcpy(out + row * d2->unpaddedBytesPerRow,
-                                       mapped + row * d2->paddedBytesPerRow,
-                                       d2->unpaddedBytesPerRow);
-                            }
-                            wgpuBufferUnmap(d2->readback);
-                        }
-                        d2->callback(mapped != nullptr);
-                    } else {
-                        d2->callback(false);
-                    }
-                    wgpuBufferRelease(d2->readback);
-                    delete d2;
-                }, d);
-        }, asyncData);
+    auto* result = newAsyncResult([rb, data, callback = std::move(callback)](WGPUAsyncResult& r) {
+        bool ok = r.status == static_cast<int>(WGPUMapAsyncStatus_Success) &&
+                  copyOutReadback(rb, data);
+        wgpuBufferRelease(rb.buffer);
+        callback(ok);
+    });
+    wgpuBufferMapAsync(rb.buffer, WGPUMapMode_Read, 0, static_cast<size_t>(rb.bufferSize),
+                       makeCallbackInfo<WGPUBufferMapCallbackInfo>(result));
 }
 
 uint32_t Texture::getDepthOrarrayLayers() {
