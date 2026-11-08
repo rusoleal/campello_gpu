@@ -277,4 +277,4 @@ jobs:
         run: |
           export CHROME_PATH="$(command -v google-chrome)"
           "$CHROME_PATH" --version
-          ctest --test-dir build --output-on-failure --timeout 300
+          ctest --test-dir build --verbose --timeout 300
