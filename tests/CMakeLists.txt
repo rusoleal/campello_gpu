@@ -7,6 +7,11 @@ FetchContent_Declare(
     GIT_TAG v1.14.0
 )
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+if(EMSCRIPTEN)
+    # The universal tests run single-threaded under Node; a pthreads build
+    # would need SharedArrayBuffer and -pthread on every target.
+    set(gtest_disable_pthreads ON CACHE BOOL "" FORCE)
+endif()
 FetchContent_MakeAvailable(googletest)
 
 # ---------------------------------------------------------------------------
@@ -38,8 +43,9 @@ set_target_properties(campello_gpu_universal_tests PROPERTIES
 # Integration tests — require a real GPU device, link against campello_gpu.
 # Build only when BUILD_INTEGRATION_TESTS=ON.
 # Supported platforms: macOS/iOS (Metal), Android (Vulkan), Windows (DirectX 12), Linux (Vulkan).
+# The web/WebGPU equivalent is tests/webgpu/ (GoogleTest can't run in a browser).
 # ---------------------------------------------------------------------------
-if(BUILD_INTEGRATION_TESTS)
+if(BUILD_INTEGRATION_TESTS AND NOT EMSCRIPTEN)
     set(INTEGRATION_TEST_SOURCES
         platform/test_device.cpp
         platform/test_buffer.cpp

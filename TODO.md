@@ -550,11 +550,17 @@
       return. After the port the C++ side requests the device itself — verified: the triangle
       renders. Also fixed: the build copied `index.html` *over* emcc's output, shipping the raw
       `{{{ SCRIPT }}}` placeholder (no JS ever loaded); it's now passed as `--shell-file`
-- [ ] Drive the frame loop with `emscripten_request_animation_frame_loop` and handle canvas resize
-- [ ] Add a compute example (buffer readback) to exercise the async/ASYNCIFY paths
+- [x] Drive the frame loop with `emscripten_request_animation_frame_loop` and handle canvas resize
+      — the triangle example's canvas fills the window and its drawing buffer tracks the CSS size
+      × devicePixelRatio each frame; verified resizing 900×557 → 500×400 in headless Chrome
+- [x] Add a compute example (buffer readback) to exercise the async/ASYNCIFY paths —
+      `examples/wasm/compute.cpp`: SAXPY over 1M floats, `downloadAsync()` readback verified
+      against the CPU, GPU time via `getGPUExecutionTimeAsync()`
 
 ### Tests & CI
-- [ ] Run the existing `tests/universal/` suite under Emscripten + Node in CI (no GPU needed)
+- [x] Run the existing `tests/universal/` suite under Emscripten + Node in CI (no GPU needed) —
+      `BUILD_TESTS=ON` now builds it under Emscripten too (gtest without pthreads); CTest runs
+      it through Node, CMake's cross-compiling emulator there. 76 tests pass
 - [x] Turn the scratch smoke test from the 2026-11-08 session (compute, readback, depth, MSAA,
       timing, error counter) into a permanent browser test — `tests/webgpu/webgpu_browser_test.cpp`
       (plus canvas surface + resize checks), run by `tests/webgpu/run_in_browser.mjs` (no npm
@@ -570,8 +576,10 @@
 - [x] Keep `build-wasm` as a compile gate, and add the browser test job as a separate required job
       — done in the same job instead: `build-wasm` now builds the library, example and browser
       test, then runs the test in headless Chrome on SwiftShader (the runner has no GPU)
-- [ ] Update `README.md` / `CLAUDE.md` / `CHANGELOG.md` to list WebGPU as a supported backend with
-      its known limitations once the above lands
+- [x] Update `README.md` / `CLAUDE.md` / `CHANGELOG.md` to list WebGPU as a supported backend with
+      its known limitations once the above lands — README: platforms table (beta), requirements,
+      a web build/run/test section, a web usage section with limitations. CLAUDE.md: also fixed
+      outdated facts (C++20 not C++17, `src/vulkan/` not `src/vulkan_android/`, tests exist)
 
 ## Build system
 

@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>campello_gpu — WebGPU Compute Example</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 24px 16px;
+            background: #111;
+            color: #e6e6e6;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+        h1 {
+            font-size: 18px;
+            font-weight: 600;
+            margin: 0 0 16px;
+        }
+        #output {
+            margin: 0;
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+        .error { color: #ff7b72; }
+    </style>
+</head>
+<body>
+    <h1>campello_gpu — WebGPU compute (SAXPY)</h1>
+    <pre id="output"></pre>
+    <script>
+        var output = document.getElementById('output');
+        function appendLine(text, className) {
+            var line = document.createElement('span');
+            if (className) line.className = className;
+            line.textContent = text + '\n';
+            output.appendChild(line);
+        }
+        if (!navigator.gpu) {
+            appendLine('WebGPU is not supported in this browser.', 'error');
+        }
+        var Module = {
+            print: function (text) { console.log(text); appendLine(text); },
+            printErr: function (text) { console.error(text); appendLine(text, 'error'); },
+        };
+    </script>
+    {{{ SCRIPT }}}
+</body>
+</html>
