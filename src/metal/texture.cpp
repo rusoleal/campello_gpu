@@ -134,8 +134,9 @@ bool Texture::download(uint32_t mipLevel, uint32_t arrayLayer, void *data, uint6
         tex, arrayLayer, mipLevel, origin, size,
         readbackBuf, 0, bytesPerRow, bytesPerRow * height);
 
-    // Synchronize for CPU read access
-    blitEncoder->synchronizeResource(readbackBuf);
+    // No synchronizeResource: here. readbackBuf is shared storage, which is
+    // CPU-coherent once the command buffer completes, and Metal API validation
+    // aborts on synchronizeResource: for non-managed resources.
     blitEncoder->endEncoding();
 
     // Commit and wait

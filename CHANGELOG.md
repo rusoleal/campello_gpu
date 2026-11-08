@@ -4,6 +4,10 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **[Metal] `Texture::download()` and `CommandEncoder::copyTextureToBuffer()` aborted under Metal API Validation.** Both called `synchronizeResource:` on buffers in shared storage, which Metal only allows for managed storage ("synchronizeResource: only applies when ... StorageModeManaged"). `Texture::download()`'s readback buffer is always shared, so the call is removed there; `copyTextureToBuffer()` now calls it only for managed buffers. Shared buffers are CPU-coherent once the command buffer completes, so results are unchanged. Found in campello_bim, whose viewport snapshot reads back a render target.
+
 ## [0.25.0] - 2026-11-05
 
 ### Added
