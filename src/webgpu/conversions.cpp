@@ -50,7 +50,7 @@ WGPUTextureFormat systems::leal::campello_gpu::toWGPUTextureFormat(PixelFormat f
         case PixelFormat::bgra8unorm: return WGPUTextureFormat_BGRA8Unorm;
         case PixelFormat::bgra8unorm_srgb: return WGPUTextureFormat_BGRA8UnormSrgb;
         case PixelFormat::rgb9e5ufloat: return WGPUTextureFormat_RGB9E5Ufloat;
-        case PixelFormat::rgb10a2uint: return WGPUTextureFormat_Undefined;
+        case PixelFormat::rgb10a2uint: return WGPUTextureFormat_RGB10A2Uint;
         case PixelFormat::rgb10a2unorm: return WGPUTextureFormat_RGB10A2Unorm;
         case PixelFormat::rg11b10ufloat: return WGPUTextureFormat_RG11B10Ufloat;
         case PixelFormat::rg32uint: return WGPUTextureFormat_RG32Uint;
@@ -136,7 +136,7 @@ PixelFormat systems::leal::campello_gpu::wgpuFormatToPixelFormat(WGPUTextureForm
         case WGPUTextureFormat_BGRA8Unorm: return PixelFormat::bgra8unorm;
         case WGPUTextureFormat_BGRA8UnormSrgb: return PixelFormat::bgra8unorm_srgb;
         case WGPUTextureFormat_RGB9E5Ufloat: return PixelFormat::rgb9e5ufloat;
-        // RGB10A2Uint not supported in core WebGPU
+        case WGPUTextureFormat_RGB10A2Uint: return PixelFormat::rgb10a2uint;
         case WGPUTextureFormat_RGB10A2Unorm: return PixelFormat::rgb10a2unorm;
         case WGPUTextureFormat_RG11B10Ufloat: return PixelFormat::rg11b10ufloat;
         case WGPUTextureFormat_RG32Uint: return PixelFormat::rg32uint;
@@ -323,8 +323,15 @@ WGPUTextureViewDimension systems::leal::campello_gpu::toWGPUTextureViewDimension
     }
 }
 
-WGPUTextureUsageFlags systems::leal::campello_gpu::toWGPUTextureUsage(TextureUsage usage) {
-    WGPUTextureUsageFlags flags = WGPUTextureUsage_None;
+WGPUTextureViewDimension systems::leal::campello_gpu::toWGPUTextureViewDimension(TextureType type, uint32_t arrayLayerCount) {
+    // campello_gpu has no explicit 2D-array type: a tt2d texture/view with more
+    // than one layer is a 2D array in WebGPU terms (a 2D view must have 1 layer).
+    if (type == TextureType::tt2d && arrayLayerCount > 1) return WGPUTextureViewDimension_2DArray;
+    return toWGPUTextureViewDimension(type);
+}
+
+WGPUTextureUsage systems::leal::campello_gpu::toWGPUTextureUsage(TextureUsage usage) {
+    WGPUTextureUsage flags = WGPUTextureUsage_None;
     uint32_t u = static_cast<uint32_t>(usage);
     if (u & static_cast<uint32_t>(TextureUsage::copySrc)) flags |= WGPUTextureUsage_CopySrc;
     if (u & static_cast<uint32_t>(TextureUsage::copyDst)) flags |= WGPUTextureUsage_CopyDst;
@@ -334,8 +341,8 @@ WGPUTextureUsageFlags systems::leal::campello_gpu::toWGPUTextureUsage(TextureUsa
     return flags;
 }
 
-WGPUBufferUsageFlags systems::leal::campello_gpu::toWGPUBufferUsage(BufferUsage usage) {
-    WGPUBufferUsageFlags flags = WGPUBufferUsage_None;
+WGPUBufferUsage systems::leal::campello_gpu::toWGPUBufferUsage(BufferUsage usage) {
+    WGPUBufferUsage flags = WGPUBufferUsage_None;
     uint32_t u = static_cast<uint32_t>(usage);
     if (u & static_cast<uint32_t>(BufferUsage::mapRead)) flags |= WGPUBufferUsage_MapRead;
     if (u & static_cast<uint32_t>(BufferUsage::mapWrite)) flags |= WGPUBufferUsage_MapWrite;
@@ -350,8 +357,8 @@ WGPUBufferUsageFlags systems::leal::campello_gpu::toWGPUBufferUsage(BufferUsage 
     return flags;
 }
 
-WGPUShaderStageFlags systems::leal::campello_gpu::toWGPUShaderStage(ShaderStage stage) {
-    WGPUShaderStageFlags flags = WGPUShaderStage_None;
+WGPUShaderStage systems::leal::campello_gpu::toWGPUShaderStage(ShaderStage stage) {
+    WGPUShaderStage flags = WGPUShaderStage_None;
     uint32_t s = static_cast<uint32_t>(stage);
     if (s & static_cast<uint32_t>(ShaderStage::vertex)) flags |= WGPUShaderStage_Vertex;
     if (s & static_cast<uint32_t>(ShaderStage::fragment)) flags |= WGPUShaderStage_Fragment;
@@ -395,10 +402,10 @@ WGPUVertexFormat systems::leal::campello_gpu::toWGPUVertexFormat(ComponentType c
             switch (comp) {
                 case ComponentType::ctFloat: return WGPUVertexFormat_Float32;
                 case ComponentType::ctUnsignedInt: return WGPUVertexFormat_Uint32;
-                case ComponentType::ctByte: return normalized ? WGPUVertexFormat_Snorm8x2 : WGPUVertexFormat_Sint8x2;
-                case ComponentType::ctUnsignedByte: return normalized ? WGPUVertexFormat_Unorm8x2 : WGPUVertexFormat_Uint8x2;
-                case ComponentType::ctShort: return normalized ? WGPUVertexFormat_Snorm16x2 : WGPUVertexFormat_Sint16x2;
-                case ComponentType::ctUnsignedShort: return normalized ? WGPUVertexFormat_Unorm16x2 : WGPUVertexFormat_Uint16x2;
+                case ComponentType::ctByte: return normalized ? WGPUVertexFormat_Snorm8 : WGPUVertexFormat_Sint8;
+                case ComponentType::ctUnsignedByte: return normalized ? WGPUVertexFormat_Unorm8 : WGPUVertexFormat_Uint8;
+                case ComponentType::ctShort: return normalized ? WGPUVertexFormat_Snorm16 : WGPUVertexFormat_Sint16;
+                case ComponentType::ctUnsignedShort: return normalized ? WGPUVertexFormat_Unorm16 : WGPUVertexFormat_Uint16;
                 default: return WGPUVertexFormat_Float32;
             }
         case AccessorType::acVec2:
@@ -434,4 +441,40 @@ WGPUVertexFormat systems::leal::campello_gpu::toWGPUVertexFormat(ComponentType c
         default:
             return WGPUVertexFormat_Float32;
     }
+}
+
+bool systems::leal::campello_gpu::formatHasDepth(WGPUTextureFormat format) {
+    switch (format) {
+        case WGPUTextureFormat_Depth16Unorm:
+        case WGPUTextureFormat_Depth24Plus:
+        case WGPUTextureFormat_Depth24PlusStencil8:
+        case WGPUTextureFormat_Depth32Float:
+        case WGPUTextureFormat_Depth32FloatStencil8:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool systems::leal::campello_gpu::formatHasStencil(WGPUTextureFormat format) {
+    switch (format) {
+        case WGPUTextureFormat_Stencil8:
+        case WGPUTextureFormat_Depth24PlusStencil8:
+        case WGPUTextureFormat_Depth32FloatStencil8:
+            return true;
+        default:
+            return false;
+    }
+}
+
+WGPUShaderModule systems::leal::campello_gpu::createWGSLShaderModule(WGPUDevice device, const char* code) {
+    if (!device || !code) return nullptr;
+
+    WGPUShaderSourceWGSL wgslSource{};
+    wgslSource.chain.sType = WGPUSType_ShaderSourceWGSL;
+    wgslSource.code = toStringView(code);
+
+    WGPUShaderModuleDescriptor desc{};
+    desc.nextInChain = &wgslSource.chain;
+    return wgpuDeviceCreateShaderModule(device, &desc);
 }

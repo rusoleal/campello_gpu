@@ -1,9 +1,20 @@
 #pragma once
 
 #include <webgpu/webgpu.h>
+#include <emscripten.h>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <vector>
+#include <set>
 #include <campello_gpu/metrics.hpp>
+#include <campello_gpu/constants/feature.hpp>
 #include <campello_gpu/constants/pixel_format.hpp>
 #include <campello_gpu/constants/texture_usage.hpp>
 #include <campello_gpu/constants/texture_type.hpp>
@@ -24,6 +35,115 @@
 
 namespace systems::leal::campello_gpu {
 
+// ---------------------------------------------------------------------------
+// Targets the upstream webgpu.h shipped by Dawn's `emdawnwebgpu` Emscripten
+// port (`--use-port=emdawnwebgpu`), not the legacy `-sUSE_WEBGPU` binding.
+// ---------------------------------------------------------------------------
+
+/** Process-wide WebGPU instance, created on first use and never released. */
+WGPUInstance getWGPUInstance();
+
+/** Wraps a C string (nullptr allowed) as a null-terminated WGPUStringView. */
+inline WGPUStringView toStringView(const char* s) {
+    WGPUStringView v{};
+    v.data = s;
+    v.length = s ? WGPU_STRLEN : 0;
+    return v;
+}
+
+/** Wraps a std::string; an empty string yields a null view (API default). */
+inline WGPUStringView toStringView(const std::string& s) {
+    WGPUStringView v{};
+    if (!s.empty()) {
+        v.data = s.data();
+        v.length = s.size();
+    }
+    return v;
+}
+
+inline std::string fromStringView(WGPUStringView v) {
+    if (!v.data) return {};
+    if (v.length == WGPU_STRLEN) return std::string(v.data);
+    return std::string(v.data, v.length);
+}
+
+/**
+ * Result slot for one webgpu.h async operation (map, work-done, request
+ * adapter/device). Filled by the callback; `handle` receives the WGPUAdapter /
+ * WGPUDevice for request callbacks. If `onDone` is set it runs inside the
+ * callback, and `heapOwned` results delete themselves afterwards.
+ */
+struct WGPUAsyncResult {
+    bool done = false;
+    int status = 0;
+    void* handle = nullptr;
+    std::string message;
+    std::function<void(WGPUAsyncResult&)> onDone;
+    bool heapOwned = false;
+};
+
+namespace detail {
+template <typename T>
+inline void captureMessage(WGPUAsyncResult& r, const T& arg) {
+    if constexpr (std::is_same_v<std::decay_t<T>, WGPUStringView>) {
+        r.message = fromStringView(arg);
+    }
+}
+
+// Every webgpu.h callback has the shape (status, [payload...], userdata1,
+// userdata2). Deriving the thunk from the callback type itself keeps this
+// code independent of the exact parameter list, which has changed between
+// webgpu.h revisions (e.g. a message parameter added to some callbacks).
+template <typename Fn> struct CallbackThunk;
+template <typename R, typename... Args>
+struct CallbackThunk<R (*)(Args...)> {
+    static R invoke(Args... args) {
+        constexpr size_t N = sizeof...(Args);
+        static_assert(N >= 3, "unexpected webgpu.h callback shape");
+        auto tup = std::forward_as_tuple(args...);
+        auto* r = static_cast<WGPUAsyncResult*>(std::get<N - 2>(tup));
+        r->status = static_cast<int>(std::get<0>(tup));
+        using T1 = std::decay_t<std::tuple_element_t<1, std::tuple<Args...>>>;
+        if constexpr (std::is_pointer_v<T1>) {
+            r->handle = static_cast<void*>(std::get<1>(tup));
+        }
+        std::apply([r](auto&... a) { (captureMessage(*r, a), ...); }, tup);
+        r->done = true;
+        if (r->onDone) r->onDone(*r);
+        if (r->heapOwned) delete r;
+    }
+};
+} // namespace detail
+
+/** Builds a `WGPU*CallbackInfo` that reports into `r` (AllowSpontaneous mode). */
+template <typename Info>
+inline Info makeCallbackInfo(WGPUAsyncResult* r) {
+    Info info{};
+    info.mode = WGPUCallbackMode_AllowSpontaneous;
+    info.callback = &detail::CallbackThunk<decltype(info.callback)>::invoke;
+    info.userdata1 = r;
+    return info;
+}
+
+/**
+ * Blocks (yielding to the browser event loop through ASYNCIFY) until `r`
+ * completes. AllowSpontaneous callbacks fire from the event loop, so yielding
+ * is all that is needed.
+ */
+inline void waitForAsync(const WGPUAsyncResult& r) {
+    while (!r.done) {
+        emscripten_sleep(1);
+    }
+}
+
+/** Starts an async operation whose result is delivered to `onDone`. */
+inline WGPUAsyncResult* newAsyncResult(std::function<void(WGPUAsyncResult&)> onDone) {
+    auto* r = new WGPUAsyncResult();
+    r->onDone = std::move(onDone);
+    r->heapOwned = true;
+    return r;
+}
+
 struct MipmapGenResources {
     WGPUShaderModule vsModule = nullptr;
     WGPUShaderModule fsModule = nullptr;
@@ -34,14 +154,21 @@ struct MipmapGenResources {
 
 struct WebGPUDeviceData {
     WGPUInstance instance = nullptr;
+    WGPUAdapter adapter = nullptr;
     WGPUDevice device = nullptr;
     WGPUQueue queue = nullptr;
     WGPUSurface surface = nullptr;
-    WGPUSwapChain swapchain = nullptr;
-    WGPUTextureFormat surfaceFormat = WGPUTextureFormat_BGRA8Unorm;
+    bool surfaceConfigured = false;
+    std::string canvasSelector;
+    WGPUTextureFormat surfaceFormat = WGPUTextureFormat_Undefined;
     uint32_t surfaceWidth = 0;
     uint32_t surfaceHeight = 0;
+    bool timestampQueryEnabled = false;
     MipmapGenResources mipmapGen;
+
+    // Cleared in ~Device(); async callbacks that may outlive the device
+    // (timestamp readback) check it before touching this struct.
+    std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>>(true);
 
     // Resource counters
     std::atomic<uint32_t> bufferCount{0};
@@ -94,6 +221,10 @@ struct WebGPUDeviceData {
     std::atomic<MemoryPressureLevel> lastPressureLevel{MemoryPressureLevel::Normal};
 };
 
+struct AdapterHandle {
+    WGPUAdapter adapter = nullptr;
+};
+
 struct BufferHandle {
     WGPUBuffer buffer = nullptr;
     uint64_t size = 0;
@@ -120,6 +251,8 @@ struct TextureHandle {
 struct TextureViewHandle {
     WGPUTextureView view = nullptr;
     bool ownsView = true;
+    // Undefined when unknown (views wrapped with TextureView::fromNative()).
+    WGPUTextureFormat format = WGPUTextureFormat_Undefined;
 };
 
 struct ShaderModuleHandle {
@@ -167,22 +300,53 @@ struct BindGroupHandle {
     WebGPUDeviceData* deviceData = nullptr;
 };
 
+/** One pass timed by the backend: indices into the encoder's timestamp query set. */
+struct PassTimestampSlot {
+    bool isCompute = false;
+    uint32_t beginIndex = 0;
+    uint32_t endIndex = 0;
+};
+
+/**
+ * GPU timing of one command buffer. WebGPU has no encoder-level timestamp
+ * (writeTimestamp was removed from the spec), so every pass the backend
+ * encodes gets its own begin/end `timestampWrites`; the command buffer's GPU
+ * time spans the first pass's begin to the last pass's end. Shared between
+ * the CommandBuffer and the in-flight map callback started by submit().
+ */
+struct GpuTimingState {
+    WGPUBuffer readbackBuffer = nullptr;
+    uint64_t readbackSize = 0;
+    std::vector<PassTimestampSlot> passes;
+    WebGPUDeviceData* deviceData = nullptr;
+    std::shared_ptr<std::atomic<bool>> deviceAlive;
+    bool submitted = false;
+    bool done = false;
+    uint64_t totalNs = 0;
+    std::vector<std::function<void(uint64_t)>> waiters;
+
+    ~GpuTimingState() {
+        if (readbackBuffer) wgpuBufferRelease(readbackBuffer);
+    }
+};
+
+/** Max passes per command encoder that get backend timestamps (2 queries each). */
+constexpr uint32_t kMaxTimedPassesPerEncoder = 64;
+
 struct CommandEncoderHandle {
     WGPUCommandEncoder encoder = nullptr;
     WebGPUDeviceData* deviceData = nullptr;
-    // GPU timing resources — created in createCommandEncoder, transferred to CommandBuffer in finish()
+    // Backend-owned timestamp queries, created lazily on the first timed pass
+    // and resolved into GpuTimingState::readbackBuffer in finish().
     WGPUQuerySet timestampQuerySet = nullptr;
-    WGPUBuffer timestampReadbackBuffer = nullptr;
+    uint32_t nextTimestampIndex = 0;
+    std::vector<PassTimestampSlot> timedPasses;
 };
 
 struct CommandBufferHandle {
     WGPUCommandBuffer commandBuffer = nullptr;
     WebGPUDeviceData* deviceData = nullptr;
-    // GPU timing data — transferred from CommandEncoderHandle in finish()
-    WGPUBuffer timestampReadbackBuffer = nullptr;
-    uint64_t gpuStartTimestamp = 0;
-    uint64_t gpuEndTimestamp = 0;
-    bool hasTimingData = false;
+    std::shared_ptr<GpuTimingState> timing;  // null when timing is unavailable
 };
 
 struct RenderPassEncoderHandle {
@@ -232,11 +396,27 @@ WGPULoadOp toWGPULoadOp(LoadOp op);
 WGPUStoreOp toWGPUStoreOp(StoreOp op);
 WGPUTextureDimension toWGPUTextureDimension(TextureType type);
 WGPUTextureViewDimension toWGPUTextureViewDimension(TextureType type);
-WGPUTextureUsageFlags toWGPUTextureUsage(TextureUsage usage);
-WGPUBufferUsageFlags toWGPUBufferUsage(BufferUsage usage);
-WGPUShaderStageFlags toWGPUShaderStage(ShaderStage stage);
+WGPUTextureViewDimension toWGPUTextureViewDimension(TextureType type, uint32_t arrayLayerCount);
+WGPUTextureUsage toWGPUTextureUsage(TextureUsage usage);
+WGPUBufferUsage toWGPUBufferUsage(BufferUsage usage);
+WGPUShaderStage toWGPUShaderStage(ShaderStage stage);
 WGPUBufferBindingType toWGPUBindingType(EntryObjectType type, EntryObjectBufferType bufferType);
 WGPUSamplerBindingType toWGPUSamplerBindingType(EntryObjectSamplerType type);
 WGPUTextureSampleType toWGPUTextureSampleType(EntryObjectTextureType type);
+
+/**
+ * Optional WebGPU features the backend requests at device creation whenever
+ * the adapter supports them (see adapter.cpp).
+ */
+std::vector<WGPUFeatureName> desiredOptionalFeatures();
+
+/** Maps the WebGPU features reported by `has` to campello_gpu Features. */
+std::set<Feature> featuresFromWGPU(const std::function<bool(WGPUFeatureName)>& has);
+
+bool formatHasDepth(WGPUTextureFormat format);
+bool formatHasStencil(WGPUTextureFormat format);
+
+/** Creates a WGSL shader module (nullptr code yields nullptr). */
+WGPUShaderModule createWGSLShaderModule(WGPUDevice device, const char* code);
 
 } // namespace systems::leal::campello_gpu

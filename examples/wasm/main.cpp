@@ -71,6 +71,8 @@ static const char* fragmentWGSL = R"(
 )";
 
 static void init() {
+    // Requests the adapter and device itself (blocking through ASYNCIFY) and
+    // renders into the <canvas id="canvas"> element, following its size.
     g_device = Device::createDefaultDevice(const_cast<char*>("#canvas"));
     if (!g_device) {
         fprintf(stderr, "Failed to create campello_gpu device\n");
@@ -109,7 +111,8 @@ static void init() {
     desc.fragment->module = fragShader;
     desc.fragment->entryPoint = "main";
     desc.fragment->targets = {
-        ColorState{ PixelFormat::bgra8unorm, ColorWrite::all, std::nullopt }
+        // The canvas format is chosen by the browser (usually bgra8unorm).
+        ColorState{ g_device->getSwapchainPixelFormat(), ColorWrite::all, std::nullopt }
     };
 
     desc.topology = PrimitiveTopology::triangleList;

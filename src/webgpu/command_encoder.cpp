@@ -18,6 +18,44 @@
 
 using namespace systems::leal::campello_gpu;
 
+// The timestamp-writes struct type shared by render and compute passes; named
+// via decltype because webgpu.h revisions renamed it (RenderPass/ComputePass
+// TimestampWrites -> PassTimestampWrites).
+using RenderPassTimestampWritesT =
+    std::remove_cv_t<std::remove_pointer_t<decltype(WGPURenderPassDescriptor::timestampWrites)>>;
+using ComputePassTimestampWritesT =
+    std::remove_cv_t<std::remove_pointer_t<decltype(WGPUComputePassDescriptor::timestampWrites)>>;
+
+// Reserves a begin/end timestamp pair for a pass the backend times itself.
+// Returns false when timing is unavailable (no "timestamp-query" feature, or
+// the per-encoder budget is used up); the pass is then simply not timed.
+template <typename TimestampWrites>
+static bool allocatePassTimestamps(CommandEncoderHandle* handle, bool isCompute, TimestampWrites& tw) {
+    auto* deviceData = handle->deviceData;
+    if (!deviceData || !deviceData->timestampQueryEnabled) return false;
+    if (handle->timedPasses.size() >= kMaxTimedPassesPerEncoder) return false;
+
+    if (!handle->timestampQuerySet) {
+        WGPUQuerySetDescriptor qsDesc{};
+        qsDesc.type = WGPUQueryType_Timestamp;
+        qsDesc.count = kMaxTimedPassesPerEncoder * 2;
+        handle->timestampQuerySet = wgpuDeviceCreateQuerySet(deviceData->device, &qsDesc);
+        if (!handle->timestampQuerySet) return false;
+    }
+
+    PassTimestampSlot slot;
+    slot.isCompute = isCompute;
+    slot.beginIndex = handle->nextTimestampIndex;
+    slot.endIndex = handle->nextTimestampIndex + 1;
+    handle->nextTimestampIndex += 2;
+    handle->timedPasses.push_back(slot);
+
+    tw.querySet = handle->timestampQuerySet;
+    tw.beginningOfPassWriteIndex = slot.beginIndex;
+    tw.endOfPassWriteIndex = slot.endIndex;
+    return true;
+}
+
 CommandEncoder::CommandEncoder(void* pd) {
     native = pd;
 }
@@ -30,9 +68,6 @@ CommandEncoder::~CommandEncoder() {
     if (handle->timestampQuerySet) {
         wgpuQuerySetRelease(handle->timestampQuerySet);
     }
-    if (handle->timestampReadbackBuffer) {
-        wgpuBufferRelease(handle->timestampReadbackBuffer);
-    }
     delete handle;
 }
 
@@ -40,6 +75,10 @@ std::shared_ptr<ComputePassEncoder> CommandEncoder::beginComputePass() {
     auto* handle = static_cast<CommandEncoderHandle*>(native);
 
     WGPUComputePassDescriptor desc{};
+    ComputePassTimestampWritesT timestampWrites{};
+    if (allocatePassTimestamps(handle, /*isCompute=*/true, timestampWrites)) {
+        desc.timestampWrites = &timestampWrites;
+    }
     WGPUComputePassEncoder encoder = wgpuCommandEncoderBeginComputePass(handle->encoder, &desc);
     if (!encoder) return nullptr;
 
@@ -63,6 +102,7 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(const BeginRe
     for (const auto& ca : descriptor.colorAttachments) {
         WGPURenderPassColorAttachment wgpuCa{};
         wgpuCa.view = static_cast<TextureViewHandle*>(ca.view->native)->view;
+        wgpuCa.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;  // required for non-3D attachments
         wgpuCa.loadOp = toWGPULoadOp(ca.loadOp);
         wgpuCa.storeOp = toWGPUStoreOp(ca.storeOp);
         wgpuCa.clearValue.r = ca.clearValue[0];
@@ -81,17 +121,28 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(const BeginRe
 
     std::unique_ptr<WGPURenderPassDepthStencilAttachment> dsAttachment;
     if (descriptor.depthStencilAttachment) {
+        const auto& dsa = *descriptor.depthStencilAttachment;
+        auto* viewHandle = static_cast<TextureViewHandle*>(dsa.view->native);
         dsAttachment = std::make_unique<WGPURenderPassDepthStencilAttachment>();
         *dsAttachment = WGPURenderPassDepthStencilAttachment{};
-        dsAttachment->view = static_cast<TextureViewHandle*>(descriptor.depthStencilAttachment->view->native)->view;
-        dsAttachment->depthLoadOp = toWGPULoadOp(descriptor.depthStencilAttachment->depthLoadOp);
-        dsAttachment->depthStoreOp = toWGPUStoreOp(descriptor.depthStencilAttachment->depthStoreOp);
-        dsAttachment->depthClearValue = descriptor.depthStencilAttachment->depthClearValue;
-        dsAttachment->depthReadOnly = descriptor.depthStencilAttachment->depthReadOnly;
-        dsAttachment->stencilLoadOp = toWGPULoadOp(descriptor.depthStencilAttachment->stencilLoadOp);
-        dsAttachment->stencilStoreOp = toWGPUStoreOp(descriptor.depthStencilAttachment->stencilStoreOp);
-        dsAttachment->stencilClearValue = descriptor.depthStencilAttachment->stencilClearValue;
-        dsAttachment->stencilReadOnly = descriptor.depthStencilAttachment->stencilReadOnly;
+        dsAttachment->view = viewHandle->view;
+
+        // WebGPU requires load/store ops to be *undefined* for an aspect the
+        // format doesn't have, and for a read-only aspect. The format is
+        // unknown only for views wrapped with TextureView::fromNative(); pass
+        // the caller's ops through unchanged then.
+        bool formatKnown = viewHandle->format != WGPUTextureFormat_Undefined;
+        bool useDepthOps = !dsa.depthReadOnly && (!formatKnown || formatHasDepth(viewHandle->format));
+        bool useStencilOps = !dsa.stencilReadOnly && (!formatKnown || formatHasStencil(viewHandle->format));
+
+        dsAttachment->depthLoadOp = useDepthOps ? toWGPULoadOp(dsa.depthLoadOp) : WGPULoadOp_Undefined;
+        dsAttachment->depthStoreOp = useDepthOps ? toWGPUStoreOp(dsa.depthStoreOp) : WGPUStoreOp_Undefined;
+        dsAttachment->depthClearValue = dsa.depthClearValue;
+        dsAttachment->depthReadOnly = dsa.depthReadOnly;
+        dsAttachment->stencilLoadOp = useStencilOps ? toWGPULoadOp(dsa.stencilLoadOp) : WGPULoadOp_Undefined;
+        dsAttachment->stencilStoreOp = useStencilOps ? toWGPUStoreOp(dsa.stencilStoreOp) : WGPUStoreOp_Undefined;
+        dsAttachment->stencilClearValue = dsa.stencilClearValue;
+        dsAttachment->stencilReadOnly = dsa.stencilReadOnly;
         desc.depthStencilAttachment = dsAttachment.get();
     }
 
@@ -99,12 +150,17 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(const BeginRe
         desc.occlusionQuerySet = static_cast<QuerySetHandle*>(descriptor.occlusionQuerySet->native)->querySet;
     }
 
-    WGPURenderPassTimestampWrites timestampWrites{};
-    if (!descriptor.timestampWrites.empty()) {
+    // A pass takes a single timestampWrites: the caller's own query set wins;
+    // otherwise the backend times the pass for getGPUExecutionTime() and
+    // Device::getPassPerformanceStats().
+    RenderPassTimestampWritesT timestampWrites{};
+    if (!descriptor.timestampWrites.empty() && descriptor.timestampWrites[0].querySet) {
         const auto& tw = descriptor.timestampWrites[0];
         timestampWrites.querySet = static_cast<QuerySetHandle*>(tw.querySet->native)->querySet;
         timestampWrites.beginningOfPassWriteIndex = tw.beginningOfPassWriteIndex;
         timestampWrites.endOfPassWriteIndex = tw.endOfPassWriteIndex;
+        desc.timestampWrites = &timestampWrites;
+    } else if (allocatePassTimestamps(handle, /*isCompute=*/false, timestampWrites)) {
         desc.timestampWrites = &timestampWrites;
     }
 
@@ -151,13 +207,13 @@ void CommandEncoder::copyBufferToTexture(std::shared_ptr<Buffer> source, uint64_
     uint32_t mipW = std::max(1u, dstHandle->width >> mipLevel);
     uint32_t mipH = std::max(1u, dstHandle->height >> mipLevel);
 
-    WGPUImageCopyBuffer srcInfo{};
+    WGPUTexelCopyBufferInfo srcInfo{};
     srcInfo.buffer = srcHandle->buffer;
     srcInfo.layout.offset = sourceOffset;
     srcInfo.layout.bytesPerRow = bytesPerRow;
     srcInfo.layout.rowsPerImage = mipH;
 
-    WGPUImageCopyTexture dstInfo{};
+    WGPUTexelCopyTextureInfo dstInfo{};
     dstInfo.texture = dstHandle->texture;
     dstInfo.mipLevel = mipLevel;
     dstInfo.origin = { 0, 0, arrayLayer };
@@ -184,13 +240,13 @@ void CommandEncoder::copyTextureToBuffer(std::shared_ptr<Texture> source, uint32
     uint32_t mipW = std::max(1u, srcHandle->width >> mipLevel);
     uint32_t mipH = std::max(1u, srcHandle->height >> mipLevel);
 
-    WGPUImageCopyTexture srcInfo{};
+    WGPUTexelCopyTextureInfo srcInfo{};
     srcInfo.texture = srcHandle->texture;
     srcInfo.mipLevel = mipLevel;
     srcInfo.origin = { 0, 0, arrayLayer };
     srcInfo.aspect = WGPUTextureAspect_All;
 
-    WGPUImageCopyBuffer dstInfo{};
+    WGPUTexelCopyBufferInfo dstInfo{};
     dstInfo.buffer = dstHandle->buffer;
     dstInfo.layout.offset = destinationOffset;
     dstInfo.layout.bytesPerRow = bytesPerRow;
@@ -215,13 +271,13 @@ void CommandEncoder::copyTextureToTexture(std::shared_ptr<Texture> source, uint3
     auto* srcHandle = static_cast<TextureHandle*>(source->native);
     auto* dstHandle = static_cast<TextureHandle*>(destination->native);
 
-    WGPUImageCopyTexture srcInfo{};
+    WGPUTexelCopyTextureInfo srcInfo{};
     srcInfo.texture = srcHandle->texture;
     srcInfo.mipLevel = srcMipLevel;
     srcInfo.origin = { static_cast<uint32_t>(sourceOffset.x), static_cast<uint32_t>(sourceOffset.y), static_cast<uint32_t>(sourceOffset.z) };
     srcInfo.aspect = WGPUTextureAspect_All;
 
-    WGPUImageCopyTexture dstInfo{};
+    WGPUTexelCopyTextureInfo dstInfo{};
     dstInfo.texture = dstHandle->texture;
     dstInfo.mipLevel = dstMipLevel;
     dstInfo.origin = { static_cast<uint32_t>(destinationOffset.x), static_cast<uint32_t>(destinationOffset.y), static_cast<uint32_t>(destinationOffset.z) };
@@ -260,17 +316,6 @@ static bool isFilterableColorFormat(PixelFormat format) {
         default:
             return false;
     }
-}
-
-static WGPUShaderModule createWGSLShaderModule(WGPUDevice device, const char* code) {
-    WGPUShaderModuleWGSLDescriptor wgslDesc{};
-    wgslDesc.chain.sType = WGPUSType_ShaderModuleWGSLDescriptor;
-    wgslDesc.code = code;
-
-    WGPUShaderModuleDescriptor desc{};
-    desc.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&wgslDesc);
-
-    return wgpuDeviceCreateShaderModule(device, &desc);
 }
 
 static void releaseMipmapGenResources(MipmapGenResources& res) {
@@ -356,6 +401,9 @@ static bool initMipmapGenResources(WebGPUDeviceData* deviceData) {
     samplerDesc.addressModeU = WGPUAddressMode_ClampToEdge;
     samplerDesc.addressModeV = WGPUAddressMode_ClampToEdge;
     samplerDesc.addressModeW = WGPUAddressMode_ClampToEdge;
+    samplerDesc.lodMinClamp = 0.0f;
+    samplerDesc.lodMaxClamp = 32.0f;
+    samplerDesc.maxAnisotropy = 1;  // 0 is invalid
     deviceData->mipmapGen.sampler = wgpuDeviceCreateSampler(deviceData->device, &samplerDesc);
     if (!deviceData->mipmapGen.sampler) {
         releaseMipmapGenResources(deviceData->mipmapGen);
@@ -390,11 +438,11 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
     // Create render pipeline for this specific format
     WGPUVertexState vertexState{};
     vertexState.module = deviceData->mipmapGen.vsModule;
-    vertexState.entryPoint = "vs_main";
+    vertexState.entryPoint = toStringView("vs_main");
 
     WGPUFragmentState fragmentState{};
     fragmentState.module = deviceData->mipmapGen.fsModule;
-    fragmentState.entryPoint = "fs_main";
+    fragmentState.entryPoint = toStringView("fs_main");
     fragmentState.targetCount = 1;
     WGPUColorTargetState colorTarget{};
     colorTarget.format = wgpuFormat;
@@ -406,6 +454,10 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
     pipelineDesc.vertex = vertexState;
     pipelineDesc.fragment = &fragmentState;
     pipelineDesc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    // Zero-initialised structs aren't spec defaults in webgpu.h: a sample
+    // count of 0 is invalid.
+    pipelineDesc.multisample.count = 1;
+    pipelineDesc.multisample.mask = 0xFFFFFFFF;
 
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(deviceData->device, &pipelineDesc);
     if (!pipeline) return false;
@@ -458,6 +510,7 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
 
         WGPURenderPassColorAttachment colorAttach{};
         colorAttach.view = dstView;
+        colorAttach.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
         colorAttach.loadOp = WGPULoadOp_Clear;
         colorAttach.storeOp = WGPUStoreOp_Store;
         colorAttach.clearValue = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -490,11 +543,38 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
 std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     auto* handle = static_cast<CommandEncoderHandle*>(native);
 
-    // Write end timestamp and resolve query data before finishing
-    if (handle->timestampQuerySet && handle->timestampReadbackBuffer) {
-        wgpuCommandEncoderWriteTimestamp(handle->encoder, handle->timestampQuerySet, 1);
-        wgpuCommandEncoderResolveQuerySet(handle->encoder, handle->timestampQuerySet, 0, 2,
-                                          handle->timestampReadbackBuffer, 0);
+    // Resolve the backend's pass timestamps into a mappable readback buffer
+    // (QueryResolve and MapRead can't share a buffer, hence the extra copy).
+    std::shared_ptr<GpuTimingState> timing;
+    if (handle->timestampQuerySet && handle->nextTimestampIndex > 0 && handle->deviceData) {
+        uint64_t size = static_cast<uint64_t>(handle->nextTimestampIndex) * sizeof(uint64_t);
+        WGPUDevice device = handle->deviceData->device;
+
+        WGPUBufferDescriptor resolveDesc{};
+        resolveDesc.size = size;
+        resolveDesc.usage = WGPUBufferUsage_QueryResolve | WGPUBufferUsage_CopySrc;
+        WGPUBuffer resolveBuffer = wgpuDeviceCreateBuffer(device, &resolveDesc);
+
+        WGPUBufferDescriptor readbackDesc{};
+        readbackDesc.size = size;
+        readbackDesc.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst;
+        WGPUBuffer readbackBuffer = wgpuDeviceCreateBuffer(device, &readbackDesc);
+
+        if (resolveBuffer && readbackBuffer) {
+            wgpuCommandEncoderResolveQuerySet(handle->encoder, handle->timestampQuerySet, 0,
+                                              handle->nextTimestampIndex, resolveBuffer, 0);
+            wgpuCommandEncoderCopyBufferToBuffer(handle->encoder, resolveBuffer, 0,
+                                                 readbackBuffer, 0, size);
+            timing = std::make_shared<GpuTimingState>();
+            timing->readbackBuffer = readbackBuffer;
+            timing->readbackSize = size;
+            timing->passes = handle->timedPasses;
+            timing->deviceData = handle->deviceData;
+            timing->deviceAlive = handle->deviceData->alive;
+        } else if (readbackBuffer) {
+            wgpuBufferRelease(readbackBuffer);
+        }
+        if (resolveBuffer) wgpuBufferRelease(resolveBuffer);  // the command buffer keeps it alive
     }
 
     WGPUCommandBufferDescriptor desc{};
@@ -505,11 +585,8 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbHandle->commandBuffer = commandBuffer;
     cbHandle->deviceData = handle->deviceData;
 
-    // Transfer timing resources to command buffer
-    if (handle->timestampQuerySet && handle->timestampReadbackBuffer) {
-        cbHandle->timestampReadbackBuffer = handle->timestampReadbackBuffer;
-        cbHandle->hasTimingData = true;
-        handle->timestampReadbackBuffer = nullptr;
+    cbHandle->timing = std::move(timing);
+    if (handle->timestampQuerySet) {
         wgpuQuerySetRelease(handle->timestampQuerySet);
         handle->timestampQuerySet = nullptr;
     }
@@ -532,9 +609,11 @@ void CommandEncoder::resolveQuerySet(std::shared_ptr<QuerySet> querySet, uint32_
 }
 
 void CommandEncoder::writeTimestamp(std::shared_ptr<QuerySet> querySet, uint32_t queryIndex) {
-    auto* handle = static_cast<CommandEncoderHandle*>(native);
-    auto* qsHandle = static_cast<QuerySetHandle*>(querySet->native);
-    wgpuCommandEncoderWriteTimestamp(handle->encoder, qsHandle->querySet, queryIndex);
+    // No-op: encoder-level timestamps were removed from the WebGPU spec;
+    // timestamps exist only as pass-level timestampWrites (pass them in
+    // BeginRenderPassDescriptor::timestampWrites).
+    (void)querySet;
+    (void)queryIndex;
 }
 
 std::shared_ptr<RayTracingPassEncoder> CommandEncoder::beginRayTracingPass() {

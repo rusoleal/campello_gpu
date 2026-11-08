@@ -429,6 +429,143 @@
 - [x] `CommandBuffer` — wraps D3D12 command list; `Device::submit` executes and waits via fence
 - [x] All resource classes (`Buffer`, `Texture`, `TextureView`, `ShaderModule`, `RenderPipeline`, `ComputePipeline`, `BindGroup`, `BindGroupLayout`, `PipelineLayout`, `Sampler`, `QuerySet`) — fully implemented
 
+## WebGPU — migrate to `emdawnwebgpu` and reach full support
+
+> Status audit (2026-11-07). `src/webgpu/` compiles in CI (`build-wasm`, latest run green)
+> and covers most of the API, but it is written against the **legacy Emscripten
+> `-sUSE_WEBGPU=1` binding**, which Emscripten deprecated in favour of Dawn's
+> `--use-port=emdawnwebgpu` and is removing (emscripten-core/emscripten#25397, #25398).
+> It survives only because CI pins Emscripten SDK **3.1.74**. The new port ships the
+> upstream `webgpu.h`, which is *not* source-compatible with what this backend uses, so
+> this is a port, not a flag flip. Goal: WebGPU as a first-class backend — same public
+> API behaviour as Metal/Vulkan/DirectX, runtime-tested in a real browser.
+
+> **Progress (2026-11-08, branch `feat/webgpu-emdawnwebgpu`):** the port and the
+> functional fixes ticked below **build with Emscripten 4.0.10** (`emcmake` + `cmake --build`,
+> library and example, no warnings) and were **run in headless Chrome 156 (macOS, Intel UHD
+> 630)**: the triangle example renders correctly, and a scratch smoke test passed 19/19 checks —
+> adapter/device creation, compute dispatch + `Buffer::download()`, texture upload/download
+> round-trip, a 2D-array texture, a depth32float pass with stencil ops supplied (dropped
+> correctly), a 4x MSAA pipeline + resolve, `downloadAsync()`, `getGPUExecutionTime()` and
+> `getPassPerformanceStats()` returning real nanoseconds, zero WebGPU errors, and
+> `validationErrorCount()` counting a deliberate error. That smoke test is not in the repo
+> yet (see Tests & CI below). Webgpu.h API names whose
+> spelling changed between header revisions (callback signatures, `*TimestampWrites`) are
+> derived with `decltype` so either spelling compiles. Also done in the same change:
+> buffers/textures implicitly get the copy usages `upload()`/`download()` need,
+> depth/stencil load/store ops are left undefined for aspects a format lacks, and
+> multi-layer 2D views use `2DArray`.
+
+### Toolchain & build
+- [x] Bump Emscripten to a current 4.x release (≥ 4.0.10, the floor other projects such as
+      Dear ImGui now require for `emdawnwebgpu`) in `.github/workflows/ci.yml` (`build-wasm`,
+      `mymindstorm/setup-emsdk` `version:`) and document the minimum version in `README.md`
+- [x] `wasm.cmake`: replace `-sUSE_WEBGPU=1` with `--use-port=emdawnwebgpu` — it is needed
+      at **compile** time too (it provides the headers), not only in `target_link_options`;
+      also expose it as an `INTERFACE` option so consumers linking `campello_gpu` get it
+- [ ] Decide on `-sASYNCIFY` vs `-sJSPI` for the blocking paths (`waitForIdle`, `Buffer::download`,
+      `Texture::download`, `CommandBuffer::getGPUExecutionTime`). Keep ASYNCIFY as the default
+      (widest browser support); optionally add a CMake option for JSPI
+- [x] `wasm.cmake` builds `SHARED` while TODO notes/CI refer to `libcampello_gpu.a` — confirm
+      what Emscripten actually emits and switch to `STATIC` explicitly if that is the intent
+- [x] `examples/wasm/CMakeLists.txt`: same flag migration as above
+
+### API port to upstream `webgpu.h`
+- [x] **Instance / adapter / device creation** (`Device::createDefaultDevice`, `src/webgpu/device.cpp`):
+      replace `emscripten_webgpu_get_device()` (needs a JS-preinitialised
+      `Module.preinitializedWebGPUDevice`) with `wgpuCreateInstance` →
+      `wgpuInstanceRequestAdapter` → `wgpuAdapterRequestDevice`, waited on with
+      `wgpuInstanceWaitAny` / `WGPUCallbackMode_AllowSpontaneous` under ASYNCIFY. The library then
+      controls which features/limits get requested instead of the host page
+- [x] **Surface**: `WGPUSurfaceDescriptorFromCanvasHTMLSelector` →
+      `WGPUEmscriptenSurfaceSourceCanvasHTMLSelector` (`WGPUSType_EmscriptenSurfaceSourceCanvasHTMLSelector`)
+- [x] **Swapchain removal**: `WGPUSwapChain`, `wgpuDeviceCreateSwapChain`,
+      `wgpuSwapChainGetCurrentTextureView`, `wgpuSwapChainPresent` → `wgpuSurfaceConfigure`,
+      `wgpuSurfaceGetCurrentTexture` (+ status check, + `wgpuTextureCreateView`). On the web
+      presentation is implicit at the end of the rAF task — drop the explicit present from
+      `Device::submit()` (it currently presents on *every* submit, wrong for multi-submit frames)
+- [x] Pick the surface format with `wgpuSurfaceGetCapabilities` (≈ `navigator.gpu.getPreferredCanvasFormat()`)
+      instead of hardcoding `BGRA8Unorm` in `common.hpp`; keep `getSwapchainPixelFormat()` truthful
+- [x] **Async callbacks**: `wgpuBufferMapAsync`, `wgpuQueueOnSubmittedWorkDone`,
+      `wgpuDeviceCreate*PipelineAsync` (if used) now take `*CallbackInfo` structs and return
+      `WGPUFuture`; `WGPUBufferMapAsyncStatus` → `WGPUMapAsyncStatus`. Replace the
+      `emscripten_sleep(1)` busy-loops with `wgpuInstanceWaitAny` (files: `buffer.cpp`,
+      `texture.cpp`, `command_buffer.cpp`, `device.cpp`)
+- [x] **Strings**: every `const char*` label/code/entryPoint becomes `WGPUStringView`
+      (`{ptr, WGPU_STRLEN}`) — shader code, `entryPoint`, labels, canvas selector, `getName()`
+- [x] **Shader modules**: `WGPUShaderModuleWGSLDescriptor` / `WGPUSType_ShaderModuleWGSLDescriptor`
+      → `WGPUShaderSourceWGSL` / `WGPUSType_ShaderSourceWGSL`
+- [x] **Copies**: `WGPUImageCopyTexture` / `WGPUImageCopyBuffer` / `WGPUTextureDataLayout` →
+      `WGPUTexelCopyTextureInfo` / `WGPUTexelCopyBufferInfo` / `WGPUTexelCopyBufferLayout`
+- [x] **Timestamps**: `wgpuCommandEncoderWriteTimestamp` was removed from the WebGPU spec —
+      `CommandEncoder::writeTimestamp()` must become a documented no-op (or be emulated by a
+      zero-work pass with `timestampWrites`); timing must rely on pass `timestampWrites` only
+- [x] Error reporting: wire `WGPUDeviceDescriptor::uncapturedErrorCallbackInfo` and
+      `deviceLostCallbackInfo` into the shared validation-diagnostics counters
+      (`validationErrorCount()` is currently always-zero on WebGPU)
+- [x] Fix remaining renamed enums/flags surfaced by the compiler (e.g. `WGPUBool`, optional-bool
+      `depthWriteEnabled`, `WGPUTextureUsageFlags`/`WGPUBufferUsageFlags` → 64-bit
+      `WGPUTextureUsage`/`WGPUBufferUsage`, `WGPUFeatureName` values in `conversions.cpp`)
+
+### Functional gaps (independent of the port, but fix during it)
+- [x] **`getPassPerformanceStats()` always returns zero** — `renderPassTimeNs`/`computePassTimeNs`
+      are only read/reset (`device.cpp:285`), never written. Resolve the pass `timestampWrites`
+      into a readback buffer and accumulate, as `453e61a` did for DirectX
+- [x] **Compute pass ignores timestamps** — `CommandEncoder::beginComputePass()` never sets
+      `WGPUComputePassDescriptor::timestampWrites` (render pass does)
+- [x] **MSAA ignored in pipelines** — `createRenderPipeline()` hardcodes
+      `multisampleState.count = 1` (`device.cpp:530`) instead of `descriptor.sampleCount`, so the
+      v0.24.0 MSAA feature (resolve targets already wired in `beginRenderPass`) can't work on WebGPU
+- [x] **Swapchain hardcoded to 800×600** — size from the canvas
+      (`emscripten_get_canvas_element_size`), and add a resize path (reconfigure the surface on
+      size change, mirroring the other backends' resize handling)
+- [x] **Adapter enumeration** — `Device::getAdapters()` returns `{}` and `Adapter::native` is
+      always null. Return one `Adapter` wrapping the requested `WGPUAdapter`; make
+      `Adapter::getFeatures()` query `wgpuAdapterHasFeature` instead of a hardcoded set;
+      honour the `adapter` argument in `createDevice()`
+- [x] **Request optional features at device creation** — whatever the adapter supports out of:
+      `texture-compression-bc`/`-etc2`/`-astc`, `shader-f16`, `timestamp-query`,
+      `depth32float-stencil8`, `float32-filterable`, `subgroups`, `rg11b10ufloat-renderable`,
+      `bgra8unorm-storage`, `indirect-first-instance`; and request adapter limits instead of defaults
+- [x] **`Feature::subgroupOperations`** — re-enable via `WGPUFeatureName_Subgroups` once on
+      `emdawnwebgpu` (blocked only by the 3.1.74 header; see the fp16/subgroup section below)
+- [ ] **`Device::getMemoryInfo()`** — returns only `hasUnifiedMemory = true`; at minimum report
+      tracked allocation totals (already counted in `getResourceMemoryStats()`) and document that
+      the web exposes no budget
+- [x] **`createShaderModule(const uint8_t*, uint64_t)`** returns `nullptr` — document as WGSL-only,
+      or accept the bytes as UTF-8 WGSL text so cross-backend callers have one code path
+- [ ] **`TextureView::fromNative()` / external textures** — accept a `WGPUTexture`/`WGPUTextureView`
+      so consumers can interop with JS-created textures (canvas, video frames)
+- [x] **`RGB10A2Uint`** (`conversions.cpp:139`) — now in core WebGPU as `rgb10a2uint`; map it
+- [ ] Audit the remaining `conversions.cpp` pixel/vertex formats against the current spec
+      (e.g. `unorm10-10-10-2`, `unorm8x4-bgra`, single-component 8/16-bit vertex formats)
+- [ ] Push constants: keep the no-op, but track the gpuweb "immediate data" proposal
+      (`wgpuRenderPassEncoderSetImmediateData` in Dawn) and implement when it is in the port
+- [ ] Ray tracing / cooperative matrix: stay unsupported (no WebGPU equivalent). Make sure every
+      RT entry point fails cleanly (`nullptr` / no-op) and `getFeatures()` never advertises them
+
+### Example
+- [x] `examples/wasm/` currently can't create a device under the legacy path: `index.html` never
+      sets `Module.preinitializedWebGPUDevice`, so `emscripten_webgpu_get_device()` has nothing to
+      return. After the port the C++ side requests the device itself — verified: the triangle
+      renders. Also fixed: the build copied `index.html` *over* emcc's output, shipping the raw
+      `{{{ SCRIPT }}}` placeholder (no JS ever loaded); it's now passed as `--shell-file`
+- [ ] Drive the frame loop with `emscripten_request_animation_frame_loop` and handle canvas resize
+- [ ] Add a compute example (buffer readback) to exercise the async/ASYNCIFY paths
+
+### Tests & CI
+- [ ] Run the existing `tests/universal/` suite under Emscripten + Node in CI (no GPU needed)
+- [ ] Turn the scratch smoke test from the 2026-11-08 session (compute, readback, depth, MSAA,
+      timing, error counter) into a permanent browser test
+- [ ] Run `tests/platform/` against a real WebGPU implementation in CI: headless Chrome with
+      `--enable-unsafe-webgpu` (SwiftShader/Vulkan) via Puppeteer/Playwright, or Node + Dawn.
+      gtest needs a browser runner (`-sEXIT_RUNTIME`, results reported via console/exit code)
+- [ ] Add per-backend skips for RT/cooperative-matrix/push-constant tests on WebGPU, mirroring
+      `tests/platform/test_raytracing.cpp`
+- [ ] Keep `build-wasm` as a compile gate, and add the browser test job as a separate required job
+- [ ] Update `README.md` / `CLAUDE.md` / `CHANGELOG.md` to list WebGPU as a supported backend with
+      its known limitations once the above lands
+
 ## Build system
 
 - [x] `ios.cmake` — created; mirrors `macos.cmake` (same Metal backend, CMake handles sysroot/arch)

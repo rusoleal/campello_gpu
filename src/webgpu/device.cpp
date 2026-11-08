@@ -4,8 +4,12 @@
 #include <string>
 #include <iostream>
 #include <webgpu/webgpu.h>
+#include <algorithm>
+#include <atomic>
+#include <climits>
+#include <cstdio>
 #include <emscripten.h>
-#include <emscripten/html5_webgpu.h>
+#include <emscripten/html5.h>
 
 #include "campello_gpu_config.h"
 #include <campello_gpu/device.hpp>
@@ -33,6 +37,7 @@
 #include <campello_gpu/descriptors/top_level_acceleration_structure_descriptor.hpp>
 #include <campello_gpu/descriptors/ray_tracing_pipeline_descriptor.hpp>
 #include <campello_gpu/constants/query_set_type.hpp>
+#include <campello_gpu/validation_diagnostics.hpp>
 
 #include "common.hpp"
 #include "buffer_handle.hpp"
@@ -99,19 +104,167 @@ static void updatePeakMemory(WebGPUDeviceData* data) {
 }
 
 // ---------------------------------------------------------------------------
+// Instance, validation errors, adapter/device request
+// ---------------------------------------------------------------------------
+
+WGPUInstance systems::leal::campello_gpu::getWGPUInstance() {
+    static WGPUInstance instance = wgpuCreateInstance(nullptr);
+    return instance;
+}
+
+// Uncaptured WebGPU errors (validation, out-of-memory, internal) counted for
+// validationErrorCount(); see validation_diagnostics.hpp.
+static std::atomic<uint64_t> g_validationErrorCount{0};
+
+uint64_t systems::leal::campello_gpu::validationErrorCount() {
+    return g_validationErrorCount.load();
+}
+
+void systems::leal::campello_gpu::resetValidationErrorCount() {
+    g_validationErrorCount.store(0);
+}
+
+static void onUncapturedError(WGPUDevice const* device, WGPUErrorType type,
+                              WGPUStringView message, void* userdata1, void* userdata2) {
+    (void)device; (void)userdata1; (void)userdata2;
+    g_validationErrorCount++;
+    fprintf(stderr, "[WebGPU ERROR] (type %d) %s\n", static_cast<int>(type),
+            fromStringView(message).c_str());
+}
+
+static void onDeviceLost(WGPUDevice const* device, WGPUDeviceLostReason reason,
+                         WGPUStringView message, void* userdata1, void* userdata2) {
+    (void)device; (void)userdata1; (void)userdata2;
+    if (reason == WGPUDeviceLostReason_Destroyed) return;  // normal teardown
+    fprintf(stderr, "[WebGPU] device lost (reason %d): %s\n", static_cast<int>(reason),
+            fromStringView(message).c_str());
+}
+
+static WGPUAdapter requestAdapter() {
+    WGPUInstance instance = getWGPUInstance();
+    if (!instance) return nullptr;
+
+    WGPURequestAdapterOptions options{};
+    options.powerPreference = WGPUPowerPreference_HighPerformance;
+
+    WGPUAsyncResult result;
+    wgpuInstanceRequestAdapter(instance, &options,
+                               makeCallbackInfo<WGPURequestAdapterCallbackInfo>(&result));
+    waitForAsync(result);
+
+    if (result.status != static_cast<int>(WGPURequestAdapterStatus_Success) || !result.handle) {
+        fprintf(stderr, "[WebGPU] requestAdapter failed: %s\n", result.message.c_str());
+        return nullptr;
+    }
+    return static_cast<WGPUAdapter>(result.handle);
+}
+
+static WGPUDevice requestDevice(WGPUAdapter adapter) {
+    // Every optional feature the adapter has; requesting more than needed is
+    // free, and getFeatures() then reports what was actually enabled.
+    std::vector<WGPUFeatureName> features;
+    for (WGPUFeatureName f : desiredOptionalFeatures()) {
+        if (wgpuAdapterHasFeature(adapter, f)) features.push_back(f);
+    }
+
+    // Request the adapter's full limits instead of the spec defaults.
+    WGPULimits limits{};
+    bool haveLimits = wgpuAdapterGetLimits(adapter, &limits) == WGPUStatus_Success;
+
+    WGPUDeviceDescriptor desc{};
+    desc.label = toStringView("campello_gpu device");
+    desc.requiredFeatureCount = features.size();
+    desc.requiredFeatures = features.data();
+    desc.requiredLimits = haveLimits ? &limits : nullptr;
+    desc.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowSpontaneous;
+    desc.deviceLostCallbackInfo.callback = onDeviceLost;
+    desc.uncapturedErrorCallbackInfo.callback = onUncapturedError;
+
+    WGPUAsyncResult result;
+    wgpuAdapterRequestDevice(adapter, &desc,
+                             makeCallbackInfo<WGPURequestDeviceCallbackInfo>(&result));
+    waitForAsync(result);
+
+    if (result.status != static_cast<int>(WGPURequestDeviceStatus_Success) || !result.handle) {
+        fprintf(stderr, "[WebGPU] requestDevice failed: %s\n", result.message.c_str());
+        return nullptr;
+    }
+    return static_cast<WGPUDevice>(result.handle);
+}
+
+// Reads the canvas drawing-buffer size (canvas.width/height).
+static void getCanvasSize(const std::string& selector, uint32_t& width, uint32_t& height) {
+    int w = 0, h = 0;
+    if (emscripten_get_canvas_element_size(selector.c_str(), &w, &h) != EMSCRIPTEN_RESULT_SUCCESS) {
+        w = h = 0;
+    }
+    width = static_cast<uint32_t>(std::max(w, 1));
+    height = static_cast<uint32_t>(std::max(h, 1));
+}
+
+static void configureSurface(WebGPUDeviceData* deviceData, uint32_t width, uint32_t height) {
+    WGPUSurfaceConfiguration config{};
+    config.device = deviceData->device;
+    config.format = deviceData->surfaceFormat;
+    config.usage = WGPUTextureUsage_RenderAttachment;
+    config.width = width;
+    config.height = height;
+    config.alphaMode = WGPUCompositeAlphaMode_Auto;
+    config.presentMode = WGPUPresentMode_Fifo;
+    wgpuSurfaceConfigure(deviceData->surface, &config);
+    deviceData->surfaceConfigured = true;
+    deviceData->surfaceWidth = width;
+    deviceData->surfaceHeight = height;
+}
+
+static bool createSurface(WebGPUDeviceData* deviceData, const char* canvasSelector) {
+    deviceData->canvasSelector = canvasSelector;
+
+    WGPUEmscriptenSurfaceSourceCanvasHTMLSelector canvasSource{};
+    canvasSource.chain.sType = WGPUSType_EmscriptenSurfaceSourceCanvasHTMLSelector;
+    canvasSource.selector = toStringView(deviceData->canvasSelector);
+
+    WGPUSurfaceDescriptor surfaceDesc{};
+    surfaceDesc.nextInChain = &canvasSource.chain;
+    deviceData->surface = wgpuInstanceCreateSurface(deviceData->instance, &surfaceDesc);
+    if (!deviceData->surface) return false;
+
+    // The first reported format is the browser's preferred canvas format
+    // (navigator.gpu.getPreferredCanvasFormat()).
+    WGPUSurfaceCapabilities caps{};
+    if (wgpuSurfaceGetCapabilities(deviceData->surface, deviceData->adapter, &caps) == WGPUStatus_Success &&
+        caps.formatCount > 0) {
+        deviceData->surfaceFormat = caps.formats[0];
+    } else {
+        deviceData->surfaceFormat = WGPUTextureFormat_BGRA8Unorm;
+    }
+    wgpuSurfaceCapabilitiesFreeMembers(caps);
+
+    uint32_t width = 0, height = 0;
+    getCanvasSize(deviceData->canvasSelector, width, height);
+    configureSurface(deviceData, width, height);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Device
 // ---------------------------------------------------------------------------
 
+// `pd` is a WGPUDevice obtained by createDevice(); takes ownership of it.
 Device::Device(void* pd) {
     auto* deviceData = new WebGPUDeviceData();
+    deviceData->instance = getWGPUInstance();
     deviceData->device = static_cast<WGPUDevice>(pd);
     deviceData->queue = wgpuDeviceGetQueue(deviceData->device);
+    deviceData->timestampQueryEnabled =
+        wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_TimestampQuery);
     native = deviceData;
 }
 
 Device::~Device() {
     if (native != nullptr) {
         auto* deviceData = static_cast<WebGPUDeviceData*>(native);
+        deviceData->alive->store(false);
         if (deviceData->mipmapGen.pipelineLayout) {
             wgpuPipelineLayoutRelease(deviceData->mipmapGen.pipelineLayout);
         }
@@ -127,10 +280,8 @@ Device::~Device() {
         if (deviceData->mipmapGen.sampler) {
             wgpuSamplerRelease(deviceData->mipmapGen.sampler);
         }
-        if (deviceData->swapchain) {
-            wgpuSwapChainRelease(deviceData->swapchain);
-        }
         if (deviceData->surface) {
+            if (deviceData->surfaceConfigured) wgpuSurfaceUnconfigure(deviceData->surface);
             wgpuSurfaceRelease(deviceData->surface);
         }
         if (deviceData->queue) {
@@ -139,60 +290,47 @@ Device::~Device() {
         if (deviceData->device) {
             wgpuDeviceRelease(deviceData->device);
         }
-        if (deviceData->instance) {
-            wgpuInstanceRelease(deviceData->instance);
+        if (deviceData->adapter) {
+            wgpuAdapterRelease(deviceData->adapter);
         }
+        // deviceData->instance is the process-wide instance; not released here.
         delete deviceData;
     }
 }
 
 std::string Device::getName() {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
-    WGPUAdapter adapter = nullptr;
-    // webgpu.h does not expose wgpuDeviceGetAdapter in all versions;
-    // fall back to a generic name.
-    (void)adapter;
-    return "WebGPU Device";
+    std::string name;
+    if (deviceData->adapter) {
+        WGPUAdapterInfo info{};
+        if (wgpuAdapterGetInfo(deviceData->adapter, &info) == WGPUStatus_Success) {
+            // Browsers often redact `description`/`device`; fall back to
+            // vendor + architecture, which are usually exposed.
+            name = fromStringView(info.description);
+            if (name.empty()) name = fromStringView(info.device);
+            if (name.empty()) {
+                name = fromStringView(info.vendor);
+                std::string arch = fromStringView(info.architecture);
+                if (!arch.empty()) name += (name.empty() ? "" : " ") + arch;
+            }
+            wgpuAdapterInfoFreeMembers(info);
+        }
+    }
+    return name.empty() ? "WebGPU Device" : name;
 }
 
 std::set<Feature> Device::getFeatures() {
-    std::set<Feature> features;
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
-
-    features.insert(Feature::msaa32bit);
-    features.insert(Feature::depth24Stencil8PixelFormat);
-
-    if (deviceData->device) {
-        if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_TextureCompressionBC))
-            features.insert(Feature::bcTextureCompression);
-        if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_TextureCompressionETC2))
-            features.insert(Feature::etc2TextureCompression);
-        if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_TextureCompressionASTC))
-            features.insert(Feature::astcTextureCompression);
-        // "shader-f16" is a standardized, shipping WebGPU feature (confirmed via
-        // web search, not memory — has been available since early WebGPU
-        // implementations) and its enum is present in Emscripten's bundled
-        // webgpu.h, so it's queryable here.
-        if (wgpuDeviceHasFeature(deviceData->device, WGPUFeatureName_ShaderF16))
-            features.insert(Feature::fp16);
-        // Feature::subgroupOperations intentionally NOT queried here: plain
-        // "subgroups" (as opposed to subgroup-matrix, which is still unshipped
-        // — see Adapter::getFeatures() above and TODO.md) did ship in Chrome 134
-        // (Feb 2025) and is a real WGPUFeatureName in Dawn's own headers, but
-        // the build-wasm CI job caught this session (2026-07-16): Emscripten
-        // SDK 3.1.74's bundled webgpu.h does not define
-        // WGPUFeatureName_Subgroups at all, so referencing it is a compile
-        // error against this project's actual toolchain, not just a runtime
-        // false-negative. Revisit once Emscripten's vendored header catches up.
-    }
-
-    return features;
+    WGPUDevice device = deviceData->device;
+    return featuresFromWGPU([device](WGPUFeatureName f) {
+        return device && wgpuDeviceHasFeature(device, f);
+    });
 }
 
 std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties() {
     // Not implemented -- WGSL's cooperative/subgroup-matrix proposal is still
-    // in design discussion, unshipped (see Adapter::getFeatures() and
-    // TODO.md). Feature::cooperativeMatrix is never set here either.
+    // in design discussion, unshipped (see featuresFromWGPU() in adapter.cpp
+    // and TODO.md). Feature::cooperativeMatrix is never set here either.
     return {};
 }
 
@@ -291,6 +429,7 @@ PassPerformanceStats Device::getPassPerformanceStats() {
     pps.renderPassSampleCount = deviceData->renderPassSampleCount.load();
     pps.computePassSampleCount = deviceData->computePassSampleCount.load();
     pps.rayTracingPassSampleCount = deviceData->rayTracingPassSampleCount.load();
+    pps.totalPassTimeNs = pps.renderPassTimeNs + pps.computePassTimeNs + pps.rayTracingPassTimeNs;
     return pps;
 }
 
@@ -356,6 +495,12 @@ std::shared_ptr<Texture> Device::createTexture(
     desc.mipLevelCount = mipLevels;
     desc.sampleCount = samples;
     desc.usage = toWGPUTextureUsage(usageMode);
+    // Texture::upload()/download() go through queue writes and copies, which
+    // need CopyDst/CopySrc on WebGPU (other backends need no usage for them).
+    // Multisampled textures can't be copied, so they're left as requested.
+    if (samples <= 1) {
+        desc.usage |= WGPUTextureUsage_CopyDst | WGPUTextureUsage_CopySrc;
+    }
 
     WGPUTexture texture = wgpuDeviceCreateTexture(deviceData->device, &desc);
     if (!texture) return nullptr;
@@ -377,7 +522,7 @@ std::shared_ptr<Texture> Device::createTexture(
     // Create default view
     WGPUTextureViewDescriptor viewDesc{};
     viewDesc.format = desc.format;
-    viewDesc.dimension = toWGPUTextureViewDimension(type);
+    viewDesc.dimension = toWGPUTextureViewDimension(type, (type == TextureType::tt3d) ? 1 : depth);
     viewDesc.baseMipLevel = 0;
     viewDesc.mipLevelCount = mipLevels;
     viewDesc.baseArrayLayer = 0;
@@ -398,6 +543,16 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     WGPUBufferDescriptor desc{};
     desc.size = size;
     desc.usage = toWGPUBufferUsage(usage);
+    // Buffer::upload() is a queue write (needs CopyDst) and download() a copy
+    // (needs CopySrc). Add them implicitly, within WebGPU's rule that MapRead
+    // may only be combined with CopyDst and MapWrite only with CopySrc.
+    if (desc.usage & WGPUBufferUsage_MapRead) {
+        desc.usage |= WGPUBufferUsage_CopyDst;
+    } else if (desc.usage & WGPUBufferUsage_MapWrite) {
+        desc.usage |= WGPUBufferUsage_CopySrc;
+    } else {
+        desc.usage |= WGPUBufferUsage_CopyDst | WGPUBufferUsage_CopySrc;
+    }
     desc.mappedAtCreation = false;
 
     WGPUBuffer buffer = wgpuDeviceCreateBuffer(deviceData->device, &desc);
@@ -419,24 +574,18 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
 // createBuffer(uint64_t, BufferUsage, void*) is implemented in src/pi/utils.cpp
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t* buffer, uint64_t size) {
-    // WebGPU backend expects WGSL source text, not binary.
-    // If binary is passed, we cannot use it. Return nullptr.
-    (void)buffer;
-    (void)size;
-    return nullptr;
+    // Browsers only accept WGSL (no SPIR-V), so the byte buffer is treated as
+    // UTF-8 WGSL source text. This lets callers that load shaders from files
+    // use one code path on every backend.
+    if (!buffer || size == 0) return nullptr;
+    std::string source(reinterpret_cast<const char*>(buffer), static_cast<size_t>(size));
+    return createShaderModule(source.c_str());
 }
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const char* wgslSource) {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
 
-    WGPUShaderModuleWGSLDescriptor wgslDesc{};
-    wgslDesc.chain.sType = WGPUSType_ShaderModuleWGSLDescriptor;
-    wgslDesc.code = wgslSource;
-
-    WGPUShaderModuleDescriptor desc{};
-    desc.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&wgslDesc);
-
-    WGPUShaderModule shader = wgpuDeviceCreateShaderModule(deviceData->device, &desc);
+    WGPUShaderModule shader = createWGSLShaderModule(deviceData->device, wgslSource);
     if (!shader) return nullptr;
 
     auto* handle = new ShaderModuleHandle();
@@ -459,7 +608,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     auto* vertHandle = static_cast<ShaderModuleHandle*>(descriptor.vertex.module->native);
     WGPUVertexState vertexState{};
     vertexState.module = vertHandle->shaderModule;
-    vertexState.entryPoint = descriptor.vertex.entryPoint.c_str();
+    vertexState.entryPoint = toStringView(descriptor.vertex.entryPoint);
 
     std::vector<WGPUVertexBufferLayout> vertexBuffers;
     std::vector<std::vector<WGPUVertexAttribute>> vertexAttributes;
@@ -503,7 +652,8 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         depthStencilState = std::make_unique<WGPUDepthStencilState>();
         *depthStencilState = WGPUDepthStencilState{};
         depthStencilState->format = toWGPUTextureFormat(descriptor.depthStencil->format);
-        depthStencilState->depthWriteEnabled = descriptor.depthStencil->depthWriteEnabled;
+        depthStencilState->depthWriteEnabled = descriptor.depthStencil->depthWriteEnabled
+                                               ? WGPUOptionalBool_True : WGPUOptionalBool_False;
         depthStencilState->depthCompare = toWGPUCompareFunction(descriptor.depthStencil->depthCompare);
         depthStencilState->depthBias = static_cast<int32_t>(descriptor.depthStencil->depthBias);
         depthStencilState->depthBiasSlopeScale = static_cast<float>(descriptor.depthStencil->depthBiasSlopeScale);
@@ -527,7 +677,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
 
     // Multisample state
     WGPUMultisampleState multisampleState{};
-    multisampleState.count = 1;
+    multisampleState.count = std::max(descriptor.sampleCount, 1u);
     multisampleState.mask = 0xFFFFFFFF;
 
     // Fragment state
@@ -539,14 +689,14 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         *fragmentState = WGPUFragmentState{};
         auto* fragHandle = static_cast<ShaderModuleHandle*>(descriptor.fragment->module->native);
         fragmentState->module = fragHandle->shaderModule;
-        fragmentState->entryPoint = descriptor.fragment->entryPoint.c_str();
+        fragmentState->entryPoint = toStringView(descriptor.fragment->entryPoint);
 
         colorTargets.reserve(descriptor.fragment->targets.size());
         blendStates.reserve(descriptor.fragment->targets.size());
         for (const auto& target : descriptor.fragment->targets) {
             WGPUColorTargetState ct{};
             ct.format = toWGPUTextureFormat(target.format);
-            ct.writeMask = static_cast<WGPUColorWriteMaskFlags>(target.writeMask);
+            ct.writeMask = static_cast<WGPUColorWriteMask>(target.writeMask);
             if (target.blend) {
                 auto blend = std::make_unique<WGPUBlendState>();
                 blend->color.srcFactor = toWGPUBlendFactor(target.blend->color.srcFactor);
@@ -601,10 +751,6 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
 
     auto* compHandle = static_cast<ShaderModuleHandle*>(descriptor.compute.module->native);
 
-    WGPUProgrammableStageDescriptor computeStage{};
-    computeStage.module = compHandle->shaderModule;
-    computeStage.entryPoint = descriptor.compute.entryPoint.c_str();
-
     WGPUPipelineLayout layout = nullptr;
     if (descriptor.layout && descriptor.layout->native) {
         auto* plHandle = static_cast<PipelineLayoutHandle*>(descriptor.layout->native);
@@ -612,7 +758,8 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     }
 
     WGPUComputePipelineDescriptor desc{};
-    desc.compute = computeStage;
+    desc.compute.module = compHandle->shaderModule;
+    desc.compute.entryPoint = toStringView(descriptor.compute.entryPoint);
     desc.layout = layout;
 
     WGPUComputePipeline pipeline = wgpuDeviceCreateComputePipeline(deviceData->device, &desc);
@@ -771,7 +918,7 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor& descript
     desc.mipmapFilter = toWGPUMipmapFilterMode(descriptor.minFilter);
     desc.lodMinClamp = static_cast<float>(descriptor.lodMinClamp);
     desc.lodMaxClamp = static_cast<float>(descriptor.lodMaxClamp);
-    desc.maxAnisotropy = static_cast<uint16_t>(descriptor.maxAnisotropy);
+    desc.maxAnisotropy = static_cast<uint16_t>(std::max<double>(descriptor.maxAnisotropy, 1.0));  // 0 is invalid
     if (descriptor.compare.has_value()) {
         desc.compare = toWGPUCompareFunction(descriptor.compare.value());
     }
@@ -821,26 +968,8 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     auto* handle = new CommandEncoderHandle();
     handle->encoder = encoder;
     handle->deviceData = deviceData;
-
-    // Create timestamp query set and readback buffer for GPU timing
-    WGPUQuerySetDescriptor qsDesc{};
-    qsDesc.type = WGPUQueryType_Timestamp;
-    qsDesc.count = 2;  // start and end
-    handle->timestampQuerySet = wgpuDeviceCreateQuerySet(deviceData->device, &qsDesc);
-
-    if (handle->timestampQuerySet) {
-        WGPUBufferDescriptor bufDesc{};
-        bufDesc.size = 2 * sizeof(uint64_t);
-        bufDesc.usage = WGPUBufferUsage_QueryResolve | WGPUBufferUsage_MapRead;
-        handle->timestampReadbackBuffer = wgpuDeviceCreateBuffer(deviceData->device, &bufDesc);
-
-        if (handle->timestampReadbackBuffer) {
-            wgpuCommandEncoderWriteTimestamp(encoder, handle->timestampQuerySet, 0);
-        } else {
-            wgpuQuerySetRelease(handle->timestampQuerySet);
-            handle->timestampQuerySet = nullptr;
-        }
-    }
+    // GPU timing queries are created lazily by the first pass (see
+    // CommandEncoder::beginRenderPass()/beginComputePass()).
 
     return std::shared_ptr<CommandEncoder>(new CommandEncoder(handle));
 }
@@ -863,6 +992,52 @@ std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
     return nullptr; // Ray tracing not supported in WebGPU
 }
 
+// Maps a submitted command buffer's resolved pass timestamps (the map
+// resolves once the GPU has finished that work), then records the command
+// buffer's total GPU time and feeds getPassPerformanceStats().
+static void startGpuTimingReadback(const std::shared_ptr<GpuTimingState>& timing) {
+    timing->submitted = true;
+    std::shared_ptr<GpuTimingState> keep = timing;
+    auto* result = newAsyncResult([keep](WGPUAsyncResult& res) {
+        GpuTimingState& t = *keep;
+        if (res.status == static_cast<int>(WGPUMapAsyncStatus_Success)) {
+            const auto* ts = static_cast<const uint64_t*>(
+                wgpuBufferGetConstMappedRange(t.readbackBuffer, 0, t.readbackSize));
+            if (ts) {
+                uint64_t first = UINT64_MAX, last = 0;
+                uint64_t renderNs = 0, computeNs = 0;
+                uint32_t renderSamples = 0, computeSamples = 0;
+                for (const auto& pass : t.passes) {
+                    uint64_t begin = ts[pass.beginIndex];
+                    uint64_t end = ts[pass.endIndex];
+                    if (begin == 0 || end <= begin) continue;  // not written / invalid
+                    first = std::min(first, begin);
+                    last = std::max(last, end);
+                    // WebGPU timestamps are in nanoseconds.
+                    if (pass.isCompute) { computeNs += end - begin; computeSamples++; }
+                    else { renderNs += end - begin; renderSamples++; }
+                }
+                if (first != UINT64_MAX && last > first) t.totalNs = last - first;
+
+                if (t.deviceData && t.deviceAlive && t.deviceAlive->load()) {
+                    t.deviceData->renderPassTimeNs.fetch_add(renderNs);
+                    t.deviceData->computePassTimeNs.fetch_add(computeNs);
+                    t.deviceData->renderPassSampleCount.fetch_add(renderSamples);
+                    t.deviceData->computePassSampleCount.fetch_add(computeSamples);
+                }
+            }
+            wgpuBufferUnmap(t.readbackBuffer);
+        }
+        t.done = true;
+        auto waiters = std::move(t.waiters);
+        t.waiters.clear();
+        for (auto& waiter : waiters) waiter(t.totalNs);
+    });
+    wgpuBufferMapAsync(timing->readbackBuffer, WGPUMapMode_Read, 0,
+                       static_cast<size_t>(timing->readbackSize),
+                       makeCallbackInfo<WGPUBufferMapCallbackInfo>(result));
+}
+
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     if (!commandBuffer || !commandBuffer->native) return;
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
@@ -872,9 +1047,11 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     wgpuQueueSubmit(deviceData->queue, 1, buffers);
     deviceData->commandsSubmitted++;
 
-    // Present swapchain if configured
-    if (deviceData->swapchain) {
-        wgpuSwapChainPresent(deviceData->swapchain);
+    // No explicit present: on the web the canvas texture is presented when
+    // control returns to the browser at the end of the frame task.
+
+    if (cbHandle->timing && !cbHandle->timing->submitted) {
+        startGpuTimingReadback(cbHandle->timing);
     }
 }
 
@@ -890,21 +1067,17 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
 void Device::scheduleNextPresent(void* nativeDrawable) {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
     (void)nativeDrawable;
-    // Presentation is handled automatically in submit() for WebGPU
+    // Nothing to schedule: the browser presents the canvas texture
+    // automatically at the end of the current frame task.
     (void)deviceData;
 }
 
 void Device::waitForIdle() {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
-    struct DoneCtx { bool done = false; };
-    DoneCtx ctx;
+    WGPUAsyncResult result;
     wgpuQueueOnSubmittedWorkDone(deviceData->queue,
-        [](WGPUQueueWorkDoneStatus, void* userdata) {
-            static_cast<DoneCtx*>(userdata)->done = true;
-        }, &ctx);
-    while (!ctx.done) {
-        emscripten_sleep(1);
-    }
+                                 makeCallbackInfo<WGPUQueueWorkDoneCallbackInfo>(&result));
+    waitForAsync(result);
 }
 
 std::shared_ptr<Fence> Device::createFence() {
@@ -914,52 +1087,44 @@ std::shared_ptr<Fence> Device::createFence() {
 }
 
 std::shared_ptr<Device> Device::createDefaultDevice(void* pd) {
-    WGPUDevice device = emscripten_webgpu_get_device();
+    auto adapters = getAdapters();
+    if (adapters.empty()) return nullptr;
+    return createDevice(adapters[0], pd);
+}
+
+// `pd` is an optional CSS selector for the target <canvas> (e.g. "#canvas");
+// nullptr creates a headless device (offscreen rendering and compute only).
+// Blocks via ASYNCIFY until the browser grants the device.
+std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> adapter, void* pd) {
+    auto* adapterHandle = adapter ? static_cast<AdapterHandle*>(adapter->native) : nullptr;
+    if (!adapterHandle || !adapterHandle->adapter) return nullptr;
+
+    WGPUDevice device = requestDevice(adapterHandle->adapter);
     if (!device) return nullptr;
 
     auto dev = std::shared_ptr<Device>(new Device(device));
     auto* deviceData = static_cast<WebGPUDeviceData*>(dev->native);
+    wgpuAdapterAddRef(adapterHandle->adapter);
+    deviceData->adapter = adapterHandle->adapter;
 
-    // Create surface and swapchain if platform handle (canvas selector) is provided
-    if (pd != nullptr) {
-        const char* canvasSelector = static_cast<const char*>(pd);
-
-        WGPUInstance instance = wgpuCreateInstance(nullptr);
-        deviceData->instance = instance;
-
-        WGPUSurfaceDescriptorFromCanvasHTMLSelector canvasDesc{};
-        canvasDesc.chain.sType = WGPUSType_SurfaceDescriptorFromCanvasHTMLSelector;
-        canvasDesc.selector = canvasSelector;
-
-        WGPUSurfaceDescriptor surfaceDesc{};
-        surfaceDesc.nextInChain = reinterpret_cast<WGPUChainedStruct const*>(&canvasDesc);
-
-        deviceData->surface = wgpuInstanceCreateSurface(instance, &surfaceDesc);
-
-        WGPUSwapChainDescriptor swapDesc{};
-        swapDesc.usage = WGPUTextureUsage_RenderAttachment;
-        swapDesc.format = deviceData->surfaceFormat;
-        swapDesc.width = 800;
-        swapDesc.height = 600;
-        swapDesc.presentMode = WGPUPresentMode_Fifo;
-        deviceData->swapchain = wgpuDeviceCreateSwapChain(device, deviceData->surface, &swapDesc);
-        deviceData->surfaceWidth = 800;
-        deviceData->surfaceHeight = 600;
+    if (pd != nullptr && !createSurface(deviceData, static_cast<const char*>(pd))) {
+        return nullptr;
     }
-
     return dev;
 }
 
-std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> adapter, void* pd) {
-    // Emscripten provides a single default device; ignore adapter parameter.
-    (void)adapter;
-    return createDefaultDevice(pd);
-}
-
+// The web exposes a single adapter per request (the browser picks the GPU),
+// so this returns at most one entry. Blocks via ASYNCIFY.
 std::vector<std::shared_ptr<Adapter>> Device::getAdapters() {
     std::vector<std::shared_ptr<Adapter>> adapters;
-    // WebGPU via Emscripten does not expose adapter enumeration.
-    // Return an empty list; consumers should use createDefaultDevice().
+    WGPUAdapter wgpuAdapter = requestAdapter();
+    if (!wgpuAdapter) return adapters;
+
+    auto adapter = std::shared_ptr<Adapter>(new Adapter());
+    auto* handle = new AdapterHandle();
+    handle->adapter = wgpuAdapter;
+    adapter->native = handle;
+    adapters.push_back(adapter);
     return adapters;
 }
 
@@ -971,20 +1136,34 @@ std::string Device::getEngineVersion() {
 
 std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
-    if (!deviceData->swapchain) return nullptr;
+    if (!deviceData->surface) return nullptr;
 
-    WGPUTextureView view = wgpuSwapChainGetCurrentTextureView(deviceData->swapchain);
+    // Follow canvas resizes: reconfigure when the drawing-buffer size changed.
+    uint32_t width = 0, height = 0;
+    getCanvasSize(deviceData->canvasSelector, width, height);
+    if (!deviceData->surfaceConfigured ||
+        width != deviceData->surfaceWidth || height != deviceData->surfaceHeight) {
+        configureSurface(deviceData, width, height);
+    }
+
+    WGPUSurfaceTexture surfaceTexture{};
+    wgpuSurfaceGetCurrentTexture(deviceData->surface, &surfaceTexture);
+    if (!surfaceTexture.texture) return nullptr;
+
+    WGPUTextureView view = wgpuTextureCreateView(surfaceTexture.texture, nullptr);
+    wgpuTextureRelease(surfaceTexture.texture);  // the view keeps it alive
     if (!view) return nullptr;
 
     auto* handle = new TextureViewHandle();
     handle->view = view;
     handle->ownsView = true;
+    handle->format = deviceData->surfaceFormat;
     return std::shared_ptr<TextureView>(new TextureView(handle));
 }
 
 PixelFormat Device::getSwapchainPixelFormat() const noexcept {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
-    if (!deviceData->swapchain) return PixelFormat::invalid;
+    if (!deviceData->surface) return PixelFormat::invalid;
     return wgpuFormatToPixelFormat(deviceData->surfaceFormat);
 }
 

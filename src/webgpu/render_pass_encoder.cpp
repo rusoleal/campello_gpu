@@ -101,9 +101,9 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
 }
 
 void RenderPassEncoder::setPushConstants(ShaderStage, uint32_t, uint32_t, const void*) {
-    // No-op — WebGPU has no push-constant concept (proposal exists but
-    // isn't part of the stable API this backend targets). Nothing in this
-    // codebase calls setPushConstants() on the WebGPU backend today.
+    // No-op -- WebGPU has no push constants yet. The gpuweb "immediate data"
+    // proposal (wgpuRenderPassEncoderSetImmediateData in Dawn) would map onto
+    // this once it ships in the emdawnwebgpu port; see TODO.md.
 }
 
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
