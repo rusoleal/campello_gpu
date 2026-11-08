@@ -555,14 +555,21 @@
 
 ### Tests & CI
 - [ ] Run the existing `tests/universal/` suite under Emscripten + Node in CI (no GPU needed)
-- [ ] Turn the scratch smoke test from the 2026-11-08 session (compute, readback, depth, MSAA,
-      timing, error counter) into a permanent browser test
+- [x] Turn the scratch smoke test from the 2026-11-08 session (compute, readback, depth, MSAA,
+      timing, error counter) into a permanent browser test — `tests/webgpu/webgpu_browser_test.cpp`
+      (plus canvas surface + resize checks), run by `tests/webgpu/run_in_browser.mjs` (no npm
+      deps; headless Chrome over the DevTools protocol) and registered with CTest when
+      configured with `-DBUILD_INTEGRATION_TESTS=ON` under Emscripten. Its first run caught a
+      real bug: a second `createDevice()` on the same `Adapter` failed because WebGPU adapters
+      are single-use; fixed by requesting a fresh adapter once one is consumed
 - [ ] Run `tests/platform/` against a real WebGPU implementation in CI: headless Chrome with
       `--enable-unsafe-webgpu` (SwiftShader/Vulkan) via Puppeteer/Playwright, or Node + Dawn.
       gtest needs a browser runner (`-sEXIT_RUNTIME`, results reported via console/exit code)
 - [ ] Add per-backend skips for RT/cooperative-matrix/push-constant tests on WebGPU, mirroring
       `tests/platform/test_raytracing.cpp`
-- [ ] Keep `build-wasm` as a compile gate, and add the browser test job as a separate required job
+- [x] Keep `build-wasm` as a compile gate, and add the browser test job as a separate required job
+      — done in the same job instead: `build-wasm` now builds the library, example and browser
+      test, then runs the test in headless Chrome on SwiftShader (the runner has no GPU)
 - [ ] Update `README.md` / `CLAUDE.md` / `CHANGELOG.md` to list WebGPU as a supported backend with
       its known limitations once the above lands
 
