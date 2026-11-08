@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-11-08
+
 ### Fixed
 
 - **[Metal] Render pipelines now honour `cullMode` and `frontFace`.** Metal keeps these on the
