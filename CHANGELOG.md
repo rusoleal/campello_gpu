@@ -12,6 +12,15 @@ All notable changes to campello_gpu are documented here.
   non-blocking readback checked against the CPU, and the GPU time.
 - **[WebGPU] The universal tests run under Emscripten** (in Node) with `-DBUILD_TESTS=ON`, and in
   the WASM CI job.
+- **[WebGPU] The full GoogleTest GPU suite runs in the browser.** `tests/platform/` is built for
+  the web as `webgpu_gtest_suite` and runs in headless Chrome (247 tests: 203 pass, 44 skip for ray
+  tracing and one threaded test), in CI too.
+- **[WebGPU] JavaScript texture interop** (web only): `Device::getNativeWGPUDevice()`,
+  `Device::createTextureFromWGPUTexture()`, and `Module.campelloGpu` in JavaScript
+  (`importTexture`, `importTextureView`, `getJsObject`), so textures filled from video, images or
+  other canvases can be used from C++.
+- **[WebGPU] `-DCAMPELLO_GPU_WASM_JSPI=ON`** builds with JSPI instead of ASYNCIFY: about half the
+  wasm size, for browsers with JSPI (Chrome/Edge 137+). CI builds and tests both.
 - **[WebGPU] Browser test in CI.** `tests/webgpu/webgpu_browser_test` covers device creation,
   compute, buffer/texture readback, depth and MSAA passes, the canvas surface and resizing, and
   the error counter. `tests/webgpu/run_in_browser.mjs` runs it in headless Chrome, and the WASM CI
@@ -20,11 +29,27 @@ All notable changes to campello_gpu are documented here.
 
 ### Changed
 
+- **[WebGPU] Invalid render/compute pipelines return `nullptr`**, like on the other backends, instead
+  of an object that fails later. Creation waits for WebGPU's validation result.
+- **[WebGPU] `getMemoryInfo()` reports the device's tracked allocations** (`currentAllocatedSize`),
+  and `hasUnifiedMemory` is now `false`, since CPU access on the web always goes through copies.
+- **[WebGPU] Anisotropic samplers use linear mip filtering**, which WebGPU requires for anisotropy.
+  If min/mag filtering isn't linear, anisotropy is dropped instead of creating an invalid sampler.
 - **[WebGPU] The triangle example runs on the browser's requestAnimationFrame loop** and its
   canvas fills the window, following resizes and the device pixel ratio.
 
 ### Fixed
 
+- **[WebGPU] `Buffer::download()` failed for `mapRead` buffers**, which can't be copy sources; they're
+  now mapped directly. `mapWrite` buffers are written through a map, and unaligned uploads and
+  downloads are handled.
+- **[WebGPU] Cube textures didn't get 6 layers.** `ttCube` used `depth` as its layer count, unlike the
+  other backends, so a cube created with `depth = 1` was invalid.
+- **[WebGPU] `resolveQuerySet()` failed into buffers created without `queryResolve` usage**; it's now
+  added implicitly.
+- **[WebGPU] `createShaderModule()` with zero bytes returned `nullptr`**; it now gives an empty module,
+  like the other backends.
+- **[WebGPU] `getResourceMemoryStats().totalTrackedBytes` was always 0**, and query sets weren't counted.
 - **[WebGPU] A second `Device::createDevice()` with the same `Adapter` failed**, because a WebGPU
   adapter can create only one device. The backend now requests a fresh adapter for the same GPU
   once the first one is used.

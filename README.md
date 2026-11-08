@@ -88,9 +88,16 @@ ctest --test-dir build --output-on-failure
 ```
 
 `BUILD_TESTS=ON` builds the universal (no-GPU) tests, which run under Node.
-`BUILD_INTEGRATION_TESTS=ON` adds `tests/webgpu/webgpu_browser_test`, which runs in headless
-Chrome via `tests/webgpu/run_in_browser.mjs` (set `CHROME_PATH` if Chrome isn't found; on a
-machine without a GPU, set `CHROME_FLAGS` as the WASM job in `.github/workflows/ci.yml` does).
+`BUILD_INTEGRATION_TESTS=ON` adds the GPU tests, run in headless Chrome via
+`tests/webgpu/run_in_browser.mjs`: the same GoogleTest suite the native backends run
+(`tests/platform/`), plus web-specific checks in `tests/webgpu/webgpu_browser_test.cpp`. Set
+`CHROME_PATH` if Chrome isn't found; on a machine without a GPU, set `CHROME_FLAGS` as the WASM job
+in `.github/workflows/ci.yml` does.
+
+**ASYNCIFY or JSPI.** Blocking calls yield to the browser through ASYNCIFY by default, which works
+in every WebGPU browser. `-DCAMPELLO_GPU_WASM_JSPI=ON` uses JavaScript Promise Integration instead:
+about half the wasm size and faster, but it needs a browser with JSPI (Chrome/Edge 137+), and
+blocking calls must run under `main()` rather than inside a plain JavaScript callback.
 
 ## Integration
 
@@ -190,6 +197,28 @@ Notes for the web backend:
   `BeginRenderPassDescriptor::timestampWrites`).
 - GPU timing (`getGPUExecutionTime()`, `getPassPerformanceStats()`) needs the browser to expose
   the `timestamp-query` feature; otherwise it reads 0.
+- Invalid render/compute pipelines return `nullptr`, like the other backends (the backend waits
+  for WebGPU's validation result), with the reason printed to stderr.
+- `getMemoryInfo()` reports what this device allocated; the web exposes no device memory size or
+  budget, so those fields are 0.
+
+**JavaScript interop (web only).** Use textures created in JavaScript, for example from a video,
+an image or another canvas, from C++:
+
+```js
+// JavaScript: devicePtr comes from device->getNativeWGPUDevice()
+const gpuDevice = Module.campelloGpu.getJsObject(devicePtr);
+const texture = gpuDevice.createTexture({ size: [w, h], format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST |
+           GPUTextureUsage.RENDER_ATTACHMENT });
+gpuDevice.queue.copyExternalImageToTexture({ source: video }, { texture }, [w, h]);
+const handle = Module.campelloGpu.importTexture(texture);   // pass to C++
+```
+
+```cpp
+auto texture = device->createTextureFromWGPUTexture(handle);  // reads size/format/usage
+wgpuTextureRelease(static_cast<WGPUTexture>(handle));        // campello keeps its own reference
+```
 
 ### Resource Creation
 

@@ -77,6 +77,9 @@ struct WGPUAsyncResult {
     bool done = false;
     int status = 0;
     void* handle = nullptr;
+    // Second callback argument when it is an enum, e.g. the WGPUErrorType of
+    // a pop-error-scope callback.
+    int value = 0;
     std::string message;
     std::function<void(WGPUAsyncResult&)> onDone;
     bool heapOwned = false;
@@ -106,6 +109,8 @@ struct CallbackThunk<R (*)(Args...)> {
         using T1 = std::decay_t<std::tuple_element_t<1, std::tuple<Args...>>>;
         if constexpr (std::is_pointer_v<T1>) {
             r->handle = static_cast<void*>(std::get<1>(tup));
+        } else if constexpr (std::is_enum_v<T1> || std::is_integral_v<T1>) {
+            r->value = static_cast<int>(std::get<1>(tup));
         }
         std::apply([r](auto&... a) { (captureMessage(*r, a), ...); }, tup);
         r->done = true;
@@ -230,6 +235,7 @@ struct AdapterHandle {
 
 struct BufferHandle {
     WGPUBuffer buffer = nullptr;
+    WGPUBufferUsage usage = WGPUBufferUsage_None;  // actual usage, incl. implicit copy usages
     uint64_t size = 0;
     uint64_t allocatedSize = 0;
     WebGPUDeviceData* deviceData = nullptr;
@@ -401,6 +407,7 @@ WGPUTextureDimension toWGPUTextureDimension(TextureType type);
 WGPUTextureViewDimension toWGPUTextureViewDimension(TextureType type);
 WGPUTextureViewDimension toWGPUTextureViewDimension(TextureType type, uint32_t arrayLayerCount);
 WGPUTextureUsage toWGPUTextureUsage(TextureUsage usage);
+TextureUsage fromWGPUTextureUsage(WGPUTextureUsage usage);
 WGPUBufferUsage toWGPUBufferUsage(BufferUsage usage);
 WGPUShaderStage toWGPUShaderStage(ShaderStage stage);
 WGPUBufferBindingType toWGPUBindingType(EntryObjectType type, EntryObjectBufferType bufferType);

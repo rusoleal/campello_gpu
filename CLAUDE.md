@@ -21,7 +21,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure   # needs Node 22+ and Chrome
 ```
 
-Requires Emscripten 4.0.10+ (the backend targets Dawn's `emdawnwebgpu` port and its upstream `webgpu.h`, not the removed `-sUSE_WEBGPU`). Under Emscripten the universal tests run under Node, and the GPU test is `tests/webgpu/webgpu_browser_test.cpp` (GoogleTest can't run in a browser page), run in headless Chrome by `tests/webgpu/run_in_browser.mjs`. CI runs it on SwiftShader. Examples are in `examples/wasm/`.
+Requires Emscripten 4.0.10+ (the backend targets Dawn's `emdawnwebgpu` port and its upstream `webgpu.h`, not the removed `-sUSE_WEBGPU`). Under Emscripten the universal tests run under Node; in headless Chrome (via `tests/webgpu/run_in_browser.mjs`) run the GoogleTest GPU suite `tests/platform/` (target `webgpu_gtest_suite`, with a browser `main()`) and `tests/webgpu/webgpu_browser_test.cpp` (web-specific checks). CI runs them on SwiftShader, once with ASYNCIFY and once with `-DCAMPELLO_GPU_WASM_JSPI=ON`. In `tests/platform/`, guard platform-specific behaviour with `__EMSCRIPTEN__` (device-creation helpers need a branch for it, or the tests silently skip on the web). Examples are in `examples/wasm/`.
 
 ## Architecture Overview
 

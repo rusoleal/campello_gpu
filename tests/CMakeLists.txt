@@ -11,6 +11,15 @@ if(EMSCRIPTEN)
     # The universal tests run single-threaded under Node; a pthreads build
     # would need SharedArrayBuffer and -pthread on every target.
     set(gtest_disable_pthreads ON CACHE BOOL "" FORCE)
+    if(CAMPELLO_GPU_WASM_JSPI)
+        # GoogleTest builds with -fexceptions, which Emscripten implements
+        # with JS invoke_* trampolines. Under JSPI those imports are wrapped as
+        # "may suspend", and calling one outside main() (GoogleTest registers
+        # tests from static constructors) throws SuspendError. Native wasm
+        # exceptions have no trampolines. Every browser with JSPI supports them.
+        add_compile_options(-fwasm-exceptions)
+        add_link_options(-fwasm-exceptions)
+    endif()
 endif()
 FetchContent_MakeAvailable(googletest)
 
@@ -43,7 +52,7 @@ set_target_properties(campello_gpu_universal_tests PROPERTIES
 # Integration tests — require a real GPU device, link against campello_gpu.
 # Build only when BUILD_INTEGRATION_TESTS=ON.
 # Supported platforms: macOS/iOS (Metal), Android (Vulkan), Windows (DirectX 12), Linux (Vulkan).
-# The web/WebGPU equivalent is tests/webgpu/ (GoogleTest can't run in a browser).
+# On the web, tests/webgpu/ builds these same sources and runs them in a browser.
 # ---------------------------------------------------------------------------
 if(BUILD_INTEGRATION_TESTS AND NOT EMSCRIPTEN)
     set(INTEGRATION_TEST_SOURCES

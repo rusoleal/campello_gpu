@@ -153,6 +153,46 @@ PixelFormat systems::leal::campello_gpu::wgpuFormatToPixelFormat(WGPUTextureForm
         case WGPUTextureFormat_Depth24PlusStencil8: return PixelFormat::depth24plus_stencil8;
         case WGPUTextureFormat_Depth32Float: return PixelFormat::depth32float;
         case WGPUTextureFormat_Depth32FloatStencil8: return PixelFormat::depth32float_stencil8;
+        // Block-compressed formats (needed when wrapping external textures).
+        case WGPUTextureFormat_BC1RGBAUnorm: return PixelFormat::bc1_rgba_unorm;
+        case WGPUTextureFormat_BC1RGBAUnormSrgb: return PixelFormat::bc1_rgba_unorm_srgb;
+        case WGPUTextureFormat_BC2RGBAUnorm: return PixelFormat::bc2_rgba_unorm;
+        case WGPUTextureFormat_BC2RGBAUnormSrgb: return PixelFormat::bc2_rgba_unorm_srgb;
+        case WGPUTextureFormat_BC3RGBAUnorm: return PixelFormat::bc3_rgba_unorm;
+        case WGPUTextureFormat_BC3RGBAUnormSrgb: return PixelFormat::bc3_rgba_unorm_srgb;
+        case WGPUTextureFormat_BC4RUnorm: return PixelFormat::bc4_r_unorm;
+        case WGPUTextureFormat_BC4RSnorm: return PixelFormat::bc4_r_snorm;
+        case WGPUTextureFormat_BC5RGUnorm: return PixelFormat::bc5_rg_unorm;
+        case WGPUTextureFormat_BC5RGSnorm: return PixelFormat::bc5_rg_snorm;
+        case WGPUTextureFormat_BC6HRGBUfloat: return PixelFormat::bc6h_rgb_ufloat;
+        case WGPUTextureFormat_BC6HRGBFloat: return PixelFormat::bc6h_rgb_float;
+        case WGPUTextureFormat_BC7RGBAUnorm: return PixelFormat::bc7_rgba_unorm;
+        case WGPUTextureFormat_BC7RGBAUnormSrgb: return PixelFormat::bc7_rgba_unorm_srgb;
+        case WGPUTextureFormat_ETC2RGB8Unorm: return PixelFormat::etc2_rgb8unorm;
+        case WGPUTextureFormat_ETC2RGB8UnormSrgb: return PixelFormat::etc2_rgb8unorm_srgb;
+        case WGPUTextureFormat_ETC2RGB8A1Unorm: return PixelFormat::etc2_rgb8a1unorm;
+        case WGPUTextureFormat_ETC2RGB8A1UnormSrgb: return PixelFormat::etc2_rgb8a1unorm_srgb;
+        case WGPUTextureFormat_EACR11Unorm: return PixelFormat::eac_r11unorm;
+        case WGPUTextureFormat_EACR11Snorm: return PixelFormat::eac_r11snorm;
+        case WGPUTextureFormat_EACRG11Unorm: return PixelFormat::eac_rg11unorm;
+        case WGPUTextureFormat_EACRG11Snorm: return PixelFormat::eac_rg11snorm;
+        case WGPUTextureFormat_ASTC4x4UnormSrgb: return PixelFormat::astc_4x4_unorm_srgb;
+        case WGPUTextureFormat_ASTC5x4UnormSrgb: return PixelFormat::astc_5x4_unorm_srgb;
+        case WGPUTextureFormat_ASTC5x5UnormSrgb: return PixelFormat::astc_5x5_unorm_srgb;
+        case WGPUTextureFormat_ASTC6x5UnormSrgb: return PixelFormat::astc_6x5_unorm_srgb;
+        case WGPUTextureFormat_ASTC6x6UnormSrgb: return PixelFormat::astc_6x6_unorm_srgb;
+        case WGPUTextureFormat_ASTC8x5UnormSrgb: return PixelFormat::astc_8x5_unorm_srgb;
+        case WGPUTextureFormat_ASTC8x6UnormSrgb: return PixelFormat::astc_8x6_unorm_srgb;
+        case WGPUTextureFormat_ASTC8x8UnormSrgb: return PixelFormat::astc_8x8_unorm_srgb;
+        case WGPUTextureFormat_ASTC10x5UnormSrgb: return PixelFormat::astc_10x5_unorm_srgb;
+        case WGPUTextureFormat_ASTC10x6UnormSrgb: return PixelFormat::astc_10x6_unorm_srgb;
+        case WGPUTextureFormat_ASTC10x8UnormSrgb: return PixelFormat::astc_10x8_unorm_srgb;
+        case WGPUTextureFormat_ASTC10x10UnormSrgb: return PixelFormat::astc_10x10_unorm_srgb;
+        case WGPUTextureFormat_ASTC12x10UnormSrgb: return PixelFormat::astc_12x10_unorm_srgb;
+        case WGPUTextureFormat_ASTC12x12UnormSrgb: return PixelFormat::astc_12x12_unorm_srgb;
+        // 16-bit unorm/snorm formats have no enum in the targeted webgpu.h
+        // (only experimental Chromium features), so toWGPUTextureFormat()
+        // returns Undefined for them.
         default: return PixelFormat::invalid;
     }
 }
@@ -339,6 +379,16 @@ WGPUTextureUsage systems::leal::campello_gpu::toWGPUTextureUsage(TextureUsage us
     if (u & static_cast<uint32_t>(TextureUsage::storageBinding)) flags |= WGPUTextureUsage_StorageBinding;
     if (u & static_cast<uint32_t>(TextureUsage::renderTarget)) flags |= WGPUTextureUsage_RenderAttachment;
     return flags;
+}
+
+TextureUsage systems::leal::campello_gpu::fromWGPUTextureUsage(WGPUTextureUsage usage) {
+    uint32_t u = 0;
+    if (usage & WGPUTextureUsage_CopySrc) u |= static_cast<uint32_t>(TextureUsage::copySrc);
+    if (usage & WGPUTextureUsage_CopyDst) u |= static_cast<uint32_t>(TextureUsage::copyDst);
+    if (usage & WGPUTextureUsage_TextureBinding) u |= static_cast<uint32_t>(TextureUsage::textureBinding);
+    if (usage & WGPUTextureUsage_StorageBinding) u |= static_cast<uint32_t>(TextureUsage::storageBinding);
+    if (usage & WGPUTextureUsage_RenderAttachment) u |= static_cast<uint32_t>(TextureUsage::renderTarget);
+    return static_cast<TextureUsage>(u);
 }
 
 WGPUBufferUsage systems::leal::campello_gpu::toWGPUBufferUsage(BufferUsage usage) {

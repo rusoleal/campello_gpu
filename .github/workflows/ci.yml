@@ -235,10 +235,11 @@ jobs:
   # ---------------------------------------------------------------------------
   # WASM / WebGPU — build with Emscripten (library, examples, tests), then
   # run the tests: the universal GoogleTest suite under Node (CMake's
-  # cross-compiling emulator) and tests/webgpu/webgpu_browser_test in
-  # headless Chrome (GoogleTest can't run in a browser page). The runner has
+  # cross-compiling emulator), and in headless Chrome the GoogleTest GPU suite
+  # (tests/platform/) plus tests/webgpu/webgpu_browser_test. The runner has
   # no GPU, so Chrome uses its bundled SwiftShader (CPU Vulkan) as the WebGPU
-  # adapter. BUILD_INTEGRATION_TESTS=ON implies BUILD_TESTS=ON.
+  # adapter. BUILD_INTEGRATION_TESTS=ON implies BUILD_TESTS=ON. Everything is
+  # built and tested twice: with ASYNCIFY (default) and with JSPI.
   # ---------------------------------------------------------------------------
   build-wasm:
     name: WASM / WebGPU (build + tests)
@@ -280,3 +281,23 @@ jobs:
           export CHROME_PATH="$(command -v google-chrome)"
           "$CHROME_PATH" --version
           ctest --test-dir build --verbose --timeout 300
+
+      - name: Configure (emcmake, JSPI)
+        run: >
+          emcmake cmake -B build-jspi -S . -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_INTEGRATION_TESTS=ON -DBUILD_EXAMPLES=ON -DCAMPELLO_GPU_WASM_JSPI=ON
+
+      - name: Build library, examples and tests (JSPI)
+        run: cmake --build build-jspi --config Release
+
+      - name: Run tests (JSPI)
+        env:
+          CHROME_FLAGS: >-
+            --no-sandbox
+            --use-webgpu-adapter=swiftshader
+            --enable-features=Vulkan
+            --use-vulkan=swiftshader
+            --use-angle=swiftshader
+        run: |
+          export CHROME_PATH="$(command -v google-chrome)"
+          ctest --test-dir build-jspi --output-on-failure --timeout 300

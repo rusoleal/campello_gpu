@@ -69,7 +69,7 @@ static std::shared_ptr<Device> tryCreateDevice() {
 #elif defined(__linux__)
     return Device::createDefaultDevice(nullptr);
 #elif defined(__EMSCRIPTEN__)
-    return Device::createDefaultDevice("#canvas");
+    return Device::createDefaultDevice(const_cast<char*>("#canvas"));
 #else
     return nullptr;
 #endif
@@ -89,7 +89,7 @@ TEST(Device, GetEngineVersionReturnsString) {
 // ---------------------------------------------------------------------------
 
 TEST(Device, GetAdaptersReturnsAtLeastOneOnSupportedPlatform) {
-#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32) || defined(__linux__)
+#if defined(__ANDROID__) || defined(__APPLE__) || defined(_WIN32) || defined(__linux__) || defined(__EMSCRIPTEN__)
     auto adapters = Device::getAdapters();
     EXPECT_FALSE(adapters.empty()) << "Expected at least one GPU adapter";
 #else
