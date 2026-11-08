@@ -233,13 +233,15 @@ jobs:
         run: cmake --build build --target campello_gpu --config Release
 
   # ---------------------------------------------------------------------------
-  # WASM / WebGPU — build with Emscripten, then run the browser test.
-  # tests/webgpu/webgpu_browser_test runs in headless Chrome (GoogleTest can't
-  # run in a browser page). The runner has no GPU, so Chrome uses its bundled
-  # SwiftShader (CPU Vulkan) as the WebGPU adapter.
+  # WASM / WebGPU — build with Emscripten (library, examples, tests), then
+  # run the tests: the universal GoogleTest suite under Node (CMake's
+  # cross-compiling emulator) and tests/webgpu/webgpu_browser_test in
+  # headless Chrome (GoogleTest can't run in a browser page). The runner has
+  # no GPU, so Chrome uses its bundled SwiftShader (CPU Vulkan) as the WebGPU
+  # adapter. BUILD_INTEGRATION_TESTS=ON implies BUILD_TESTS=ON.
   # ---------------------------------------------------------------------------
   build-wasm:
-    name: WASM / WebGPU (build + browser test)
+    name: WASM / WebGPU (build + tests)
     runs-on: ubuntu-latest
 
     steps:
@@ -263,10 +265,10 @@ jobs:
           emcmake cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
           -DBUILD_INTEGRATION_TESTS=ON -DBUILD_EXAMPLES=ON
 
-      - name: Build library, example and browser test
+      - name: Build library, examples and tests
         run: cmake --build build --config Release
 
-      - name: Run browser test (headless Chrome, SwiftShader)
+      - name: Run tests (Node + headless Chrome on SwiftShader)
         env:
           CHROME_FLAGS: >-
             --no-sandbox

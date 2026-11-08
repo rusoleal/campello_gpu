@@ -1,6 +1,6 @@
 # campello_gpu
 
-A cross-platform GPU abstraction library (C++20) with a WebGPU-inspired API. Provides a unified interface over Metal, Vulkan, and DirectX 12 for rendering, compute and raytracing workloads.
+A cross-platform GPU abstraction library (C++20) with a WebGPU-inspired API. Provides a unified interface over Metal, Vulkan, DirectX 12 and WebGPU for rendering, compute and raytracing workloads.
 
 ## 🚀 Part of the Campello Engine
 
@@ -26,12 +26,14 @@ Each module is designed to work standalone, but integrates seamlessly into the e
 | windows | DirectX 11 | Frozen |
 | windows | OpenGL | Frozen |
 | windows | Vulkan 1.x | Not started |
+| web (WASM) | WebGPU (Emscripten) | Beta — browser-tested in CI |
 
 ## Requirements
 
 - CMake 3.22.1+
 - C++20 compiler
-- Platform SDK: Metal (macOS/iOS), Vulkan (Android / Linux), DirectX 12 (Windows)
+- Platform SDK: Metal (macOS/iOS), Vulkan (Android / Linux), DirectX 12 (Windows),
+  Emscripten 4.0.10+ (web / WebGPU)
 
 ## Build
 
@@ -63,6 +65,32 @@ ctest --test-dir build --output-on-failure
 Linux/Vulkan supports both windowed (X11/Wayland) and headless contexts. The surface
 extension is optional; passing `nullptr` to `createDefaultDevice()` creates a headless
 device. Verified on Mesa Intel Vulkan drivers.
+
+### Web (Emscripten / WebGPU)
+
+Requires **Emscripten 4.0.10 or later**. The backend uses Dawn's `emdawnwebgpu` port; the
+library target passes `--use-port=emdawnwebgpu` and `-sASYNCIFY` on to anything that links it,
+so your own target needs no extra WebGPU flags.
+
+```bash
+# Build the library and the examples (examples/wasm: triangle + compute)
+emcmake cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON
+cmake --build build
+
+# Serve and open an example (WebGPU needs http://localhost or https)
+python3 -m http.server -d build/examples/wasm 8080
+# then open http://localhost:8080/campello_wasm_example.html
+
+# Build and run the tests (Node 22+ and Chrome required)
+emcmake cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DBUILD_INTEGRATION_TESTS=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+`BUILD_TESTS=ON` builds the universal (no-GPU) tests, which run under Node.
+`BUILD_INTEGRATION_TESTS=ON` adds `tests/webgpu/webgpu_browser_test`, which runs in headless
+Chrome via `tests/webgpu/run_in_browser.mjs` (set `CHROME_PATH` if Chrome isn't found; on a
+machine without a GPU, set `CHROME_FLAGS` as the WASM job in `.github/workflows/ci.yml` does).
 
 ## Integration
 
@@ -133,6 +161,35 @@ surfaceInfo.window  = (void*)wl_surface;
 surfaceInfo.api     = LinuxWindowApi::wayland;
 auto device = Device::createDefaultDevice(&surfaceInfo);
 ```
+
+#### Web (WebGPU)
+
+```cpp
+// pd is a CSS selector for the target <canvas>; nullptr creates a headless
+// device (offscreen rendering and compute only).
+auto device = Device::createDefaultDevice(const_cast<char*>("#canvas"));
+
+// The canvas format is chosen by the browser — build render pipelines with it.
+PixelFormat format = device->getSwapchainPixelFormat();  // bgra8unorm or rgba8unorm
+
+// Per frame: the swapchain follows the canvas size; the browser presents the
+// frame when control returns to it (no explicit present call).
+auto view = device->getSwapchainTextureView();
+```
+
+Notes for the web backend:
+
+- Shaders are **WGSL** (`createShaderModule(const char*)`); the byte-buffer overload also takes
+  WGSL text. SPIR-V, MSL and DXIL aren't accepted by browsers.
+- Device creation, `Buffer::download()`, `Texture::download()`, `waitForIdle()` and
+  `getGPUExecutionTime()` block by yielding to the browser (ASYNCIFY). The `...Async()` variants
+  don't block.
+- Not available on WebGPU: ray tracing (`Feature::raytracing` is never reported and the
+  ray-tracing calls return `nullptr`), cooperative matrix, push constants (`setPushConstants()` is
+  a no-op), and `CommandEncoder::writeTimestamp()` (removed from the WebGPU spec — use
+  `BeginRenderPassDescriptor::timestampWrites`).
+- GPU timing (`getGPUExecutionTime()`, `getPassPerformanceStats()`) needs the browser to expose
+  the `timestamp-query` feature; otherwise it reads 0.
 
 ### Resource Creation
 

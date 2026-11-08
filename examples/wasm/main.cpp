@@ -1,7 +1,12 @@
 //
 //  Minimal WASM / WebGPU example — campello_gpu + Emscripten.
 //
-//  Renders a colored triangle to an HTML5 canvas.
+//  Renders a colored triangle to an HTML5 canvas that fills the window.
+//
+//  Frames are driven by the browser's requestAnimationFrame loop. Each frame
+//  sizes the canvas drawing buffer to its on-screen size (times the device
+//  pixel ratio); campello_gpu reconfigures the swapchain automatically when
+//  that size changes, so resizing the window just works.
 //
 //  Build:
 //    mkdir build && cd build
@@ -30,6 +35,7 @@
 #include <campello_gpu/constants/buffer_usage.hpp>
 
 #include <emscripten.h>
+#include <emscripten/html5.h>
 #include <cstdio>
 #include <memory>
 #include <vector>
@@ -161,12 +167,36 @@ static void render() {
     }
 }
 
-extern "C" void emscripten_main_loop() {
+// Keeps the canvas drawing buffer matched to its CSS size, so rendering stays
+// sharp on high-DPI screens and follows window resizes.
+static void syncCanvasSize() {
+    double cssWidth = 0, cssHeight = 0;
+    emscripten_get_element_css_size("#canvas", &cssWidth, &cssHeight);
+    double dpr = emscripten_get_device_pixel_ratio();
+    int width = static_cast<int>(cssWidth * dpr);
+    int height = static_cast<int>(cssHeight * dpr);
+    if (width <= 0 || height <= 0) return;
+
+    int currentWidth = 0, currentHeight = 0;
+    emscripten_get_canvas_element_size("#canvas", &currentWidth, &currentHeight);
+    if (width != currentWidth || height != currentHeight) {
+        emscripten_set_canvas_element_size("#canvas", width, height);
+    }
+}
+
+static bool onAnimationFrame(double /*timeMs*/, void* /*userData*/) {
+    syncCanvasSize();
     render();
+    return true;  // keep the loop running
 }
 
 int main() {
+    // Device creation blocks until the browser grants a device (ASYNCIFY).
     init();
-    emscripten_set_main_loop(emscripten_main_loop, 0, 1);
+    if (!g_device || !g_pipeline) return 1;
+
+    // The browser calls onAnimationFrame before every repaint; the frame is
+    // presented when control returns to it.
+    emscripten_request_animation_frame_loop(onAnimationFrame, nullptr);
     return 0;
 }

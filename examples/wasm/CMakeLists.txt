@@ -33,3 +33,24 @@ set_property(TARGET campello_wasm_example APPEND PROPERTY LINK_DEPENDS
 set_target_properties(campello_wasm_example PROPERTIES
     SUFFIX ".html"
 )
+
+# ---------------------------------------------------------------------------
+# WASM / WebGPU compute example (SAXPY + async readback), no canvas.
+# ---------------------------------------------------------------------------
+add_executable(campello_wasm_compute compute.cpp)
+target_link_libraries(campello_wasm_compute
+    campello_gpu
+)
+
+target_link_options(campello_wasm_compute PRIVATE
+    --use-port=emdawnwebgpu
+    -sASYNCIFY
+    -sALLOW_MEMORY_GROWTH=1
+    --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/compute.html
+)
+set_property(TARGET campello_wasm_compute APPEND PROPERTY LINK_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/compute.html)
+
+set_target_properties(campello_wasm_compute PROPERTIES
+    SUFFIX ".html"
+)

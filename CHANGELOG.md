@@ -6,11 +6,22 @@ All notable changes to campello_gpu are documented here.
 
 ### Added
 
+- **[WebGPU] Web build docs.** README covers building, serving and testing with Emscripten, and
+  using the web backend (canvas selector, WGSL, blocking calls, what isn't available).
+- **[WebGPU] Compute example** (`examples/wasm/compute.cpp`): SAXPY over a million floats,
+  non-blocking readback checked against the CPU, and the GPU time.
+- **[WebGPU] The universal tests run under Emscripten** (in Node) with `-DBUILD_TESTS=ON`, and in
+  the WASM CI job.
 - **[WebGPU] Browser test in CI.** `tests/webgpu/webgpu_browser_test` covers device creation,
   compute, buffer/texture readback, depth and MSAA passes, the canvas surface and resizing, and
   the error counter. `tests/webgpu/run_in_browser.mjs` runs it in headless Chrome, and the WASM CI
   job now runs it on every push. Locally: configure with `emcmake cmake -DBUILD_INTEGRATION_TESTS=ON`,
   then `ctest` (needs Node 22+ and Chrome).
+
+### Changed
+
+- **[WebGPU] The triangle example runs on the browser's requestAnimationFrame loop** and its
+  canvas fills the window, following resizes and the device pixel ratio.
 
 ### Fixed
 

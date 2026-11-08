@@ -15,10 +15,11 @@
             height: 100vh;
             overflow: hidden;
         }
+        /* Fills the window; main.cpp sizes the drawing buffer to match. */
         canvas {
-            width: 800px;
-            height: 600px;
-            image-rendering: pixelated;
+            width: 100vw;
+            height: 100vh;
+            display: block;
         }
         #loading {
             position: absolute;
