@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-08
+
 ### Added
 
 - **[WebGPU] Web build docs.** README covers building, serving and testing with Emscripten, and
