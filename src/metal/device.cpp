@@ -831,7 +831,17 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         dsDesc->release();
     }
 
-    auto *handle = new MetalRenderPipelineData{ pipelineState, depthStencilState };
+    MTL::CullMode cullMode = MTL::CullModeNone;
+    switch (descriptor.cullMode) {
+        case CullMode::back:  cullMode = MTL::CullModeBack;  break;
+        case CullMode::front: cullMode = MTL::CullModeFront; break;
+        default:              cullMode = MTL::CullModeNone;  break;
+    }
+    const MTL::Winding winding = (descriptor.frontFace == FrontFace::cw)
+        ? MTL::WindingClockwise
+        : MTL::WindingCounterClockwise;
+
+    auto *handle = new MetalRenderPipelineData{ pipelineState, depthStencilState, cullMode, winding };
     
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->renderPipelineCount++;

@@ -4,6 +4,13 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **[Metal] Render pipelines now honour `cullMode` and `frontFace`.** Metal keeps these on the
+  render command encoder, not in the pipeline state, and the backend never set them, so every
+  pipeline drew both faces with no culling. `RenderPassEncoder::setPipeline` now applies the
+  pipeline's cull mode and winding (cached per encoder). Vulkan and D3D12 already did.
+
 ## [0.27.0] - 2026-11-08
 
 ### Added
