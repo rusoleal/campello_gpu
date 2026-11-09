@@ -125,47 +125,44 @@ static D3D12_STENCIL_OP toD3D12StencilOp(StencilOp op) {
     }
 }
 
-static DXGI_FORMAT toDXGIVertexFormat(ComponentType comp, AccessorType acc) {
+// Component type + count + normalized -> DXGI_FORMAT. 8/16-bit vec3 use the
+// 4-component format (DXGI has no 3-component 8/16-bit formats; glTF pads
+// them to 4 bytes); the shader reads .xyz.
+static DXGI_FORMAT toDXGIVertexFormat(ComponentType comp, AccessorType acc, bool normalized) {
+    int n = 3;
     switch (acc) {
-        case AccessorType::acScalar:
-            switch (comp) {
-                case ComponentType::ctFloat:         return DXGI_FORMAT_R32_FLOAT;
-                case ComponentType::ctUnsignedInt:   return DXGI_FORMAT_R32_UINT;
-                case ComponentType::ctShort:         return DXGI_FORMAT_R16_SINT;
-                case ComponentType::ctUnsignedShort: return DXGI_FORMAT_R16_UINT;
-                case ComponentType::ctByte:          return DXGI_FORMAT_R8_SINT;
-                case ComponentType::ctUnsignedByte:  return DXGI_FORMAT_R8_UINT;
-                default:                             return DXGI_FORMAT_R32_FLOAT;
-            }
-        case AccessorType::acVec2:
-            switch (comp) {
-                case ComponentType::ctFloat:         return DXGI_FORMAT_R32G32_FLOAT;
-                case ComponentType::ctUnsignedInt:   return DXGI_FORMAT_R32G32_UINT;
-                case ComponentType::ctShort:         return DXGI_FORMAT_R16G16_SINT;
-                case ComponentType::ctUnsignedShort: return DXGI_FORMAT_R16G16_UINT;
-                case ComponentType::ctByte:          return DXGI_FORMAT_R8G8_SINT;
-                case ComponentType::ctUnsignedByte:  return DXGI_FORMAT_R8G8_UINT;
-                default:                             return DXGI_FORMAT_R32G32_FLOAT;
-            }
-        case AccessorType::acVec3:
-            switch (comp) {
-                case ComponentType::ctFloat:         return DXGI_FORMAT_R32G32B32_FLOAT;
-                case ComponentType::ctUnsignedInt:   return DXGI_FORMAT_R32G32B32_UINT;
-                default:                             return DXGI_FORMAT_R32G32B32_FLOAT;
-            }
-        case AccessorType::acVec4:
-            switch (comp) {
-                case ComponentType::ctFloat:         return DXGI_FORMAT_R32G32B32A32_FLOAT;
-                case ComponentType::ctUnsignedInt:   return DXGI_FORMAT_R32G32B32A32_UINT;
-                case ComponentType::ctShort:         return DXGI_FORMAT_R16G16B16A16_SINT;
-                case ComponentType::ctUnsignedShort: return DXGI_FORMAT_R16G16B16A16_UINT;
-                case ComponentType::ctByte:          return DXGI_FORMAT_R8G8B8A8_SINT;
-                case ComponentType::ctUnsignedByte:  return DXGI_FORMAT_R8G8B8A8_UINT;
-                default:                             return DXGI_FORMAT_R32G32B32A32_FLOAT;
-            }
-        default:
-            return DXGI_FORMAT_R32_FLOAT;
+        case AccessorType::acScalar: n = 1; break;
+        case AccessorType::acVec2:   n = 2; break;
+        case AccessorType::acVec3:   n = 3; break;
+        case AccessorType::acVec4:   n = 4; break;
+        default:                     return DXGI_FORMAT_R32_FLOAT;  // matrices: not a vertex format
     }
+    const auto pick = [n](DXGI_FORMAT f1, DXGI_FORMAT f2, DXGI_FORMAT f3, DXGI_FORMAT f4) {
+        return n == 1 ? f1 : n == 2 ? f2 : n == 3 ? f3 : f4;
+    };
+    switch (comp) {
+        case ComponentType::ctFloat:
+            return pick(DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32G32_FLOAT, DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT);
+        case ComponentType::ctUnsignedInt:
+            return pick(DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32_UINT, DXGI_FORMAT_R32G32B32_UINT, DXGI_FORMAT_R32G32B32A32_UINT);
+        case ComponentType::ctShort:
+            return normalized
+                ? pick(DXGI_FORMAT_R16_SNORM, DXGI_FORMAT_R16G16_SNORM, DXGI_FORMAT_R16G16B16A16_SNORM, DXGI_FORMAT_R16G16B16A16_SNORM)
+                : pick(DXGI_FORMAT_R16_SINT, DXGI_FORMAT_R16G16_SINT, DXGI_FORMAT_R16G16B16A16_SINT, DXGI_FORMAT_R16G16B16A16_SINT);
+        case ComponentType::ctUnsignedShort:
+            return normalized
+                ? pick(DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16G16_UNORM, DXGI_FORMAT_R16G16B16A16_UNORM, DXGI_FORMAT_R16G16B16A16_UNORM)
+                : pick(DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16G16_UINT, DXGI_FORMAT_R16G16B16A16_UINT, DXGI_FORMAT_R16G16B16A16_UINT);
+        case ComponentType::ctByte:
+            return normalized
+                ? pick(DXGI_FORMAT_R8_SNORM, DXGI_FORMAT_R8G8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM, DXGI_FORMAT_R8G8B8A8_SNORM)
+                : pick(DXGI_FORMAT_R8_SINT, DXGI_FORMAT_R8G8_SINT, DXGI_FORMAT_R8G8B8A8_SINT, DXGI_FORMAT_R8G8B8A8_SINT);
+        case ComponentType::ctUnsignedByte:
+            return normalized
+                ? pick(DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM)
+                : pick(DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8_UINT, DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R8G8B8A8_UINT);
+    }
+    return DXGI_FORMAT_R32_FLOAT;
 }
 
 static D3D12_PRIMITIVE_TOPOLOGY toPrimitiveTopology(PrimitiveTopology t) {
@@ -1270,7 +1267,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
             D3D12_INPUT_ELEMENT_DESC e = {};
             e.SemanticName         = "TEXCOORD";
             e.SemanticIndex        = attr.shaderLocation;
-            e.Format               = toDXGIVertexFormat(attr.componentType, attr.accessorType);
+            e.Format               = toDXGIVertexFormat(attr.componentType, attr.accessorType, attr.normalized);
             e.InputSlot            = static_cast<UINT>(bi);
             e.AlignedByteOffset    = static_cast<UINT>(attr.offset);
             e.InputSlotClass       = (layout.stepMode == StepMode::instance)
