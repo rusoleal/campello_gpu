@@ -841,7 +841,16 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         ? MTL::WindingClockwise
         : MTL::WindingCounterClockwise;
 
-    auto *handle = new MetalRenderPipelineData{ pipelineState, depthStencilState, cullMode, winding };
+    MTL::PrimitiveType primitiveType = MTL::PrimitiveTypeTriangle;
+    switch (descriptor.topology) {
+        case PrimitiveTopology::pointList:     primitiveType = MTL::PrimitiveTypePoint;         break;
+        case PrimitiveTopology::lineList:      primitiveType = MTL::PrimitiveTypeLine;          break;
+        case PrimitiveTopology::lineStrip:     primitiveType = MTL::PrimitiveTypeLineStrip;     break;
+        case PrimitiveTopology::triangleList:  primitiveType = MTL::PrimitiveTypeTriangle;      break;
+        case PrimitiveTopology::triangleStrip: primitiveType = MTL::PrimitiveTypeTriangleStrip; break;
+    }
+
+    auto *handle = new MetalRenderPipelineData{ pipelineState, depthStencilState, cullMode, winding, primitiveType };
     
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->renderPipelineCount++;

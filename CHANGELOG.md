@@ -5,6 +5,7 @@ All notable changes to campello_gpu are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **Metal primitive topology.** Draws always used triangles, ignoring `RenderPipelineDescriptor::topology`; the pipeline now remembers its primitive type (point, line, line strip, triangle, triangle strip) and draw calls use it. Found by campello_renderer's line meshes.
 - **Vulkan and DirectX vertex formats.** Vulkan mapped every non-float vertex attribute (and float matrices) to `R32G32B32_SFLOAT`; DirectX ignored `VertexAttribute::normalized` and had no 8/16-bit vec3 formats. Both now map every component type and count, with normalized integers as UNORM/SNORM (KHR_mesh_quantization) and the rest as UINT/SINT (e.g. a uint32 id attribute). 8/16-bit vec3 use the 4-component format (glTF pads them to 4 bytes). Found by campello_renderer's app shader programs.
 
 ## [0.27.1] - 2026-11-08

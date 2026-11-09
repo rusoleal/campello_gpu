@@ -12,4 +12,7 @@ struct MetalRenderPipelineData {
     // remembered here and applied by RenderPassEncoder::setPipeline.
     MTL::CullMode             cullMode = MTL::CullModeNone;
     MTL::Winding              winding  = MTL::WindingCounterClockwise;
+    // Metal takes the primitive type per draw call, not from the pipeline:
+    // remembered here from RenderPipelineDescriptor::topology.
+    MTL::PrimitiveType        primitiveType = MTL::PrimitiveTypeTriangle;
 };
