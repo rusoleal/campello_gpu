@@ -601,7 +601,10 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
 
     WGPUBufferDescriptor desc{};
-    desc.size = size;
+    // WebGPU copies and queue writes work in 4-byte units: allocate a whole
+    // number of words so a buffer of any size (e.g. three uint16 indices,
+    // 6 bytes) can be written and read in full. getLength() stays `size`.
+    desc.size = (size + 3) & ~uint64_t(3);
     desc.usage = toWGPUBufferUsage(usage);
     // Buffer::upload() is a queue write (needs CopyDst) and download() a copy
     // (needs CopySrc), and the native backends can resolve queries into any
@@ -623,11 +626,11 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     handle->buffer = buffer;
     handle->usage = desc.usage;
     handle->size = size;
-    handle->allocatedSize = size;
+    handle->allocatedSize = desc.size;
     handle->deviceData = deviceData;
 
     deviceData->bufferCount++;
-    deviceData->bufferBytes.fetch_add(size);
+    deviceData->bufferBytes.fetch_add(desc.size);
     updatePeakMemory(deviceData);
 
     return std::shared_ptr<Buffer>(new Buffer(handle));

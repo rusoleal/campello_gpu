@@ -5,6 +5,7 @@ All notable changes to campello_gpu are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **WebGPU buffers whose size isn't a multiple of 4.** Uploads to such a buffer (e.g. three uint16 indices, 6 bytes) silently failed: WebGPU writes and copies whole 4-byte words, and the last word didn't fit. Buffers are now allocated in whole words (`getLength()` still reports the requested size). Found by campello_renderer's glTF tests in the browser.
 - **Metal primitive topology.** Draws always used triangles, ignoring `RenderPipelineDescriptor::topology`; the pipeline now remembers its primitive type (point, line, line strip, triangle, triangle strip) and draw calls use it. Found by campello_renderer's line meshes.
 - **Vulkan and DirectX vertex formats.** Vulkan mapped every non-float vertex attribute (and float matrices) to `R32G32B32_SFLOAT`; DirectX ignored `VertexAttribute::normalized` and had no 8/16-bit vec3 formats. Both now map every component type and count, with normalized integers as UNORM/SNORM (KHR_mesh_quantization) and the rest as UINT/SINT (e.g. a uint32 id attribute). 8/16-bit vec3 use the 4-component format (glTF pads them to 4 bytes). Found by campello_renderer's app shader programs.
 

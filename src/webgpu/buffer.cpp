@@ -64,7 +64,7 @@ bool Buffer::upload(uint64_t offset, uint64_t length, void* data) {
 
     // MapWrite buffers can't take CopyDst, so they're written through a map.
     if (handle->usage & WGPUBufferUsage_MapWrite) {
-        ByteRange range = widenRange(offset, length, 8, handle->size);
+        ByteRange range = widenRange(offset, length, 8, handle->allocatedSize);
         if (!mapBlocking(handle->buffer, WGPUMapMode_Write, range)) return false;
         auto* mapped = static_cast<uint8_t*>(
             wgpuBufferGetMappedRange(handle->buffer, static_cast<size_t>(range.offset),
@@ -84,9 +84,12 @@ bool Buffer::upload(uint64_t offset, uint64_t length, void* data) {
     // and write it back so neighbouring bytes are preserved.
     uint64_t writeOffset = alignDown(offset, 4);
     uint64_t writeEnd = alignUp(offset + length, 4);
-    if (writeEnd > handle->size) return false;  // can't write a partial last word
-    std::vector<uint8_t> staging(static_cast<size_t>(writeEnd - writeOffset));
-    if (!download(writeOffset, staging.size(), staging.data())) return false;
+    if (writeEnd > handle->allocatedSize) return false;  // allocations are whole words (createBuffer)
+    std::vector<uint8_t> staging(static_cast<size_t>(writeEnd - writeOffset), 0);
+    // Read back the bytes being preserved, up to the buffer's logical end
+    // (the padding of the last word, past getLength(), has no content).
+    const uint64_t readEnd = std::min(writeEnd, handle->size);
+    if (readEnd > writeOffset && !download(writeOffset, readEnd - writeOffset, staging.data())) return false;
     memcpy(staging.data() + (offset - writeOffset), data, static_cast<size_t>(length));
     wgpuQueueWriteBuffer(handle->deviceData->queue, handle->buffer, writeOffset, staging.data(),
                          staging.size());
@@ -129,11 +132,11 @@ static bool planDownload(BufferHandle* handle, uint64_t offset, uint64_t length,
     plan.length = length;
     if (handle->usage & WGPUBufferUsage_MapRead) {
         plan.mapped = handle->buffer;
-        plan.mapRange = widenRange(offset, length, 8, handle->size);
+        plan.mapRange = widenRange(offset, length, 8, handle->allocatedSize);
         plan.skip = offset - plan.mapRange.offset;
         return true;
     }
-    ByteRange copyRange = widenRange(offset, length, 4, handle->size);
+    ByteRange copyRange = widenRange(offset, length, 4, handle->allocatedSize);
     plan.mapped = submitReadbackCopy(handle, copyRange);
     plan.ownsMapped = true;
     plan.mapRange = { 0, copyRange.size };
