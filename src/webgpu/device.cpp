@@ -607,6 +607,16 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     // 6 bytes) can be written and read in full. getLength() stays `size`.
     desc.size = (size + 3) & ~uint64_t(3);
     desc.usage = toWGPUBufferUsage(usage);
+    // WebGPU only allows MapWrite with CopySrc and MapRead with CopyDst. On
+    // the native backends the map usages also mean "keep it host-visible"
+    // on a buffer the GPU reads (e.g. a vertex buffer rewritten every
+    // frame); here such a buffer is written with queue writes instead, so
+    // drop the map usage rather than fail.
+    constexpr WGPUBufferUsage kMapUsages = WGPUBufferUsage_MapRead | WGPUBufferUsage_MapWrite;
+    constexpr WGPUBufferUsage kCopyUsages = WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
+    if ((desc.usage & kMapUsages) && (desc.usage & ~(kMapUsages | kCopyUsages))) {
+        desc.usage &= ~kMapUsages;
+    }
     // Buffer::upload() is a queue write (needs CopyDst) and download() a copy
     // (needs CopySrc), and the native backends can resolve queries into any
     // buffer. Add those usages implicitly, within WebGPU's rule that MapRead

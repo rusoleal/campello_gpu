@@ -294,6 +294,24 @@ static void testPushConstants(std::shared_ptr<Device> device) {
     check(pushConstantColumnsMatch(b, w, draws, 7000), "push constants: per-draw values (second buffer)");
 }
 
+// A map usage combined with a GPU usage (a host-visible hint on the native
+// backends) must still create a working buffer.
+static void testMappedVertexBuffer(std::shared_ptr<Device> device) {
+    float data[4] = { 1.0f, 2.0f, 3.0f, 4.0f };
+    auto usage = static_cast<BufferUsage>(static_cast<int>(BufferUsage::vertex) |
+                                          static_cast<int>(BufferUsage::copyDst) |
+                                          static_cast<int>(BufferUsage::mapWrite));
+    uint32_t before = validationErrorCount();
+    auto buffer = device->createBuffer(sizeof(data), usage, data);
+    check(buffer != nullptr && validationErrorCount() == before,
+          "buffer: vertex|mapWrite buffer created without errors");
+    float update[4] = { 5.0f, 6.0f, 7.0f, 8.0f };
+    float back[4] = {};
+    check(buffer && buffer->upload(0, sizeof(update), update) &&
+          buffer->download(0, sizeof(back), back) && memcmp(update, back, sizeof(back)) == 0,
+          "buffer: vertex|mapWrite buffer round-trips");
+}
+
 static void testMsaa(std::shared_ptr<Device> device) {
     const uint32_t w = 32, h = 32;
     auto msaa = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, w, h, 1, 1, 4,
@@ -448,6 +466,7 @@ int main() {
     testDepthPass(device);
     testMsaa(device);
     testPushConstants(device);
+    testMappedVertexBuffer(device);
     testDownloadAsync(device);
     testJavaScriptInterop(device);
     testMemoryInfo(device);
