@@ -170,6 +170,7 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(const BeginRe
     auto* passHandle = new RenderPassEncoderHandle();
     passHandle->encoder = encoder;
     passHandle->deviceData = handle->deviceData;
+    passHandle->pushConstants = handle->pushConstants;
 
     if (handle->deviceData) {
         handle->deviceData->renderPasses++;
@@ -586,6 +587,9 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbHandle->deviceData = handle->deviceData;
 
     cbHandle->timing = std::move(timing);
+    if (handle->pushConstants && !handle->pushConstants->chunks.empty()) {
+        cbHandle->pushConstants = std::move(handle->pushConstants);
+    }
     if (handle->timestampQuerySet) {
         wgpuQuerySetRelease(handle->timestampQuerySet);
         handle->timestampQuerySet = nullptr;

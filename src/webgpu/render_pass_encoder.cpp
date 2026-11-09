@@ -7,6 +7,9 @@
 #include "render_pipeline_handle.hpp"
 #include "bind_group_handle.hpp"
 
+#include <algorithm>
+#include <cstring>
+
 using namespace systems::leal::campello_gpu;
 
 RenderPassEncoder::RenderPassEncoder(void* pd) {
@@ -21,6 +24,24 @@ RenderPassEncoder::~RenderPassEncoder() {
     delete handle;
 }
 
+namespace {
+// Binds the current push-constant block before a draw (see common.hpp).
+void flushPushConstants(RenderPassEncoderHandle* handle) {
+    if (handle->pushConstantGroup < 0 || !handle->pushConstants) return;
+    if (!handle->pushConstantsDirty &&
+        handle->boundPushConstantGroup == handle->pushConstantGroup) return;
+    WGPUBindGroup bindGroup = nullptr;
+    uint32_t offset = 0;
+    if (!appendPushConstantBlock(handle->deviceData, *handle->pushConstants,
+                                 handle->pushConstantData, bindGroup, offset)) return;
+    wgpuRenderPassEncoderSetBindGroup(handle->encoder,
+                                      static_cast<uint32_t>(handle->pushConstantGroup),
+                                      bindGroup, 1, &offset);
+    handle->boundPushConstantGroup = handle->pushConstantGroup;
+    handle->pushConstantsDirty = false;
+}
+} // namespace
+
 void RenderPassEncoder::beginOcclusionQuery(uint32_t queryIndex) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
     wgpuRenderPassEncoderBeginOcclusionQuery(handle->encoder, queryIndex);
@@ -29,6 +50,7 @@ void RenderPassEncoder::beginOcclusionQuery(uint32_t queryIndex) {
 void RenderPassEncoder::draw(uint32_t vertexCount, uint32_t instanceCount,
                               uint32_t firstVertex, uint32_t firstInstance) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
+    flushPushConstants(handle);
     wgpuRenderPassEncoderDraw(handle->encoder, vertexCount, instanceCount, firstVertex, firstInstance);
     if (handle->deviceData) {
         handle->deviceData->drawCalls++;
@@ -39,6 +61,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
                                      uint32_t firstVertex, uint32_t baseVertex,
                                      uint32_t firstInstance) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
+    flushPushConstants(handle);
     wgpuRenderPassEncoderDrawIndexed(handle->encoder, indexCount, instanceCount,
                                      firstVertex, static_cast<int32_t>(baseVertex), firstInstance);
     if (handle->deviceData) {
@@ -49,6 +72,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
 void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer, uint64_t indirectOffset) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
     auto* bufHandle = static_cast<BufferHandle*>(indirectBuffer->native);
+    flushPushConstants(handle);
     wgpuRenderPassEncoderDrawIndirect(handle->encoder, bufHandle->buffer, indirectOffset);
     if (handle->deviceData) {
         handle->deviceData->drawCalls++;
@@ -58,6 +82,7 @@ void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer, uin
 void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuffer, uint64_t indirectOffset) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
     auto* bufHandle = static_cast<BufferHandle*>(indirectBuffer->native);
+    flushPushConstants(handle);
     wgpuRenderPassEncoderDrawIndexedIndirect(handle->encoder, bufHandle->buffer, indirectOffset);
     if (handle->deviceData) {
         handle->deviceData->drawCalls++;
@@ -100,16 +125,22 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
     wgpuRenderPassEncoderSetBindGroup(handle->encoder, index, bgHandle->bindGroup, count, offsets);
 }
 
-void RenderPassEncoder::setPushConstants(ShaderStage, uint32_t, uint32_t, const void*) {
-    // No-op -- WebGPU has no push constants yet. The gpuweb "immediate data"
-    // proposal (wgpuRenderPassEncoderSetImmediateData in Dawn) would map onto
-    // this once it ships in the emdawnwebgpu port; see TODO.md.
+void RenderPassEncoder::setPushConstants(ShaderStage, uint32_t offset, uint32_t size, const void* data) {
+    // Emulated with a dynamic-offset uniform buffer (see common.hpp). The
+    // gpuweb "immediate data" proposal (wgpuRenderPassEncoderSetImmediateData
+    // in Dawn) would replace this once it ships in the emdawnwebgpu port.
+    auto* handle = static_cast<RenderPassEncoderHandle*>(native);
+    if (!handle || !data || offset >= kPushConstantBlockSize) return;
+    uint32_t n = std::min(size, kPushConstantBlockSize - offset);
+    std::memcpy(handle->pushConstantData + offset, data, n);
+    handle->pushConstantsDirty = true;
 }
 
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
     auto* rpHandle = static_cast<RenderPipelineHandle*>(pipeline->native);
     handle->currentPipeline = rpHandle->pipeline;
+    handle->pushConstantGroup = rpHandle->pushConstantGroup;
     wgpuRenderPassEncoderSetPipeline(handle->encoder, rpHandle->pipeline);
 }
 

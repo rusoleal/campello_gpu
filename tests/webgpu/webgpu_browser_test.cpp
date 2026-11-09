@@ -200,6 +200,100 @@ static void testDepthPass(std::shared_ptr<Device> device) {
     check(centerIsRed(color, w, h), "render: depth32float pass draws");
 }
 
+// Push constants are emulated with a dynamic-offset uniform buffer in the
+// bind group after the app's (here group 0: the layout declares none).
+static const char* kPushConstantWGSL = R"(
+struct PushConstants { color: vec4f, depth: f32 };
+@group(0) @binding(0) var<uniform> pc: PushConstants;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+    return vec4f(p[i], pc.depth, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4f { return pc.color; }
+)";
+
+// Records `draws` draws, one scissored column each, whose push-constant
+// color encodes (draw index + seed); more draws than one chunk holds.
+static std::shared_ptr<CommandBuffer> recordPushConstantDraws(
+    std::shared_ptr<Device> device, std::shared_ptr<RenderPipeline> pipeline,
+    std::shared_ptr<Texture> target, uint32_t w, uint32_t draws, uint32_t seed) {
+    ColorAttachment ca{};
+    ca.view = target->createView(PixelFormat::rgba8unorm);
+    ca.loadOp = LoadOp::clear;
+    ca.storeOp = StoreOp::store;
+    BeginRenderPassDescriptor rp{};
+    rp.colorAttachments = { ca };
+    auto encoder = device->createCommandEncoder();
+    auto pass = encoder->beginRenderPass(rp);
+    pass->setPipeline(pipeline);
+    for (uint32_t i = 0; i < draws; ++i) {
+        uint32_t v = i + seed;
+        float block[5] = { (v & 255) / 255.0f, ((v >> 8) & 255) / 255.0f, 0.0f, 1.0f, 0.5f };
+        pass->setPushConstants(ShaderStage::fragment, 0, 16, block);
+        pass->setPushConstants(ShaderStage::vertex, 16, 4, &block[4]);
+        pass->setScissorRect(static_cast<float>(i % w), 0, 1, 1);
+        pass->draw(3, 1, 0, 0);
+    }
+    pass->end();
+    return encoder->finish();
+}
+
+static bool pushConstantColumnsMatch(std::shared_ptr<Texture> target, uint32_t w,
+                                     uint32_t draws, uint32_t seed) {
+    std::vector<uint8_t> px(w * 4);
+    if (!target->download(0, 0, px.data(), px.size())) return false;
+    for (uint32_t c = 0; c < w; ++c) {
+        uint32_t last = c + ((draws - 1 - c) / w) * w;  // last draw into column c
+        uint32_t v = last + seed;
+        if (px[c * 4] != (v & 255) || px[c * 4 + 1] != ((v >> 8) & 255)) {
+            printf("INFO column %u: got (%u,%u) expected (%u,%u)\n", c, px[c * 4], px[c * 4 + 1],
+                   v & 255, (v >> 8) & 255);
+            return false;
+        }
+    }
+    return true;
+}
+
+static void testPushConstants(std::shared_ptr<Device> device) {
+    const uint32_t w = 64, draws = 1500;
+    auto module = device->createShaderModule(kPushConstantWGSL);
+    PipelineLayoutDescriptor layoutDesc{};
+    layoutDesc.pushConstantRanges = {
+        PushConstantRange{ ShaderStage::fragment, 0, 16 },
+        PushConstantRange{ ShaderStage::vertex, 16, 4 },
+    };
+    auto layout = device->createPipelineLayout(layoutDesc);
+    check(layout != nullptr, "push constants: layout with ranges created");
+
+    RenderPipelineDescriptor desc{};
+    desc.layout = layout;
+    desc.vertex.module = module;
+    desc.vertex.entryPoint = "vs";
+    desc.fragment = FragmentDescriptor{};
+    desc.fragment->module = module;
+    desc.fragment->entryPoint = "fs";
+    desc.fragment->targets = { ColorState{ PixelFormat::rgba8unorm, ColorWrite::all, std::nullopt } };
+    desc.topology = PrimitiveTopology::triangleList;
+    desc.cullMode = CullMode::none;
+    desc.frontFace = FrontFace::ccw;
+    auto pipeline = device->createRenderPipeline(desc);
+    check(pipeline != nullptr, "push constants: pipeline created");
+    if (!pipeline) return;
+
+    auto a = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, w, 1, 1, 1, 1,
+                                   TextureUsage::renderTarget);
+    auto b = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, w, 1, 1, 1, 1,
+                                   TextureUsage::renderTarget);
+    // Both recorded before either is submitted: they share the chunk buffers,
+    // which are filled at submit time.
+    auto cbA = recordPushConstantDraws(device, pipeline, a, w, draws, 0);
+    auto cbB = recordPushConstantDraws(device, pipeline, b, w, draws, 7000);
+    device->submit(cbB);
+    device->submit(cbA);
+    check(pushConstantColumnsMatch(a, w, draws, 0), "push constants: per-draw values (first buffer)");
+    check(pushConstantColumnsMatch(b, w, draws, 7000), "push constants: per-draw values (second buffer)");
+}
+
 static void testMsaa(std::shared_ptr<Device> device) {
     const uint32_t w = 32, h = 32;
     auto msaa = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, w, h, 1, 1, 4,
@@ -353,6 +447,7 @@ int main() {
     testTextures(device);
     testDepthPass(device);
     testMsaa(device);
+    testPushConstants(device);
     testDownloadAsync(device);
     testJavaScriptInterop(device);
     testMemoryInfo(device);

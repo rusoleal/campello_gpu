@@ -157,6 +157,48 @@ struct MipmapGenResources {
     WGPUSampler sampler = nullptr;
 };
 
+/**
+ * Push-constant emulation (WebGPU has no push constants yet). A pipeline
+ * layout with `pushConstantRanges` gets one extra bind group, at index
+ * `bindGroupLayouts.size()`, holding a uniform buffer with a dynamic offset:
+ * WGSL shaders declare their push constants as
+ *     @group(N) @binding(0) var<uniform> pc : PushConstants;
+ * where N is the number of bind groups the app's layout declares.
+ * setPushConstants() updates a 256-byte shadow block; the next draw copies it
+ * into the command buffer's stream and binds it at its offset. The stream is
+ * uploaded into device-owned chunk buffers right before the command buffer is
+ * submitted, so queue ordering keeps chunks shared by command buffers safe.
+ */
+constexpr uint32_t kPushConstantBlockSize = 256;        // minUniformBufferOffsetAlignment
+constexpr uint64_t kPushConstantChunkSize = 256 * 1024; // 1024 draws per chunk
+
+struct PushConstantChunk {
+    WGPUBuffer buffer = nullptr;
+    WGPUBindGroup bindGroup = nullptr;
+};
+
+/** Push-constant blocks recorded by one command encoder, per chunk. */
+struct PushConstantStream {
+    std::vector<std::vector<uint8_t>> chunks;
+};
+
+struct WebGPUDeviceData;
+
+/** The device-wide bind group layout of the push-constant group (lazily created). */
+WGPUBindGroupLayout pushConstantBindGroupLayout(WebGPUDeviceData* deviceData);
+
+/**
+ * Appends one block to `stream`; returns the bind group and dynamic offset
+ * that address it, or false if the chunk buffer could not be created.
+ */
+bool appendPushConstantBlock(WebGPUDeviceData* deviceData, PushConstantStream& stream,
+                             const uint8_t* block, WGPUBindGroup& bindGroup, uint32_t& offset);
+
+/** Writes `stream` into the chunk buffers (call right before submitting). */
+void uploadPushConstants(WebGPUDeviceData* deviceData, const PushConstantStream& stream);
+
+void releasePushConstantResources(WebGPUDeviceData* deviceData);
+
 struct WebGPUDeviceData {
     WGPUInstance instance = nullptr;
     WGPUAdapter adapter = nullptr;
@@ -170,6 +212,8 @@ struct WebGPUDeviceData {
     uint32_t surfaceHeight = 0;
     bool timestampQueryEnabled = false;
     MipmapGenResources mipmapGen;
+    WGPUBindGroupLayout pushConstantLayout = nullptr;
+    std::vector<PushConstantChunk> pushConstantChunks;
 
     // Cleared in ~Device(); async callbacks that may outlive the device
     // (timestamp readback) check it before touching this struct.
@@ -273,6 +317,7 @@ struct ShaderModuleHandle {
 struct RenderPipelineHandle {
     WGPURenderPipeline pipeline = nullptr;
     WGPUPipelineLayout layout = nullptr;
+    int32_t pushConstantGroup = -1;  // bind group index of emulated push constants
     WebGPUDeviceData* deviceData = nullptr;
 };
 
@@ -289,6 +334,7 @@ struct BindGroupLayoutHandle {
 
 struct PipelineLayoutHandle {
     WGPUPipelineLayout layout = nullptr;
+    int32_t pushConstantGroup = -1;  // bind group index of emulated push constants
     WebGPUDeviceData* deviceData = nullptr;
 };
 
@@ -350,18 +396,25 @@ struct CommandEncoderHandle {
     WGPUQuerySet timestampQuerySet = nullptr;
     uint32_t nextTimestampIndex = 0;
     std::vector<PassTimestampSlot> timedPasses;
+    std::shared_ptr<PushConstantStream> pushConstants = std::make_shared<PushConstantStream>();
 };
 
 struct CommandBufferHandle {
     WGPUCommandBuffer commandBuffer = nullptr;
     WebGPUDeviceData* deviceData = nullptr;
     std::shared_ptr<GpuTimingState> timing;  // null when timing is unavailable
+    std::shared_ptr<PushConstantStream> pushConstants;
 };
 
 struct RenderPassEncoderHandle {
     WGPURenderPassEncoder encoder = nullptr;
     WGPURenderPipeline currentPipeline = nullptr;
     WebGPUDeviceData* deviceData = nullptr;
+    std::shared_ptr<PushConstantStream> pushConstants;
+    int32_t pushConstantGroup = -1;       // of the current pipeline
+    int32_t boundPushConstantGroup = -1;  // where the last block was bound
+    bool pushConstantsDirty = true;
+    uint8_t pushConstantData[kPushConstantBlockSize] = {};
 };
 
 struct ComputePassEncoderHandle {

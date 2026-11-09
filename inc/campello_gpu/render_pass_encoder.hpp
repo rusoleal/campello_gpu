@@ -144,6 +144,14 @@ namespace systems::leal::campello_gpu
          * within the backend's guaranteed minimum (128 bytes on Vulkan,
          * across all ranges combined).
          *
+         * On WebGPU (no push constants yet) the data goes through a uniform
+         * buffer bound with a dynamic offset in one extra bind group, right
+         * after the layout's own: a WGSL shader declares its push constants
+         * as `@group(N) @binding(0) var<uniform> pc : T;` where N is
+         * `PipelineLayoutDescriptor::bindGroupLayouts.size()` (at most 256
+         * bytes). Each draw after a change uses 256 bytes of a per-device
+         * ring.
+         *
          * No-op on backends that don't model this concept (e.g. Metal,
          * which binds equivalent small per-draw data through a plain
          * vertex buffer slot instead — cheaper there, since Metal's

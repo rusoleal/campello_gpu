@@ -4,6 +4,9 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Added
+- **WebGPU push constants.** `RenderPassEncoder::setPushConstants()` was a no-op on WebGPU; it is now emulated with a uniform buffer bound with a dynamic offset in one extra bind group after the pipeline layout's own (`@group(N) @binding(0) var<uniform>`, N = `bindGroupLayouts.size()`, up to 256 bytes). Blocks go into a per-device ring of chunk buffers, written right before the command buffer is submitted. Lets Vulkan-style renderers (e.g. campello_widgets) run on the web unchanged apart from WGSL shaders.
+
 ### Fixed
 - **WebGPU buffers whose size isn't a multiple of 4.** Uploads to such a buffer (e.g. three uint16 indices, 6 bytes) silently failed: WebGPU writes and copies whole 4-byte words, and the last word didn't fit. Buffers are now allocated in whole words (`getLength()` still reports the requested size). Found by campello_renderer's glTF tests in the browser.
 - **Metal primitive topology.** Draws always used triangles, ignoring `RenderPipelineDescriptor::topology`; the pipeline now remembers its primitive type (point, line, line strip, triangle, triangle strip) and draw calls use it. Found by campello_renderer's line meshes.
