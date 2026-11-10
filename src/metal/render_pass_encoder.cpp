@@ -31,6 +31,8 @@ struct MetalRenderEncoderData {
     // Encoder rasterizer state; Metal's defaults are no culling, clockwise.
     MTL::CullMode              currentCullMode = MTL::CullModeNone;
     MTL::Winding               currentWinding  = MTL::WindingClockwise;
+    // Primitive type of the bound pipeline (its topology), used by draws.
+    MTL::PrimitiveType         currentPrimitiveType = MTL::PrimitiveTypeTriangle;
 
     // Resource binding cache — avoids redundant encoder calls that trigger
     // Metal API Validation asserts.
@@ -72,9 +74,10 @@ void RenderPassEncoder::beginOcclusionQuery(uint32_t queryIndex) {
 
 void RenderPassEncoder::draw(uint32_t vertexCount, uint32_t instanceCount,
                              uint32_t firstVertex, uint32_t firstInstance) {
-    auto *enc = static_cast<MetalRenderEncoderData *>(native)->encoder;
+    auto *data = static_cast<MetalRenderEncoderData *>(native);
+    auto *enc = data->encoder;
     enc->drawPrimitives(
-        MTL::PrimitiveTypeTriangle,
+        data->currentPrimitiveType,
         firstVertex, vertexCount, instanceCount, firstInstance);
 }
 
@@ -84,7 +87,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
     auto *data = static_cast<MetalRenderEncoderData *>(native);
     if (!data->indexBuffer) return;
     data->encoder->drawIndexedPrimitives(
-        MTL::PrimitiveTypeTriangle,
+        data->currentPrimitiveType,
         indexCount,
         data->indexType,
         data->indexBuffer,
@@ -95,10 +98,11 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
 }
 
 void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer, uint64_t indirectOffset) {
-    auto *enc = static_cast<MetalRenderEncoderData *>(native)->encoder;
+    auto *data = static_cast<MetalRenderEncoderData *>(native);
+    auto *enc = data->encoder;
     auto *bufHandle = static_cast<MetalBufferHandle *>(indirectBuffer->native);
     enc->drawPrimitives(
-        MTL::PrimitiveTypeTriangle,
+        data->currentPrimitiveType,
         bufHandle->buffer,
         indirectOffset);
 }
@@ -108,7 +112,7 @@ void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuff
     if (!data->indexBuffer) return;
     auto *bufHandle = static_cast<MetalBufferHandle *>(indirectBuffer->native);
     data->encoder->drawIndexedPrimitives(
-        MTL::PrimitiveTypeTriangle,
+        data->currentPrimitiveType,
         data->indexType,
         data->indexBuffer,
         data->indexOffset,
@@ -167,6 +171,7 @@ void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
         enc->setFrontFacingWinding(handle->winding);
         data->currentWinding = handle->winding;
     }
+    data->currentPrimitiveType = handle->primitiveType;
 }
 
 void RenderPassEncoder::setScissorRect(float x, float y, float width, float height) {

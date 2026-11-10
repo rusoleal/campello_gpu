@@ -293,6 +293,7 @@ Device::~Device() {
     if (native != nullptr) {
         auto* deviceData = static_cast<WebGPUDeviceData*>(native);
         deviceData->alive->store(false);
+        releasePushConstantResources(deviceData);
         if (deviceData->mipmapGen.pipelineLayout) {
             wgpuPipelineLayoutRelease(deviceData->mipmapGen.pipelineLayout);
         }
@@ -601,8 +602,21 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
 
     WGPUBufferDescriptor desc{};
-    desc.size = size;
+    // WebGPU copies and queue writes work in 4-byte units: allocate a whole
+    // number of words so a buffer of any size (e.g. three uint16 indices,
+    // 6 bytes) can be written and read in full. getLength() stays `size`.
+    desc.size = (size + 3) & ~uint64_t(3);
     desc.usage = toWGPUBufferUsage(usage);
+    // WebGPU only allows MapWrite with CopySrc and MapRead with CopyDst. On
+    // the native backends the map usages also mean "keep it host-visible"
+    // on a buffer the GPU reads (e.g. a vertex buffer rewritten every
+    // frame); here such a buffer is written with queue writes instead, so
+    // drop the map usage rather than fail.
+    constexpr WGPUBufferUsage kMapUsages = WGPUBufferUsage_MapRead | WGPUBufferUsage_MapWrite;
+    constexpr WGPUBufferUsage kCopyUsages = WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst;
+    if ((desc.usage & kMapUsages) && (desc.usage & ~(kMapUsages | kCopyUsages))) {
+        desc.usage &= ~kMapUsages;
+    }
     // Buffer::upload() is a queue write (needs CopyDst) and download() a copy
     // (needs CopySrc), and the native backends can resolve queries into any
     // buffer. Add those usages implicitly, within WebGPU's rule that MapRead
@@ -623,11 +637,11 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     handle->buffer = buffer;
     handle->usage = desc.usage;
     handle->size = size;
-    handle->allocatedSize = size;
+    handle->allocatedSize = desc.size;
     handle->deviceData = deviceData;
 
     deviceData->bufferCount++;
-    deviceData->bufferBytes.fetch_add(size);
+    deviceData->bufferBytes.fetch_add(desc.size);
     updatePeakMemory(deviceData);
 
     return std::shared_ptr<Buffer>(new Buffer(handle));
@@ -800,6 +814,11 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     desc.layout = layout;
 
     pushValidationScope(deviceData->device);
+    int32_t pushConstantGroup = -1;
+    if (descriptor.layout && descriptor.layout->native) {
+        pushConstantGroup =
+            static_cast<PipelineLayoutHandle*>(descriptor.layout->native)->pushConstantGroup;
+    }
     WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(deviceData->device, &desc);
     bool valid = popValidationScope(deviceData->device, "createRenderPipeline");
     if (!pipeline) return nullptr;
@@ -811,6 +830,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     auto* handle = new RenderPipelineHandle();
     handle->pipeline = pipeline;
     handle->layout = layout;
+    handle->pushConstantGroup = pushConstantGroup;
     handle->deviceData = deviceData;
 
     deviceData->renderPipelineCount++;
@@ -969,6 +989,13 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
         }
     }
 
+    // Emulated push constants: one more group after the app's (common.hpp).
+    int32_t pushConstantGroup = -1;
+    if (!descriptor.pushConstantRanges.empty()) {
+        pushConstantGroup = static_cast<int32_t>(layouts.size());
+        layouts.push_back(pushConstantBindGroupLayout(deviceData));
+    }
+
     WGPUPipelineLayoutDescriptor desc{};
     desc.bindGroupLayoutCount = layouts.size();
     desc.bindGroupLayouts = layouts.data();
@@ -978,6 +1005,7 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
 
     auto* handle = new PipelineLayoutHandle();
     handle->layout = layout;
+    handle->pushConstantGroup = pushConstantGroup;
     handle->deviceData = deviceData;
 
     deviceData->pipelineLayoutCount++;
@@ -1134,6 +1162,9 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
     auto* cbHandle = static_cast<CommandBufferHandle*>(commandBuffer->native);
 
+    if (cbHandle->pushConstants) {
+        uploadPushConstants(deviceData, *cbHandle->pushConstants);
+    }
     WGPUCommandBuffer buffers[] = { cbHandle->commandBuffer };
     wgpuQueueSubmit(deviceData->queue, 1, buffers);
     deviceData->commandsSubmitted++;

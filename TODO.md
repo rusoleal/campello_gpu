@@ -553,8 +553,10 @@
       block-compressed formats. Left unmapped: 16-bit unorm/snorm textures (no enum in the targeted
       webgpu.h, only experimental Chromium features) and vertex formats `ComponentType` can't
       express (float16, 10-10-10-2, BGRA8)
-- [ ] Push constants: keep the no-op, but track the gpuweb "immediate data" proposal
-      (`wgpuRenderPassEncoderSetImmediateData` in Dawn) and implement when it is in the port
+- [x] Push constants: emulated with a dynamic-offset uniform buffer in the bind group after
+      the app's (`@group(N) @binding(0) var<uniform>`, N = the layout's bind group count),
+      written at submit time. Render passes only; switch to the gpuweb "immediate data"
+      proposal (`wgpuRenderPassEncoderSetImmediateData` in Dawn) once it is in the port
 - [x] Ray tracing / cooperative matrix: stay unsupported (no WebGPU equivalent). Make sure every
       RT entry point fails cleanly (`nullptr` / no-op) and `getFeatures()` never advertises them
       — confirmed by the GoogleTest suite in the browser: every ray-tracing test skips cleanly

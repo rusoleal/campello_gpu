@@ -2333,15 +2333,42 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     dynamicState.dynamicStateCount = dynamicStates.size();
     dynamicState.pDynamicStates = dynamicStates.data();
 
-    auto vertexAttrFormat = [](ComponentType ct, AccessorType at) -> VkFormat {
-        if (ct == ComponentType::ctFloat) {
-            switch (at) {
-                case AccessorType::acScalar: return VK_FORMAT_R32_SFLOAT;
-                case AccessorType::acVec2:   return VK_FORMAT_R32G32_SFLOAT;
-                case AccessorType::acVec3:   return VK_FORMAT_R32G32B32_SFLOAT;
-                case AccessorType::acVec4:   return VK_FORMAT_R32G32B32A32_SFLOAT;
-                default:                     return VK_FORMAT_R32G32B32_SFLOAT;
-            }
+    // Component type + count + normalized -> VkFormat. 8/16-bit vec3 use the
+    // 4-component format (glTF pads them to 4 bytes; 3-component 8/16-bit
+    // vertex formats are optional in Vulkan); the shader reads .xyz.
+    auto vertexAttrFormat = [](ComponentType ct, AccessorType at, bool normalized) -> VkFormat {
+        int n = 3;
+        switch (at) {
+            case AccessorType::acScalar: n = 1; break;
+            case AccessorType::acVec2:   n = 2; break;
+            case AccessorType::acVec3:   n = 3; break;
+            case AccessorType::acVec4:   n = 4; break;
+            default:                     return VK_FORMAT_R32G32B32_SFLOAT;  // matrices: not a vertex format
+        }
+        const auto pick = [n](VkFormat f1, VkFormat f2, VkFormat f3, VkFormat f4) {
+            return n == 1 ? f1 : n == 2 ? f2 : n == 3 ? f3 : f4;
+        };
+        switch (ct) {
+            case ComponentType::ctFloat:
+                return pick(VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT);
+            case ComponentType::ctUnsignedInt:
+                return pick(VK_FORMAT_R32_UINT, VK_FORMAT_R32G32_UINT, VK_FORMAT_R32G32B32_UINT, VK_FORMAT_R32G32B32A32_UINT);
+            case ComponentType::ctShort:
+                return normalized
+                    ? pick(VK_FORMAT_R16_SNORM, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R16G16B16A16_SNORM)
+                    : pick(VK_FORMAT_R16_SINT, VK_FORMAT_R16G16_SINT, VK_FORMAT_R16G16B16A16_SINT, VK_FORMAT_R16G16B16A16_SINT);
+            case ComponentType::ctUnsignedShort:
+                return normalized
+                    ? pick(VK_FORMAT_R16_UNORM, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_UNORM)
+                    : pick(VK_FORMAT_R16_UINT, VK_FORMAT_R16G16_UINT, VK_FORMAT_R16G16B16A16_UINT, VK_FORMAT_R16G16B16A16_UINT);
+            case ComponentType::ctByte:
+                return normalized
+                    ? pick(VK_FORMAT_R8_SNORM, VK_FORMAT_R8G8_SNORM, VK_FORMAT_R8G8B8A8_SNORM, VK_FORMAT_R8G8B8A8_SNORM)
+                    : pick(VK_FORMAT_R8_SINT, VK_FORMAT_R8G8_SINT, VK_FORMAT_R8G8B8A8_SINT, VK_FORMAT_R8G8B8A8_SINT);
+            case ComponentType::ctUnsignedByte:
+                return normalized
+                    ? pick(VK_FORMAT_R8_UNORM, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM)
+                    : pick(VK_FORMAT_R8_UINT, VK_FORMAT_R8G8_UINT, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R8G8B8A8_UINT);
         }
         return VK_FORMAT_R32G32B32_SFLOAT;
     };
@@ -2362,7 +2389,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
             VkVertexInputAttributeDescription ad{};
             ad.location = attr.shaderLocation;
             ad.binding  = slot;
-            ad.format   = vertexAttrFormat(attr.componentType, attr.accessorType);
+            ad.format   = vertexAttrFormat(attr.componentType, attr.accessorType, attr.normalized);
             ad.offset   = attr.offset;
             vkAttributes.push_back(ad);
         }
