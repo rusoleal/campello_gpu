@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-10
+
 ### Added
 - **WebGPU push constants.** `RenderPassEncoder::setPushConstants()` was a no-op on WebGPU; it is now emulated with a uniform buffer bound with a dynamic offset in one extra bind group after the pipeline layout's own (`@group(N) @binding(0) var<uniform>`, N = `bindGroupLayouts.size()`, up to 256 bytes). Blocks go into a per-device ring of chunk buffers, written right before the command buffer is submitted. Lets Vulkan-style renderers (e.g. campello_widgets) run on the web unchanged apart from WGSL shaders.
 
