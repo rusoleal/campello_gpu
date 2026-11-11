@@ -34,6 +34,7 @@
 #include <campello_gpu/constants/feature.hpp>
 #include <campello_gpu/metrics.hpp>
 #include <campello_gpu/fence.hpp>
+#include <campello_gpu/surface.hpp>
 #include <campello_gpu/cooperative_matrix_properties.hpp>
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <campello_gpu/platform/linux_dmabuf.hpp>
@@ -624,6 +625,25 @@ namespace systems::leal::campello_gpu
          *                        `(__bridge void*)id<CAMetalDrawable>`.
          */
         void scheduleNextPresent(void* nativeDrawable);
+
+        /**
+         * @brief Creates a presentable surface (its own swapchain) for one
+         *        native window, sharing this device's queue and resources.
+         *
+         * Use one surface per window for multi-window apps. See `Surface` for
+         * the per-frame protocol and the native handle each backend expects.
+         *
+         * @param nativeWindow Backend-specific window/layer handle.
+         * @param width        Initial width in physical pixels (0 = derive
+         *                     from the native window where possible).
+         * @param height       Initial height in physical pixels (0 = derive
+         *                     from the native window where possible).
+         * @return The new surface, or `nullptr` if `nativeWindow` is null or
+         *         this backend doesn't implement surfaces yet.
+         */
+        std::shared_ptr<Surface> createSurface(void *nativeWindow,
+                                               uint32_t width  = 0,
+                                               uint32_t height = 0);
 
         /**
          * @brief Blocks the calling thread until all previously submitted commands

@@ -74,6 +74,7 @@ if(BUILD_INTEGRATION_TESTS AND NOT EMSCRIPTEN)
         platform/test_query_set.cpp
         platform/test_pipeline_layout.cpp
         platform/test_adapter.cpp
+        platform/test_surface.cpp
     )
     # Device::createTextureFromDmaBuf()/getSupportedDmaBufModifiers()/
     # getDrmDeviceNode() don't exist as symbols outside Linux/Vulkan (see

@@ -4,6 +4,9 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Added
+- **`Surface`: one presentable swapchain per native window** (`inc/campello_gpu/surface.hpp`), the first step towards multi-window apps. `Device::createSurface(nativeWindow, width, height)` can be called any number of times on one device. Each frame calls `acquireNextTexture()`, renders into the result, then `schedulePresent(commandBuffer)` before `submit()`. The present is tied to that command buffer, not to a device-wide slot like `scheduleNextPresent()`, so windows on separate raster threads can't present each other's images. **Metal only for now** (wraps a `CAMetalLayer`); on Vulkan, DirectX 12 and WebGPU `createSurface()` returns `nullptr` until their per-surface swapchains land. The single-swapchain API (`createDefaultDevice(pd)`, `getSwapchainTextureView()`, `scheduleNextPresent()`) is unchanged.
+
 ### Fixed
 - **Vulkan: `copyBufferToTexture()` ignored `bytesPerRow`** (always tightly packed), so padded rows (e.g. to the 256-byte alignment WebGPU requires) were read skewed. It now sets `bufferRowLength` for uncompressed formats.
 - **Vulkan: anisotropic filtering overrode nearest filtering** (`maxAnisotropy > 1` with nearest filters filtered linearly; Metal ignores it). Anisotropy is now enabled only when both filters are linear.

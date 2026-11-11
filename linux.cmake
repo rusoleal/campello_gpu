@@ -21,6 +21,7 @@ add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
     src/vulkan/device.cpp
+    src/vulkan/surface.cpp
     src/vulkan/adapter.cpp
     src/vulkan/buffer.cpp
     src/vulkan/texture.cpp
