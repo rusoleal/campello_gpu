@@ -4,6 +4,12 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **Vulkan: `copyBufferToTexture()` ignored `bytesPerRow`** (always tightly packed), so padded rows (e.g. to the 256-byte alignment WebGPU requires) were read skewed. It now sets `bufferRowLength` for uncompressed formats.
+- **Vulkan: anisotropic filtering overrode nearest filtering** (`maxAnisotropy > 1` with nearest filters filtered linearly; Metal ignores it). Anisotropy is now enabled only when both filters are linear.
+- **Vulkan: depth-only render passes** (no color attachment, e.g. a shadow map) rendered over 1x1 pixels: the render area came from the color attachment only. It now comes from the depth attachment when there's no color attachment.
+- **Vulkan: sampled depth attachments.** A depth attachment whose texture has `TextureUsage::textureBinding` is moved to `SHADER_READ_ONLY_OPTIMAL` when its pass ends (both the dynamic-rendering and the render-pass paths), the layout bind groups declare for textures; it stayed in the attachment layout. Found with campello_renderer's sun shadows on Mesa lavapipe.
+
 ## [0.28.0] - 2026-11-10
 
 ### Added

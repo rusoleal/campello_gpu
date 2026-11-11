@@ -311,8 +311,15 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             }
         }
     } else {
-        // ── No-attachment path ────────────────────────────────────────────────
+        // ── No color attachment: a depth-only pass (e.g. a shadow map) renders
+        // over its depth attachment; with no attachment at all, 1x1.
         renderExtent = { 1, 1 };
+        if (descriptor.depthStencilAttachment.has_value() && descriptor.depthStencilAttachment->view) {
+            auto *dvh = (TextureViewHandle *)descriptor.depthStencilAttachment->view->native;
+            if (dvh && dvh->width > 0 && dvh->height > 0) {
+                renderExtent = { dvh->width, dvh->height };
+            }
+        }
     }
 
     auto rpeHandle = new RenderPassEncoderHandle();
@@ -328,6 +335,19 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rpeHandle->resolveTextureHandle    = resolveOwnerTexture;
     rpeHandle->resolveBaseArrayLayer   = resolveArrayLayer;
     rpeHandle->resolveBaseMipLevel     = resolveMipLevel;
+    if (descriptor.depthStencilAttachment.has_value() && descriptor.depthStencilAttachment->view &&
+        !descriptor.depthStencilAttachment->depthReadOnly) {
+        auto *dvh = (TextureViewHandle *)descriptor.depthStencilAttachment->view->native;
+        TextureHandle *owner = dvh ? dvh->ownerTexture : nullptr;
+        if (owner && ((uint32_t)owner->usage & (uint32_t)TextureUsage::textureBinding)) {
+            rpeHandle->sampledDepthImage = dvh->image;
+            rpeHandle->sampledDepthAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            if (dvh->format == VK_FORMAT_D24_UNORM_S8_UINT || dvh->format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+                rpeHandle->sampledDepthAspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+            }
+            rpeHandle->sampledDepthTexture = owner;
+        }
+    }
     // Keep the offscreen TextureView alive for the duration of the pass.
     // vkCmdBeginRenderingKHR records the raw VkImageView; if the CPU-side
     // TextureView is destroyed first the validation layer looks up a freed handle.
@@ -639,7 +659,7 @@ void CommandEncoder::copyBufferToBuffer(std::shared_ptr<Buffer> source,
 void CommandEncoder::copyBufferToTexture(
     std::shared_ptr<Buffer>  source,
     uint64_t                 sourceOffset,
-    uint64_t                 /*bytesPerRow*/,
+    uint64_t                 bytesPerRow,
     std::shared_ptr<Texture> destination,
     uint32_t                 mipLevel,
     uint32_t                 arrayLayer)
@@ -680,10 +700,20 @@ void CommandEncoder::copyBufferToTexture(
     uint32_t mipWidth  = std::max(1u, texH->width  >> mipLevel);
     uint32_t mipHeight = std::max(1u, texH->height >> mipLevel);
 
-    // bufferRowLength=0 / bufferImageHeight=0 → tightly packed.
+    // bufferRowLength=0 / bufferImageHeight=0 → tightly packed. Rows longer
+    // than the mip's (padded source rows, e.g. to WebGPU's 256-byte copy
+    // alignment) set bufferRowLength, in texels, for uncompressed formats.
+    uint32_t rowLength = 0;
+    const uint64_t texelBits = getPixelFormatSize(texH->pixelFormat);
+    if (bytesPerRow > 0 && texelBits >= 8 && texelBits % 8 == 0) {
+        const uint64_t texelBytes = texelBits / 8;
+        if (bytesPerRow % texelBytes == 0 && bytesPerRow / texelBytes > mipWidth) {
+            rowLength = static_cast<uint32_t>(bytesPerRow / texelBytes);
+        }
+    }
     VkBufferImageCopy region{};
     region.bufferOffset                    = sourceOffset;
-    region.bufferRowLength                 = 0;
+    region.bufferRowLength                 = rowLength;
     region.bufferImageHeight               = 0;
     region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.mipLevel       = mipLevel;

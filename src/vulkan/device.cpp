@@ -2860,7 +2860,11 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor &descript
     // Unconditionally enabling anisotropy regardless violated
     // VUID-VkSamplerCreateInfo-anisotropyEnable-01071, which requires
     // maxAnisotropy in [1.0, maxSamplerAnisotropy] whenever enabled.
-    info.anisotropyEnable = descriptor.maxAnisotropy > 1.0;
+    // Anisotropic filtering is a linear filter: with it on, Vulkan filters
+    // even when nearest was asked for (Metal ignores it for nearest), so only
+    // when both filters are linear.
+    info.anisotropyEnable = descriptor.maxAnisotropy > 1.0 && info.magFilter == VK_FILTER_LINEAR &&
+                            info.minFilter == VK_FILTER_LINEAR;
     info.maxAnisotropy = info.anisotropyEnable ? (float)descriptor.maxAnisotropy : 1.0f;
     info.compareEnable = false;
     if (descriptor.compare.has_value()) {

@@ -66,12 +66,41 @@ void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuff
     vkCmdDrawIndexedIndirect(data->commandBuffer, bufHandle->buffer, indirectOffset, 1, 20);
 }
 
+namespace {
+
+/// A depth attachment that is also sampled (e.g. a shadow map): from the
+/// attachment layout to SHADER_READ_ONLY_OPTIMAL, after its writes.
+void transitionSampledDepth(RenderPassEncoderHandle *data) {
+    if (data->sampledDepthImage == VK_NULL_HANDLE) return;
+    VkImageMemoryBarrier barrier{};
+    barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image               = data->sampledDepthImage;
+    barrier.subresourceRange    = { data->sampledDepthAspect, 0, 1, 0, 1 };
+    barrier.oldLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    barrier.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(data->commandBuffer,
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
+    if (data->sampledDepthTexture) {
+        data->sampledDepthTexture->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+}
+
+} // namespace
+
 void RenderPassEncoder::end() {
     auto data = (RenderPassEncoderHandle *)native;
 
     if (data->usesTraditionalRenderPass) {
-        // Traditional render pass: finalLayout handles image transitions — no manual barriers.
+        // Traditional render pass: finalLayout handles image transitions — no manual barriers
+        // (except a sampled depth attachment, whose finalLayout is the attachment layout).
         vkCmdEndRenderPass(data->commandBuffer);
+        transitionSampledDepth(data);
         // finalLayout for the offscreen case (see beginRenderPass()'s buildRenderPass() call)
         // is always SHADER_READ_ONLY_OPTIMAL — mirror that into TextureHandle::currentLayout
         // so later ops (e.g. Texture::download()) see the real layout instead of a stale one.
@@ -89,6 +118,7 @@ void RenderPassEncoder::end() {
     }
 
     pfnCmdEndRenderingKHR(data->commandBuffer);
+    transitionSampledDepth(data);
 
     // A pass begun with no attachments (BeginRenderPassDescriptor{} with no
     // color/depth targets) has neither a swapchain image nor an offscreen
