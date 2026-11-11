@@ -15,6 +15,12 @@ namespace systems::leal::campello_gpu {
         bool             isSwapchain           = false;
         // Offscreen path
         VkImage          offscreenImage        = VK_NULL_HANDLE;
+        /// A depth attachment that is also a sampled texture (a shadow map):
+        /// end() moves it to SHADER_READ_ONLY_OPTIMAL for the passes that
+        /// sample it (bind groups declare that layout).
+        VkImage            sampledDepthImage   = VK_NULL_HANDLE;
+        VkImageAspectFlags sampledDepthAspect  = 0;
+        TextureHandle*     sampledDepthTexture = nullptr;
         VkExtent2D       offscreenExtent       = {};
         // Owning texture of offscreenImage (from the view's TextureViewHandle::ownerTexture),
         // so end() can write the post-pass layout back to TextureHandle::currentLayout —

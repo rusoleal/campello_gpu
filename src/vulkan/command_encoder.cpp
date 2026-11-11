@@ -311,8 +311,15 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             }
         }
     } else {
-        // ── No-attachment path ────────────────────────────────────────────────
+        // ── No color attachment: a depth-only pass (e.g. a shadow map) renders
+        // over its depth attachment; with no attachment at all, 1x1.
         renderExtent = { 1, 1 };
+        if (descriptor.depthStencilAttachment.has_value() && descriptor.depthStencilAttachment->view) {
+            auto *dvh = (TextureViewHandle *)descriptor.depthStencilAttachment->view->native;
+            if (dvh && dvh->width > 0 && dvh->height > 0) {
+                renderExtent = { dvh->width, dvh->height };
+            }
+        }
     }
 
     auto rpeHandle = new RenderPassEncoderHandle();
@@ -328,6 +335,19 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rpeHandle->resolveTextureHandle    = resolveOwnerTexture;
     rpeHandle->resolveBaseArrayLayer   = resolveArrayLayer;
     rpeHandle->resolveBaseMipLevel     = resolveMipLevel;
+    if (descriptor.depthStencilAttachment.has_value() && descriptor.depthStencilAttachment->view &&
+        !descriptor.depthStencilAttachment->depthReadOnly) {
+        auto *dvh = (TextureViewHandle *)descriptor.depthStencilAttachment->view->native;
+        TextureHandle *owner = dvh ? dvh->ownerTexture : nullptr;
+        if (owner && ((uint32_t)owner->usage & (uint32_t)TextureUsage::textureBinding)) {
+            rpeHandle->sampledDepthImage = dvh->image;
+            rpeHandle->sampledDepthAspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+            if (dvh->format == VK_FORMAT_D24_UNORM_S8_UINT || dvh->format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+                rpeHandle->sampledDepthAspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+            }
+            rpeHandle->sampledDepthTexture = owner;
+        }
+    }
     // Keep the offscreen TextureView alive for the duration of the pass.
     // vkCmdBeginRenderingKHR records the raw VkImageView; if the CPU-side
     // TextureView is destroyed first the validation layer looks up a freed handle.
