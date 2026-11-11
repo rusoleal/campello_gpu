@@ -613,6 +613,254 @@ TEST(Surface, DestroyingSurfaceWithPendingPresentIsSafe) {
     EXPECT_EQ(win.latestCentrePixel(), kRed);
 }
 
+#elif defined(__EMSCRIPTEN__)
+
+// WebGPU: a Surface is a GPUCanvasContext on its own <canvas>, and several
+// canvases share one device (the web's version of several windows). The
+// browser presents each canvas when the task returns.
+//
+// Pixel checks draw the WebGPU canvas into a 2D canvas *in the same task as
+// the submit*: that samples exactly the texture this canvas is about to
+// present. They can't run after the yield: once presented, a WebGPU canvas's
+// drawing buffer reads back as transparent black (like WebGL without
+// preserveDrawingBuffer; verified in headless Chrome: ff0000ff before the
+// yield, 00000000 after). The tests still yield between frames, so every
+// frame gets a fresh canvas texture.
+
+#include <emscripten.h>
+#include <string>
+
+namespace {
+
+// Creates (or recreates) <canvas id=...> of the given drawing-buffer size and
+// returns its CSS selector.
+std::string makeCanvas(const char* id, int w, int h) {
+    EM_ASM({
+        var id = UTF8ToString($0);
+        var old = document.getElementById(id);
+        if (old) old.remove();
+        var c = document.createElement('canvas');
+        c.id = id; c.width = $1; c.height = $2;
+        document.body.appendChild(c);
+    }, id, w, h);
+    return std::string("#") + id;
+}
+
+void removeCanvas(const char* id) {
+    EM_ASM({ var c = document.getElementById(UTF8ToString($0)); if (c) c.remove(); }, id);
+}
+
+// Centre pixel of what the canvas currently shows, as 0xRRGGBBAA.
+uint32_t centrePixel(const std::string& selector) {
+    return (uint32_t)EM_ASM_INT({
+        var c = document.querySelector(UTF8ToString($0));
+        if (!c || !c.width || !c.height) return 0;
+        var t = document.createElement('canvas');
+        t.width = c.width; t.height = c.height;
+        var g = t.getContext('2d');
+        g.drawImage(c, 0, 0);
+        var d = g.getImageData(c.width >> 1, c.height >> 1, 1, 1).data;
+        return ((d[0] << 24) | (d[1] << 16) | (d[2] << 8) | d[3]) >>> 0;
+    }, selector.c_str());
+}
+
+void setCanvasAttrSize(const std::string& selector, int w, int h) {
+    EM_ASM({ var c = document.querySelector(UTF8ToString($0)); c.width = $1; c.height = $2; },
+           selector.c_str(), w, h);
+}
+
+std::shared_ptr<CommandBuffer> clearPass(Device& device, const std::shared_ptr<TextureView>& view,
+                                         float r, float g, float b) {
+    auto encoder = device.createCommandEncoder();
+    if (!encoder) return nullptr;
+    BeginRenderPassDescriptor rp{};
+    ColorAttachment ca{};
+    ca.view = view; ca.loadOp = LoadOp::clear; ca.storeOp = StoreOp::store;
+    ca.clearValue[0] = r; ca.clearValue[1] = g; ca.clearValue[2] = b; ca.clearValue[3] = 1;
+    rp.colorAttachments.push_back(ca);
+    auto pass = encoder->beginRenderPass(rp);
+    if (!pass) return nullptr;
+    pass->end();
+    return encoder->finish();
+}
+
+bool presentClear(Device& device, Surface& surface, float r, float g, float b) {
+    auto view = surface.acquireNextTexture();
+    if (!view) return false;
+    auto cmd = clearPass(device, view, r, g, b);
+    if (!cmd || !surface.schedulePresent(cmd)) return false;
+    device.submit(cmd);
+    return true;
+}
+
+// Let the browser finish the task: presents the canvases, and the next
+// acquireNextTexture() gets a fresh texture.
+void yieldToBrowser() { emscripten_sleep(50); }
+
+constexpr uint32_t kRed   = 0xFF0000FFu;
+constexpr uint32_t kGreen = 0x00FF00FFu;
+constexpr uint32_t kBlue  = 0x0000FFFFu;
+
+} // namespace
+
+TEST(Surface, CreateOnCanvasReportsCanvasSize) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto sel = makeCanvas("surf_size", 64, 48);
+    auto surface = device->createSurface(const_cast<char*>(sel.c_str()));
+    ASSERT_NE(surface, nullptr);
+    EXPECT_EQ(surface->getWidth(), 64u);
+    EXPECT_EQ(surface->getHeight(), 48u);
+    auto fmt = surface->getPixelFormat();
+    EXPECT_TRUE(fmt == PixelFormat::bgra8unorm || fmt == PixelFormat::rgba8unorm) << (int)fmt;
+    surface.reset();
+    removeCanvas("surf_size");
+}
+
+TEST(Surface, ExplicitSizeAtCreationSetsCanvasSize) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto sel = makeCanvas("surf_explicit", 8, 8);
+    auto surface = device->createSurface(const_cast<char*>(sel.c_str()), 120, 90);
+    ASSERT_NE(surface, nullptr);
+    EXPECT_EQ(surface->getWidth(), 120u);
+    EXPECT_EQ(surface->getHeight(), 90u);
+    EXPECT_EQ(EM_ASM_INT({ return document.querySelector(UTF8ToString($0)).width; }, sel.c_str()), 120);
+    surface.reset();
+    removeCanvas("surf_explicit");
+}
+
+TEST(Surface, UnknownCanvasSelectorReturnsNull) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    EXPECT_EQ(device->createSurface(const_cast<char*>("#no_such_canvas")), nullptr);
+}
+
+TEST(Surface, SchedulePresentWithoutAcquireIsNoop) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto sel = makeCanvas("surf_noop", 16, 16);
+    auto surface = device->createSurface(const_cast<char*>(sel.c_str()));
+    ASSERT_NE(surface, nullptr);
+    auto encoder = device->createCommandEncoder();
+    auto cmd = encoder->finish();
+    EXPECT_FALSE(surface->schedulePresent(cmd));
+    device->submit(cmd);
+    surface.reset();
+    removeCanvas("surf_noop");
+}
+
+TEST(Surface, PresentDeliversRenderedPixels) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto sel = makeCanvas("surf_pixels", 32, 32);
+    auto surface = device->createSurface(const_cast<char*>(sel.c_str()));
+    ASSERT_NE(surface, nullptr);
+
+    ASSERT_TRUE(presentClear(*device, *surface, 1, 0, 0));
+    EXPECT_EQ(centrePixel(sel), kRed);
+    yieldToBrowser();
+
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 1, 0));
+    EXPECT_EQ(centrePixel(sel), kGreen);
+    yieldToBrowser();
+    surface.reset();
+    removeCanvas("surf_pixels");
+}
+
+TEST(Surface, TwoCanvasesPresentTheirOwnContent) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto selA = makeCanvas("surf_a", 32, 32);
+    auto selB = makeCanvas("surf_b", 48, 24);
+    auto surfA = device->createSurface(const_cast<char*>(selA.c_str()));
+    auto surfB = device->createSurface(const_cast<char*>(selB.c_str()));
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+
+    for (int i = 0; i < 5; ++i) {
+        ASSERT_TRUE(presentClear(*device, *surfA, 1, 0, 0)) << "A frame " << i;
+        ASSERT_TRUE(presentClear(*device, *surfB, 0, 0, 1)) << "B frame " << i;
+        EXPECT_EQ(centrePixel(selA), kRed)  << "A frame " << i;
+        EXPECT_EQ(centrePixel(selB), kBlue) << "B frame " << i;
+        yieldToBrowser();
+    }
+    surfA.reset(); surfB.reset();
+    removeCanvas("surf_a"); removeCanvas("surf_b");
+}
+
+TEST(Surface, OneCommandBufferPresentsTwoCanvases) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto selA = makeCanvas("surf_one_a", 32, 32);
+    auto selB = makeCanvas("surf_one_b", 32, 32);
+    auto surfA = device->createSurface(const_cast<char*>(selA.c_str()));
+    auto surfB = device->createSurface(const_cast<char*>(selB.c_str()));
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+
+    auto viewA = surfA->acquireNextTexture();
+    auto viewB = surfB->acquireNextTexture();
+    ASSERT_NE(viewA, nullptr);
+    ASSERT_NE(viewB, nullptr);
+    auto encoder = device->createCommandEncoder();
+    for (auto [view, r, b] : {std::tuple{viewA, 1.f, 0.f}, std::tuple{viewB, 0.f, 1.f}}) {
+        BeginRenderPassDescriptor rp{};
+        ColorAttachment ca{};
+        ca.view = view; ca.loadOp = LoadOp::clear; ca.storeOp = StoreOp::store;
+        ca.clearValue[0] = r; ca.clearValue[1] = 0; ca.clearValue[2] = b; ca.clearValue[3] = 1;
+        rp.colorAttachments.push_back(ca);
+        auto pass = encoder->beginRenderPass(rp);
+        ASSERT_NE(pass, nullptr);
+        pass->end();
+    }
+    auto cmd = encoder->finish();
+    ASSERT_TRUE(surfA->schedulePresent(cmd));
+    ASSERT_TRUE(surfB->schedulePresent(cmd));
+    device->submit(cmd);
+    EXPECT_EQ(centrePixel(selA), kRed);
+    EXPECT_EQ(centrePixel(selB), kBlue);
+    yieldToBrowser();
+    surfA.reset(); surfB.reset();
+    removeCanvas("surf_one_a"); removeCanvas("surf_one_b");
+}
+
+TEST(Surface, ResizeAndCanvasChangesAreFollowed) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto sel = makeCanvas("surf_resize", 32, 32);
+    auto surface = device->createSurface(const_cast<char*>(sel.c_str()));
+    ASSERT_NE(surface, nullptr);
+
+    surface->resize(100, 50);  // through the API
+    ASSERT_TRUE(presentClear(*device, *surface, 1, 0, 0));
+    EXPECT_EQ(surface->getWidth(), 100u);
+    EXPECT_EQ(surface->getHeight(), 50u);
+    EXPECT_EQ(centrePixel(sel), kRed);
+    yieldToBrowser();
+
+    setCanvasAttrSize(sel, 40, 70);  // by page code, behind our back
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 0, 1));
+    EXPECT_EQ(surface->getWidth(), 40u);
+    EXPECT_EQ(surface->getHeight(), 70u);
+    EXPECT_EQ(centrePixel(sel), kBlue);
+    yieldToBrowser();
+    surface.reset();
+    removeCanvas("surf_resize");
+}
+
+TEST(Surface, ZeroSizedCanvasAcquiresNothing) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto sel = makeCanvas("surf_zero", 16, 16);
+    auto surface = device->createSurface(const_cast<char*>(sel.c_str()));
+    ASSERT_NE(surface, nullptr);
+    setCanvasAttrSize(sel, 0, 16);
+    EXPECT_EQ(surface->acquireNextTexture(), nullptr);
+    surface.reset();
+    removeCanvas("surf_zero");
+}
+
 #else  // neither Apple nor Android
 
 TEST(Surface, NotYetImplementedBackendsReturnNull) {

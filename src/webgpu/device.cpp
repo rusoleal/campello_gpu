@@ -222,7 +222,7 @@ static void configureSurface(WebGPUDeviceData* deviceData, uint32_t width, uint3
     deviceData->surfaceHeight = height;
 }
 
-static bool createSurface(WebGPUDeviceData* deviceData, const char* canvasSelector) {
+static bool createLegacyCanvasSurface(WebGPUDeviceData* deviceData, const char* canvasSelector) {
     deviceData->canvasSelector = canvasSelector;
 
     WGPUEmscriptenSurfaceSourceCanvasHTMLSelector canvasSource{};
@@ -1244,7 +1244,7 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> adapter, v
     auto* deviceData = static_cast<WebGPUDeviceData*>(dev->native);
     deviceData->adapter = wgpuAdapter;
 
-    if (pd != nullptr && !createSurface(deviceData, static_cast<const char*>(pd))) {
+    if (pd != nullptr && !createLegacyCanvasSurface(deviceData, static_cast<const char*>(pd))) {
         return nullptr;
     }
     return dev;

@@ -50,6 +50,7 @@ set(WEBGPU_PLATFORM_TEST_SOURCES
     ../platform/test_query_set.cpp
     ../platform/test_pipeline_layout.cpp
     ../platform/test_adapter.cpp
+    ../platform/test_surface.cpp
 )
 add_executable(webgpu_gtest_suite gtest_browser_main.cpp ${WEBGPU_PLATFORM_TEST_SOURCES})
 target_include_directories(webgpu_gtest_suite PRIVATE

@@ -47,10 +47,17 @@ namespace systems::leal::campello_gpu
      *   - DirectX 12: `HWND`.
      *   - WebGPU: a `<canvas>` CSS selector string such as `"#canvas"`.
      *
-     * Backend status: implemented on Metal and Vulkan (Android and Linux; a
-     * headless `createDefaultDevice(nullptr)` device can present through
-     * surfaces). DirectX 12 and WebGPU return `nullptr` from
-     * `Device::createSurface()` until their implementations land.
+     * Backend status: implemented on Metal, Vulkan (Android and Linux) and
+     * WebGPU; a headless `createDefaultDevice(nullptr)` device can present
+     * through surfaces on all three. DirectX 12 returns `nullptr` from
+     * `Device::createSurface()` until its implementation lands.
+     *
+     * WebGPU specifics: the swapchain size *is* the canvas drawing-buffer
+     * size (`canvas.width`/`height`). `createSurface()` with a non-zero size
+     * and `resize()` set it, and `acquireNextTexture()` follows changes made
+     * by page code. Presentation is implicit: the browser shows the canvas
+     * when the current task returns, so `schedulePresent()` is bookkeeping
+     * there.
      *
      * Destroy every surface before its `Device`.
      */
