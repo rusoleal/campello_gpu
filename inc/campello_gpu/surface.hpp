@@ -47,9 +47,12 @@ namespace systems::leal::campello_gpu
      *   - DirectX 12: `HWND`.
      *   - WebGPU: a `<canvas>` CSS selector string such as `"#canvas"`.
      *
-     * Backend status: implemented on Metal; Vulkan, DirectX 12 and WebGPU
-     * return `nullptr` from `Device::createSurface()` until their
-     * implementations land.
+     * Backend status: implemented on Metal and Vulkan (Android and Linux; a
+     * headless `createDefaultDevice(nullptr)` device can present through
+     * surfaces). DirectX 12 and WebGPU return `nullptr` from
+     * `Device::createSurface()` until their implementations land.
+     *
+     * Destroy every surface before its `Device`.
      */
     class Surface
     {
@@ -68,10 +71,14 @@ namespace systems::leal::campello_gpu
          * @brief Acquires the next image to render into this frame.
          *
          * Returns `nullptr` when no image is available (window minimised or
-         * zero-sized, drawable pool exhausted, swapchain out of date). In that
-         * case skip the frame. An image acquired but never passed to
-         * `schedulePresent()` is released by the next call to
-         * `acquireNextTexture()` or by the surface's destructor.
+         * zero-sized, drawable pool exhausted, swapchain out of date, GPU too
+         * far behind). In that case skip the frame; an out-of-date swapchain
+         * is rebuilt on the next call.
+         *
+         * An image acquired but never passed to `schedulePresent()` (an
+         * abandoned frame) is recycled: on Metal the next call releases it and
+         * takes a fresh drawable; on Vulkan, which can't give an image back
+         * without presenting it, the next call returns the same image again.
          *
          * The returned view stays valid until the command buffer that presents
          * it has been submitted. Keep it no longer than that.

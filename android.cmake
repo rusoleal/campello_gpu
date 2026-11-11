@@ -33,7 +33,8 @@ add_library(${PROJECT_NAME} SHARED
 
 target_link_libraries(${PROJECT_NAME}
         Vulkan::Vulkan
-        log)
+        log
+        android)
 
 target_include_directories (${PROJECT_NAME} PUBLIC 
                             "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"

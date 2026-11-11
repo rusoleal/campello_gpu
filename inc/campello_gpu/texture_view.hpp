@@ -31,6 +31,7 @@ namespace systems::leal::campello_gpu
         friend class Device;
         friend class Texture;
         friend class CommandEncoder;
+        friend class Surface;
         void *native;
 
         TextureView(void *pd);

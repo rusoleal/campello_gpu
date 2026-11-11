@@ -27,6 +27,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 using namespace systems::leal::campello_gpu;
@@ -334,7 +335,285 @@ TEST(Surface, TwoSurfacesOnTwoThreadsPresentIndependently) {
     layerB->release();
 }
 
-#else  // !__APPLE__
+#elif defined(__ANDROID__)
+
+// Vulkan on Android. Each "window" is an AImageReader's ANativeWindow: a real
+// BufferQueue producer, so the swapchain, acquire and present go through the
+// platform's actual WSI path, with no Activity needed. Every presented frame
+// arrives in the reader, so these tests check real pixels, not just return
+// codes.
+
+#include <media/NdkImageReader.h>
+#include <android/hardware_buffer.h>
+#include <chrono>
+
+namespace {
+
+struct ImageReaderWindow {
+    AImageReader  *reader = nullptr;
+    ANativeWindow *window = nullptr;  // owned by reader
+
+    ImageReaderWindow(int32_t w, int32_t h) {
+        // GPU_COLOR_OUTPUT so the WSI can render into the buffers;
+        // CPU_READ_OFTEN so the test can lock and read them.
+        if (AImageReader_newWithUsage(w, h, AIMAGE_FORMAT_RGBA_8888,
+                AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN,
+                /*maxImages=*/4, &reader) == AMEDIA_OK) {
+            AImageReader_getWindow(reader, &window);
+        }
+    }
+    ~ImageReaderWindow() { if (reader) AImageReader_delete(reader); }
+
+    // Waits for the newest presented frame and returns its centre pixel as
+    // 0xRRGGBBAA, or 0 on timeout. Also drains the queue, so the swapchain
+    // never stalls waiting for free buffers.
+    uint32_t latestCentrePixel(int timeoutMs = 2000) {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        while (std::chrono::steady_clock::now() < deadline) {
+            AImage *img = nullptr;
+            if (AImageReader_acquireLatestImage(reader, &img) == AMEDIA_OK && img) {
+                int32_t w = 0, h = 0, stride = 0, len = 0;
+                uint8_t *data = nullptr;
+                AImage_getWidth(img, &w);
+                AImage_getHeight(img, &h);
+                AImage_getPlaneRowStride(img, 0, &stride);
+                AImage_getPlaneData(img, 0, &data, &len);
+                const uint8_t *px = data + (h / 2) * stride + (w / 2) * 4;
+                uint32_t rgba = (uint32_t(px[0]) << 24) | (uint32_t(px[1]) << 16) |
+                                (uint32_t(px[2]) << 8)  |  uint32_t(px[3]);
+                AImage_delete(img);
+                return rgba;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return 0;
+    }
+
+    void drain() {
+        AImage *img = nullptr;
+        while (AImageReader_acquireLatestImage(reader, &img) == AMEDIA_OK && img) {
+            AImage_delete(img);
+            img = nullptr;
+        }
+    }
+};
+
+std::shared_ptr<CommandBuffer> clearPass(Device &device, const std::shared_ptr<TextureView> &view,
+                                         float r, float g, float b) {
+    auto encoder = device.createCommandEncoder();
+    if (!encoder) return nullptr;
+    BeginRenderPassDescriptor rp{};
+    ColorAttachment ca{};
+    ca.view    = view;
+    ca.loadOp  = LoadOp::clear;
+    ca.storeOp = StoreOp::store;
+    ca.clearValue[0] = r; ca.clearValue[1] = g; ca.clearValue[2] = b; ca.clearValue[3] = 1;
+    rp.colorAttachments.push_back(ca);
+    auto pass = encoder->beginRenderPass(rp);
+    if (!pass) return nullptr;
+    pass->end();
+    return encoder->finish();
+}
+
+bool presentClear(Device &device, Surface &surface, float r, float g, float b,
+                  std::shared_ptr<Fence> fence = nullptr) {
+    auto view = surface.acquireNextTexture();
+    if (!view) return false;
+    auto cmd = clearPass(device, view, r, g, b);
+    if (!cmd || !surface.schedulePresent(cmd)) return false;
+    if (fence) device.submit(cmd, fence); else device.submit(cmd);
+    return true;
+}
+
+constexpr uint32_t kRed  = 0xFF0000FFu;
+constexpr uint32_t kBlue = 0x0000FFFFu;
+constexpr uint32_t kGreen = 0x00FF00FFu;
+
+} // namespace
+
+TEST(Surface, CreateFromNativeWindowReportsWindowSize) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow win(64, 48);
+    ASSERT_NE(win.window, nullptr);
+
+    auto surface = device->createSurface(win.window);
+    ASSERT_NE(surface, nullptr);
+    EXPECT_EQ(surface->getWidth(), 64u);
+    EXPECT_EQ(surface->getHeight(), 48u);
+    auto fmt = surface->getPixelFormat();
+    EXPECT_TRUE(fmt == PixelFormat::rgba8unorm || fmt == PixelFormat::bgra8unorm)
+        << "format " << (int)fmt;
+}
+
+TEST(Surface, PresentDeliversRenderedPixels) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow win(32, 32);
+    auto surface = device->createSurface(win.window);
+    ASSERT_NE(surface, nullptr);
+
+    auto fence = device->createFence();
+    ASSERT_TRUE(presentClear(*device, *surface, 1, 0, 0, fence));
+    fence->wait();
+    EXPECT_EQ(win.latestCentrePixel(), kRed);
+
+    // And the fence-less submit() overload.
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 1, 0));
+    EXPECT_EQ(win.latestCentrePixel(), kGreen);
+}
+
+TEST(Surface, SchedulePresentWithoutAcquireIsNoop) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow win(16, 16);
+    auto surface = device->createSurface(win.window);
+    ASSERT_NE(surface, nullptr);
+    auto encoder = device->createCommandEncoder();
+    auto cmd = encoder->finish();
+    EXPECT_FALSE(surface->schedulePresent(cmd));
+    device->submit(cmd);
+}
+
+TEST(Surface, AbandonedAcquireIsReturnedAgain) {
+    // Vulkan can't hand back an acquired image without presenting it, so an
+    // abandoned acquisition is reused by the next acquireNextTexture().
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow win(16, 16);
+    auto surface = device->createSurface(win.window);
+    ASSERT_NE(surface, nullptr);
+
+    auto first  = surface->acquireNextTexture();
+    ASSERT_NE(first, nullptr);
+    auto second = surface->acquireNextTexture();
+    EXPECT_EQ(first.get(), second.get());
+
+    // ...and it still presents normally afterwards.
+    auto cmd = clearPass(*device, second, 0, 0, 1);
+    ASSERT_NE(cmd, nullptr);
+    ASSERT_TRUE(surface->schedulePresent(cmd));
+    device->submit(cmd);
+    EXPECT_EQ(win.latestCentrePixel(), kBlue);
+}
+
+TEST(Surface, ManyFramesCycleSlotsWithoutStalling) {
+    // Far more frames than acquire slots (3) and swapchain images: exercises
+    // slot-fence reuse and semaphore recycling. A sync bug shows up as a
+    // 3-second acquire timeout (nullptr) or a validation error.
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow win(32, 32);
+    auto surface = device->createSurface(win.window);
+    ASSERT_NE(surface, nullptr);
+
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 120; ++i) {
+        const bool red = (i % 2) == 0;
+        ASSERT_TRUE(presentClear(*device, *surface, red ? 1 : 0, 0, red ? 0 : 1)) << "frame " << i;
+        win.drain();
+    }
+    device->waitForIdle();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    EXPECT_LT(ms, 5000) << "frames are stalling";
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 1, 0));
+    EXPECT_EQ(win.latestCentrePixel(), kGreen);
+}
+
+TEST(Surface, ResizeRebuildsSwapchainAndKeepsPresenting) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow win(32, 32);
+    auto surface = device->createSurface(win.window);
+    ASSERT_NE(surface, nullptr);
+    ASSERT_TRUE(presentClear(*device, *surface, 1, 0, 0));
+    EXPECT_EQ(win.latestCentrePixel(), kRed);
+
+    // An ImageReader window's buffer size is fixed, so the extent stays
+    // 32x32 (Android reports currentExtent), but the swapchain is rebuilt.
+    surface->resize(64, 64);
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 0, 1));
+    EXPECT_EQ(win.latestCentrePixel(), kBlue);
+    EXPECT_EQ(surface->getWidth(), 32u);
+}
+
+TEST(Surface, TwoSurfacesPresentTheirOwnContent) {
+    // Two windows on one device, interleaved frame by frame: each window must
+    // only ever receive its own colour.
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow winA(32, 32), winB(48, 24);
+    auto surfA = device->createSurface(winA.window);
+    auto surfB = device->createSurface(winB.window);
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+
+    for (int i = 0; i < 30; ++i) {
+        ASSERT_TRUE(presentClear(*device, *surfA, 1, 0, 0)) << "A frame " << i;
+        ASSERT_TRUE(presentClear(*device, *surfB, 0, 0, 1)) << "B frame " << i;
+        EXPECT_EQ(winA.latestCentrePixel(), kRed)  << "A frame " << i;
+        EXPECT_EQ(winB.latestCentrePixel(), kBlue) << "B frame " << i;
+    }
+}
+
+TEST(Surface, OneCommandBufferPresentsTwoSurfaces) {
+    // Both windows drawn in the same command buffer: one submit, one
+    // vkQueuePresentKHR covering both swapchains.
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow winA(32, 32), winB(32, 32);
+    auto surfA = device->createSurface(winA.window);
+    auto surfB = device->createSurface(winB.window);
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+
+    for (int i = 0; i < 10; ++i) {
+        auto viewA = surfA->acquireNextTexture();
+        auto viewB = surfB->acquireNextTexture();
+        ASSERT_NE(viewA, nullptr);
+        ASSERT_NE(viewB, nullptr);
+        auto encoder = device->createCommandEncoder();
+        ASSERT_NE(encoder, nullptr);
+        for (auto [view, r, b] : {std::tuple{viewA, 1.f, 0.f}, std::tuple{viewB, 0.f, 1.f}}) {
+            BeginRenderPassDescriptor rp{};
+            ColorAttachment ca{};
+            ca.view = view; ca.loadOp = LoadOp::clear; ca.storeOp = StoreOp::store;
+            ca.clearValue[0] = r; ca.clearValue[1] = 0; ca.clearValue[2] = b; ca.clearValue[3] = 1;
+            rp.colorAttachments.push_back(ca);
+            auto pass = encoder->beginRenderPass(rp);
+            ASSERT_NE(pass, nullptr);
+            pass->end();
+        }
+        auto cmd = encoder->finish();
+        ASSERT_TRUE(surfA->schedulePresent(cmd));
+        ASSERT_TRUE(surfB->schedulePresent(cmd));
+        device->submit(cmd);
+        EXPECT_EQ(winA.latestCentrePixel(), kRed)  << "frame " << i;
+        EXPECT_EQ(winB.latestCentrePixel(), kBlue) << "frame " << i;
+    }
+}
+
+TEST(Surface, DestroyingSurfaceWithPendingPresentIsSafe) {
+    // A window closed between schedulePresent() and submit(): the command
+    // buffer keeps the swapchain alive until it's been presented.
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow win(16, 16);
+    auto surface = device->createSurface(win.window);
+    ASSERT_NE(surface, nullptr);
+    auto view = surface->acquireNextTexture();
+    ASSERT_NE(view, nullptr);
+    auto cmd = clearPass(*device, view, 1, 0, 0);
+    ASSERT_TRUE(surface->schedulePresent(cmd));
+    view.reset();
+    surface.reset();
+    device->submit(cmd);
+    device->waitForIdle();
+    EXPECT_EQ(win.latestCentrePixel(), kRed);
+}
+
+#else  // neither Apple nor Android
 
 TEST(Surface, NotYetImplementedBackendsReturnNull) {
     auto device = makeDevice();

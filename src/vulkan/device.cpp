@@ -52,6 +52,7 @@ struct wl_surface;
 #include "bind_group_handle.hpp"
 #include "bind_group_layout_handle.hpp"
 #include "command_buffer_handle.hpp"
+#include "surface_handle.hpp"
 #include "command_encoder_handle.hpp"
 #include "common.hpp"
 
@@ -817,7 +818,17 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
               isVulkan13, hasDynRender, (int)isHasvk);
 
     std::vector<const char *> deviceExtensions;
-    if (surface != VK_NULL_HANDLE)
+    // Not only when a startup surface exists: a headless device
+    // (createDefaultDevice(nullptr)) can still present through Surfaces
+    // created later with Device::createSurface().
+    bool swapchainExtSupported = false;
+    for (const auto &ext : availableExtensions) {
+        if (strcmp(ext.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
+            swapchainExtSupported = true;
+            break;
+        }
+    }
+    if (surface != VK_NULL_HANDLE || swapchainExtSupported)
         deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     // Dynamic rendering is core in Vulkan 1.3; on older devices we need the extension.
     if (!isVulkan13 && hasDynRender)
@@ -3371,18 +3382,30 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
     // avoid a dangling pointer from pWaitDstStageMask.
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers    = &cbHandle->commandBuffer;
-
+    // Surface presents (Surface::schedulePresent()) — see SurfaceData's doc
+    // comment in surface_handle.hpp. Moved out of the handle so the surfaces'
+    // shared ownership ends with this function, after gpu_mutex is released
+    // (~SurfaceData takes gpu_mutex itself).
+    std::vector<SurfacePresent> surfacePresents = std::move(cbHandle->surfacePresents);
+    std::vector<VkSemaphore>          waitSemaphores;
+    std::vector<VkPipelineStageFlags> waitStages;
+    std::vector<VkSemaphore>          signalSemaphores;
     if (renderFinished) {
-        submitInfo.waitSemaphoreCount   = 1;
-        submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphores[gen];
-        submitInfo.pWaitDstStageMask    = &waitStage;
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores    = renderFinished;
+        waitSemaphores.push_back(deviceData->imageAvailableSemaphores[gen]);
+        waitStages.push_back(waitStage);
+        signalSemaphores.push_back(*renderFinished);
     }
+    appendSurfaceSubmitSync(surfacePresents, waitSemaphores, waitStages, signalSemaphores);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount   = 1;
+    submitInfo.pCommandBuffers      = &cbHandle->commandBuffer;
+    submitInfo.waitSemaphoreCount   = (uint32_t)waitSemaphores.size();
+    submitInfo.pWaitSemaphores      = waitSemaphores.data();
+    submitInfo.pWaitDstStageMask    = waitStages.data();
+    submitInfo.signalSemaphoreCount = (uint32_t)signalSemaphores.size();
+    submitInfo.pSignalSemaphores    = signalSemaphores.data();
 
     {
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
@@ -3395,9 +3418,11 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         VkResult submitResult = vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo,
                                                deviceData->inFlightFences[gen]);
         if (submitResult != VK_SUCCESS) {
+            completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, false);
             return;
         }
         cbHandle->submitted = true;
+        completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, true);
 
         if (renderFinished) {
             VkPresentInfoKHR presentInfo{};
@@ -3485,33 +3510,38 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     // bookkeeping accurate regardless of the caller supplying its own fence
     // here instead of using the no-fence submit() overload — see
     // DeviceData::genCompleteSemaphores' doc comment for the full rationale.
-    VkSemaphore signalSemaphores[2];
-    uint32_t    signalSemaphoreCount = 0;
+    // Surface presents — see the no-fence overload above.
+    std::vector<SurfacePresent> surfacePresents = std::move(cbHandle->surfacePresents);
+    std::vector<VkSemaphore>          waitSemaphores;
+    std::vector<VkPipelineStageFlags> waitStages;
+    std::vector<VkSemaphore>          signalSemaphores;
     if (renderFinished) {
-        signalSemaphores[signalSemaphoreCount++] = *renderFinished;
-        signalSemaphores[signalSemaphoreCount++] = deviceData->genCompleteSemaphores[gen];
+        waitSemaphores.push_back(deviceData->imageAvailableSemaphores[gen]);
+        waitStages.push_back(waitStage);
+        signalSemaphores.push_back(*renderFinished);
+        signalSemaphores.push_back(deviceData->genCompleteSemaphores[gen]);
     }
+    appendSurfaceSubmitSync(surfacePresents, waitSemaphores, waitStages, signalSemaphores);
 
     VkSubmitInfo submitInfo{};
-    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers    = &cbHandle->commandBuffer;
-
-    if (renderFinished) {
-        submitInfo.waitSemaphoreCount   = 1;
-        submitInfo.pWaitSemaphores      = &deviceData->imageAvailableSemaphores[gen];
-        submitInfo.pWaitDstStageMask    = &waitStage;
-        submitInfo.signalSemaphoreCount = signalSemaphoreCount;
-        submitInfo.pSignalSemaphores    = signalSemaphores;
-    }
+    submitInfo.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount   = 1;
+    submitInfo.pCommandBuffers      = &cbHandle->commandBuffer;
+    submitInfo.waitSemaphoreCount   = (uint32_t)waitSemaphores.size();
+    submitInfo.pWaitSemaphores      = waitSemaphores.data();
+    submitInfo.pWaitDstStageMask    = waitStages.data();
+    submitInfo.signalSemaphoreCount = (uint32_t)signalSemaphores.size();
+    submitInfo.pSignalSemaphores    = signalSemaphores.data();
 
     VkFence submitFence = fenceData ? fenceData->fence : VK_NULL_HANDLE;
     {
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
         if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
+            completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, false);
             return;
         }
         cbHandle->submitted = true;
+        completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, true);
 
         if (renderFinished) {
             // Chained empty submission: becomes eligible to run only once
