@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-11-11
+
 ### Fixed
 - **Vulkan: `copyBufferToTexture()` ignored `bytesPerRow`** (always tightly packed), so padded rows (e.g. to the 256-byte alignment WebGPU requires) were read skewed. It now sets `bufferRowLength` for uncompressed formats.
 - **Vulkan: anisotropic filtering overrode nearest filtering** (`maxAnisotropy > 1` with nearest filters filtered linearly; Metal ignores it). Anisotropy is now enabled only when both filters are linear.
