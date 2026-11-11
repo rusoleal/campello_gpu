@@ -659,7 +659,7 @@ void CommandEncoder::copyBufferToBuffer(std::shared_ptr<Buffer> source,
 void CommandEncoder::copyBufferToTexture(
     std::shared_ptr<Buffer>  source,
     uint64_t                 sourceOffset,
-    uint64_t                 /*bytesPerRow*/,
+    uint64_t                 bytesPerRow,
     std::shared_ptr<Texture> destination,
     uint32_t                 mipLevel,
     uint32_t                 arrayLayer)
@@ -700,10 +700,20 @@ void CommandEncoder::copyBufferToTexture(
     uint32_t mipWidth  = std::max(1u, texH->width  >> mipLevel);
     uint32_t mipHeight = std::max(1u, texH->height >> mipLevel);
 
-    // bufferRowLength=0 / bufferImageHeight=0 → tightly packed.
+    // bufferRowLength=0 / bufferImageHeight=0 → tightly packed. Rows longer
+    // than the mip's (padded source rows, e.g. to WebGPU's 256-byte copy
+    // alignment) set bufferRowLength, in texels, for uncompressed formats.
+    uint32_t rowLength = 0;
+    const uint64_t texelBits = getPixelFormatSize(texH->pixelFormat);
+    if (bytesPerRow > 0 && texelBits >= 8 && texelBits % 8 == 0) {
+        const uint64_t texelBytes = texelBits / 8;
+        if (bytesPerRow % texelBytes == 0 && bytesPerRow / texelBytes > mipWidth) {
+            rowLength = static_cast<uint32_t>(bytesPerRow / texelBytes);
+        }
+    }
     VkBufferImageCopy region{};
     region.bufferOffset                    = sourceOffset;
-    region.bufferRowLength                 = 0;
+    region.bufferRowLength                 = rowLength;
     region.bufferImageHeight               = 0;
     region.imageSubresource.aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.mipLevel       = mipLevel;
