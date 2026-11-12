@@ -39,6 +39,7 @@ namespace systems::leal::campello_gpu {
         friend class Device;
         friend class CommandEncoder;
         friend class RayTracingPassEncoder;
+        friend class ComputePassEncoder;
         void *native;
 
         AccelerationStructure(void *data);
