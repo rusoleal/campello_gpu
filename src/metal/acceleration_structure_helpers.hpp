@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include "Metal.hpp"
 #include "acceleration_structure_handle.hpp"
 #include <campello_gpu/buffer.hpp>
@@ -168,4 +169,20 @@ makeInstanceASDescriptor(MTL::Device *dev,
         MTL::AccelerationStructureInstanceDescriptorTypeUserID);
 
     return { instanceDesc, instanceBuf };
+}
+
+// The bottom-level structures a top-level descriptor's instances reference.
+// `toData` reads an AccelerationStructure's native data (callers are friends).
+template <typename ToData>
+inline std::vector<MTL::AccelerationStructure *> instancedStructures(
+    const systems::leal::campello_gpu::TopLevelAccelerationStructureDescriptor &desc, ToData toData) {
+    std::vector<MTL::AccelerationStructure *> out;
+    for (const auto &inst : desc.instances) {
+        if (!inst.blas) continue;
+        MetalAccelerationStructureData *data = toData(inst.blas);
+        if (!data) continue;
+        auto *mtl = data->accelerationStructure;
+        if (mtl && std::find(out.begin(), out.end(), mtl) == out.end()) out.push_back(mtl);
+    }
+    return out;
 }

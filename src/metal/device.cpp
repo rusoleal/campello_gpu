@@ -1198,6 +1198,7 @@ std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructu
         static_cast<uint64_t>(sizes.buildScratchBufferSize),
         static_cast<uint64_t>(sizes.refitScratchBufferSize)
     };
+    handle->setInstanced(instancedStructures(descriptor, asToMTLData));
     
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->accelerationStructureCount++;

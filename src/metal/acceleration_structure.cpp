@@ -11,6 +11,7 @@ AccelerationStructure::~AccelerationStructure() {
         auto *d = static_cast<MetalAccelerationStructureData *>(native);
         if (d->accelerationStructure)
             d->accelerationStructure->release();
+        d->setInstanced({});
         delete d;
     }
 }

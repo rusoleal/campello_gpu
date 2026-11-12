@@ -4,6 +4,9 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **Metal: instanced acceleration structures weren't made resident.** A top-level acceleration structure bound to a ray tracing (or compute) pass reaches its instances' bottom-level structures by address, and Metal requires each one to be declared with `useResource()`; only the top level was bound. Rays hit the geometry only while the system happened to keep the bottom levels resident, and missed everything once memory pressure paged them out (found with campello_renderer's path tracer after Intel Open Image Denoise allocated large CPU buffers). Top levels now remember their instances' structures (at creation and each build) and passes that bind them `useResource()` them all. Compute passes now also bind acceleration structures from bind groups (ray queries).
+
 ## [0.28.1] - 2026-11-11
 
 ### Fixed
