@@ -12,6 +12,7 @@ namespace systems::leal::campello_gpu {
         VkDevice        device;
         VkCommandPool   commandPool;
         DeviceData*     deviceData = nullptr;  // For gpu_mutex on vkFreeCommandBuffers
+        bool            holdsFrameLock = false; ///< Released at submit, or on destruction if never submitted.
         VkCommandBuffer commandBuffer;
         VkQueue         graphicsQueue;
         VkSwapchainKHR  swapchain;

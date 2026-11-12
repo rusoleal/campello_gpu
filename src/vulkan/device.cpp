@@ -2752,11 +2752,19 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
 
     auto deviceData = (DeviceData *)this->native;
 
+    // One recording at a time per device (several raster threads, one per
+    // window) — see DeviceData::acquireFrameLock(). Taken before the ring
+    // rotates, since the ring itself is part of what it protects.
+    if (!deviceData->acquireFrameLock()) {
+        return nullptr;  // another thread held it for kWaitTimeoutNs: skip this frame
+    }
+
     // Frame-in-flight ring rotation — see DeviceData::beginFrameRing()'s
     // doc comment for the full design/correctness rationale. Must run
     // before any GPU work for the new frame is recorded.
     uint32_t gen = deviceData->beginFrameRing();
     if (gen == DeviceData::kInvalidGen) {
+        deviceData->releaseFrameLock();
         // Timed out waiting for this ring slot's prior GPU work — see
         // beginFrameRing()'s doc comment. Skip this frame; the caller
         // (Renderer::rasterFrame(), via RasterThread on platforms that use
@@ -2775,6 +2783,7 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
         VkResult allocResult = vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer);
         if (allocResult != VK_SUCCESS) {
+            deviceData->releaseFrameLock();
             return nullptr;
         }
     }
@@ -2798,6 +2807,7 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     toReturn->swapchainImageViews       = deviceData->swapchainImageViews;
     toReturn->currentImageIndex         = 0;
     toReturn->deviceData                = deviceData;
+    toReturn->holdsFrameLock            = true;
     toReturn->physicalDevice            = deviceData->physicalDevice;
     toReturn->timestampQueryPool        = VK_NULL_HANDLE;
     toReturn->timestampPeriod           = 1.0f;
@@ -3419,6 +3429,12 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
                                                deviceData->inFlightFences[gen]);
         if (submitResult != VK_SUCCESS) {
             completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, false);
+            // Don't keep other windows waiting until the caller drops the
+            // command buffer (releasing never blocks, so fine under gpu_mutex).
+            if (cbHandle->holdsFrameLock) {
+                cbHandle->holdsFrameLock = false;
+                deviceData->releaseFrameLock();
+            }
             return;
         }
         cbHandle->submitted = true;
@@ -3472,8 +3488,13 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
 
     // Keep this frame's resources alive until beginFrameRing() confirms the
     // GPU is done with them (see this function's doc comment above).
+    const bool releaseFrameLock = cbHandle->holdsFrameLock;
+    cbHandle->holdsFrameLock = false;
     deviceData->genCommandBuffer[gen] = std::move(commandBuffer);
     deviceData->commandsSubmitted++;
+    // Recording for this frame is over: let the next window's raster
+    // thread encode (see DeviceData::acquireFrameLock()).
+    if (releaseFrameLock) deviceData->releaseFrameLock();
 }
 
 void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
@@ -3538,6 +3559,12 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
         if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
             completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, false);
+            // Don't keep other windows waiting until the caller drops the
+            // command buffer (releasing never blocks, so fine under gpu_mutex).
+            if (cbHandle->holdsFrameLock) {
+                cbHandle->holdsFrameLock = false;
+                deviceData->releaseFrameLock();
+            }
             return;
         }
         cbHandle->submitted = true;
@@ -3604,6 +3631,11 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     }
     // NOTE: intentionally NOT calling vkQueueWaitIdle — caller waits on fence.
     deviceData->commandsSubmitted++;
+    // Recording for this frame is over (see DeviceData::acquireFrameLock()).
+    if (cbHandle->holdsFrameLock) {
+        cbHandle->holdsFrameLock = false;
+        deviceData->releaseFrameLock();
+    }
 }
 
 std::shared_ptr<Fence> Device::createFence() {

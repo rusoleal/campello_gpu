@@ -73,6 +73,11 @@ CommandEncoder::CommandEncoder(void *pd) {
 
 CommandEncoder::~CommandEncoder() {
     auto data = (CommandEncoderHandle *)this->native;
+    // Never finished: give up the recording slot (see DeviceData::acquireFrameLock()).
+    if (data->holdsFrameLock && data->deviceData) {
+        data->holdsFrameLock = false;
+        data->deviceData->releaseFrameLock();
+    }
     // Clean up query pool if it wasn't transferred to CommandBuffer
     if (data->timestampQueryPool != VK_NULL_HANDLE) {
         vkDestroyQueryPool(data->device, data->timestampQueryPool, nullptr);
@@ -1042,6 +1047,10 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbHandle->device             = data->device;
     cbHandle->commandPool        = data->commandPool;
     cbHandle->deviceData         = data->deviceData;
+    // The recording slot now belongs to the command buffer: released when
+    // it's submitted, or destroyed unsubmitted.
+    cbHandle->holdsFrameLock     = data->holdsFrameLock;
+    data->holdsFrameLock         = false;
     cbHandle->commandBuffer      = data->commandBuffer;
     cbHandle->graphicsQueue      = data->graphicsQueue;
     cbHandle->swapchain          = data->swapchain;

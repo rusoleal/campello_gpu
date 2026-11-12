@@ -613,6 +613,124 @@ TEST(Surface, DestroyingSurfaceWithPendingPresentIsSafe) {
     EXPECT_EQ(win.latestCentrePixel(), kRed);
 }
 
+// ---------------------------------------------------------------------------
+// Several raster threads on one device (campello_widgets Phase 17, M1.9).
+// The Vulkan backend serializes *recording* per device (DeviceData::
+// acquireFrameLock()): an encoder holds the lock from createCommandEncoder()
+// until its command buffer is submitted or dropped.
+// ---------------------------------------------------------------------------
+
+namespace {
+using SteadyClock = std::chrono::steady_clock;
+long long elapsedMs(SteadyClock::time_point since) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(SteadyClock::now() - since).count();
+}
+} // namespace
+
+TEST(Surface, TwoRasterThreadsDriveTwoWindowsConcurrently) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    ImageReaderWindow winA(32, 32), winB(48, 24);
+    auto surfA = device->createSurface(winA.window);
+    auto surfB = device->createSurface(winB.window);
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+
+    constexpr int kFrames = 300;
+    std::atomic<int> failuresA{0}, failuresB{0};
+    auto raster = [&](Surface& surface, ImageReaderWindow& win, float r, float b,
+                      std::atomic<int>& failures) {
+        for (int i = 0; i < kFrames; ++i) {
+            if (!presentClear(*device, surface, r, 0, b)) ++failures;
+            win.drain();
+        }
+    };
+    auto start = SteadyClock::now();
+    std::thread a([&] { raster(*surfA, winA, 1, 0, failuresA); });
+    std::thread b([&] { raster(*surfB, winB, 0, 1, failuresB); });
+    a.join();
+    b.join();
+    device->waitForIdle();
+
+    EXPECT_EQ(failuresA.load(), 0);
+    EXPECT_EQ(failuresB.load(), 0);
+    EXPECT_LT(elapsedMs(start), 20000) << "raster threads stalled each other";
+    // Each window still shows only its own content.
+    ASSERT_TRUE(presentClear(*device, *surfA, 1, 0, 0));
+    ASSERT_TRUE(presentClear(*device, *surfB, 0, 0, 1));
+    EXPECT_EQ(winA.latestCentrePixel(), kRed);
+    EXPECT_EQ(winB.latestCentrePixel(), kBlue);
+}
+
+TEST(Surface, RecordingIsSerializedAcrossThreads) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto encoderA = device->createCommandEncoder();
+    ASSERT_NE(encoderA, nullptr);
+
+    std::atomic<bool> aSubmitted{false};
+    std::atomic<bool> bGotEncoderBeforeASubmitted{false};
+    std::thread b([&] {
+        auto encoderB = device->createCommandEncoder();  // must wait for A
+        if (encoderB && !aSubmitted.load()) bGotEncoderBeforeASubmitted = true;
+        if (encoderB) device->submit(encoderB->finish());
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    aSubmitted = true;
+    device->submit(encoderA->finish());
+    b.join();
+    EXPECT_FALSE(bGotEncoderBeforeASubmitted.load());
+}
+
+TEST(Surface, AbandonedEncoderReleasesRecordingSlot) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    { auto dropped = device->createCommandEncoder(); ASSERT_NE(dropped, nullptr); }
+    auto start = SteadyClock::now();
+    std::shared_ptr<CommandEncoder> other;
+    std::thread b([&] { other = device->createCommandEncoder(); if (other) device->submit(other->finish()); });
+    b.join();
+    EXPECT_NE(other, nullptr);
+    EXPECT_LT(elapsedMs(start), 1000) << "dropped encoder kept the lock until the timeout";
+}
+
+TEST(Surface, UnsubmittedCommandBufferReleasesRecordingSlot) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    {
+        auto encoder = device->createCommandEncoder();
+        ASSERT_NE(encoder, nullptr);
+        auto cmd = encoder->finish();  // finished, never submitted, then dropped
+        ASSERT_NE(cmd, nullptr);
+    }
+    auto start = SteadyClock::now();
+    std::shared_ptr<CommandEncoder> other;
+    std::thread b([&] { other = device->createCommandEncoder(); if (other) device->submit(other->finish()); });
+    b.join();
+    EXPECT_NE(other, nullptr);
+    EXPECT_LT(elapsedMs(start), 1000) << "unsubmitted command buffer kept the lock";
+}
+
+TEST(Surface, SameThreadMayHoldTwoEncoders) {
+    auto device = makeDevice();
+    if (!device) GTEST_SKIP() << "no GPU device";
+    auto start = SteadyClock::now();
+    auto first  = device->createCommandEncoder();
+    auto second = device->createCommandEncoder();  // same thread: no deadlock
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    EXPECT_LT(elapsedMs(start), 1000);
+    device->submit(first->finish());
+    device->submit(second->finish());
+    // Fully released afterwards: another thread gets in promptly.
+    std::shared_ptr<CommandEncoder> other;
+    start = SteadyClock::now();
+    std::thread b([&] { other = device->createCommandEncoder(); if (other) device->submit(other->finish()); });
+    b.join();
+    EXPECT_NE(other, nullptr);
+    EXPECT_LT(elapsedMs(start), 1000);
+}
+
 #elif defined(__EMSCRIPTEN__)
 
 // WebGPU: a Surface is a GPUCanvasContext on its own <canvas>, and several

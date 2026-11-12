@@ -3,6 +3,9 @@
 #include <vector>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <thread>
 #include <memory>
 #include <unordered_map>
 #include <vulkan/vulkan.h>
@@ -436,6 +439,56 @@ namespace systems::leal::campello_gpu {
         // VkCommandPool and VkQueue are not thread-safe; all allocate/free/submit
         // calls must be guarded by this mutex.
         std::mutex gpu_mutex;
+
+        // ── Frame lock: one command buffer *recording* at a time ──────────
+        //
+        // The frames-in-flight ring below (currentFrameGen, descriptorPools,
+        // genCommandBuffer, pendingTextureDestroys, the per-slot fences and
+        // semaphores) and commandPool assume one recording thread: e.g.
+        // beginFrameRing() resets descriptorPools[nextGen] after waiting
+        // that slot's fence, which is still signaled from its previous use
+        // while another thread may be recording into it. With several
+        // raster threads (one per window, campello_widgets Phase 17), two
+        // encoders recording at once would corrupt that state.
+        //
+        // So recording is serialized per device: createCommandEncoder()
+        // takes this lock, and it is released when that encoder's command
+        // buffer is submitted (or the encoder / command buffer is destroyed
+        // without being submitted). Windows then *encode* one after another,
+        // like Flutter's single raster thread; the stalls that matter stay
+        // per window (Surface acquire happens before the encoder is created,
+        // GPU execution is asynchronous). Recursive for the owning thread (a
+        // thread may create a second encoder before submitting the first),
+        // and releasable from any thread (a command buffer can be destroyed
+        // on another thread). Never acquire it while holding gpu_mutex.
+        std::mutex              frameLockMutex;
+        std::condition_variable frameLockCv;
+        std::thread::id         frameLockOwner;      // default id = unowned
+        uint32_t                frameLockDepth = 0;  // outstanding holds by the owner
+
+        /// Waits (bounded, like the other ring waits) until no other thread
+        /// is recording. Returns false on timeout: the caller skips the frame.
+        bool acquireFrameLock() {
+            std::unique_lock<std::mutex> lock(frameLockMutex);
+            const auto self = std::this_thread::get_id();
+            const bool ok = frameLockCv.wait_for(
+                lock, std::chrono::nanoseconds(kWaitTimeoutNs),
+                [&] { return frameLockDepth == 0 || frameLockOwner == self; });
+            if (!ok) return false;
+            frameLockOwner = self;
+            ++frameLockDepth;
+            return true;
+        }
+
+        /// Releases one hold (from any thread).
+        void releaseFrameLock() {
+            {
+                std::lock_guard<std::mutex> lock(frameLockMutex);
+                if (frameLockDepth == 0) return;
+                if (--frameLockDepth == 0) frameLockOwner = std::thread::id();
+            }
+            frameLockCv.notify_all();
+        }
 
         // Advances the frames-in-flight ring and waits only for the ONE
         // slot about to be reused -- the generation that was `kFramesInFlight`
