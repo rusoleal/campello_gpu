@@ -10,6 +10,7 @@ All notable changes to campello_gpu are documented here.
 - **Vulkan: headless devices enable `VK_KHR_swapchain`** whenever the GPU supports it (previously only when created with a window), so `createDefaultDevice(nullptr)` can present through surfaces created later. Android builds now also link `libandroid`.
 
 ### Fixed
+- **Vulkan `Surface` on Android after rotation/resize**: swapchains are now sized from the `ANativeWindow` (its current size) instead of `currentExtent`, which can still report the old size when the resize is handled; Android never reports such a swapchain out of date, so frames stayed cropped after rotating.
 - **Vulkan: `copyBufferToTexture()` ignored `bytesPerRow`** (always tightly packed), so padded rows (e.g. to the 256-byte alignment WebGPU requires) were read skewed. It now sets `bufferRowLength` for uncompressed formats.
 - **Vulkan: anisotropic filtering overrode nearest filtering** (`maxAnisotropy > 1` with nearest filters filtered linearly; Metal ignores it). Anisotropy is now enabled only when both filters are linear.
 - **Vulkan: depth-only render passes** (no color attachment, e.g. a shadow map) rendered over 1x1 pixels: the render area came from the color attachment only. It now comes from the depth attachment when there's no color attachment.

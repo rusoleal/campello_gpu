@@ -122,11 +122,24 @@ bool buildSwapchainImpl(SurfaceData *s) {
         return false;
 
     VkExtent2D extent = caps.currentExtent;
+#ifdef __ANDROID__
+    // Android: the window's own size is authoritative. currentExtent can
+    // still report the old size when a resize or rotation is handled (it
+    // follows the buffers already queued), and a swapchain left at the old
+    // size is never reported out of date there: the compositor just scales
+    // it, so the app's frames came out cropped after rotating. Any buffer
+    // size is valid (it is scaled to the window), so take the window's.
+    if (s->window) {
+        const int32_t w = ANativeWindow_getWidth(s->window);
+        const int32_t h = ANativeWindow_getHeight(s->window);
+        if (w > 0 && h > 0) extent = {static_cast<uint32_t>(w), static_cast<uint32_t>(h)};
+    }
+#endif
     if (extent.width == UINT32_MAX) {
         extent = s->requestedExtent;
-        extent.width  = std::clamp(extent.width,  caps.minImageExtent.width,  caps.maxImageExtent.width);
-        extent.height = std::clamp(extent.height, caps.minImageExtent.height, caps.maxImageExtent.height);
     }
+    extent.width  = std::clamp(extent.width,  caps.minImageExtent.width,  caps.maxImageExtent.width);
+    extent.height = std::clamp(extent.height, caps.minImageExtent.height, caps.maxImageExtent.height);
     VkSwapchainKHR oldSwapchain = s->swapchain;
     destroySwapchainObjects(s, /*destroySwapchain=*/false);
     s->extent = extent;
