@@ -9,6 +9,9 @@ All notable changes to campello_gpu are documented here.
 - **Vulkan: several threads can record and submit on one device** (e.g. one raster thread per window). Recording is serialized per device: `createCommandEncoder()` holds a device lock until that command buffer is submitted (or the encoder / command buffer is dropped unsubmitted), recursive for the owning thread. The frames-in-flight ring and command pool assumed a single recording thread; two concurrent encoders could reset a descriptor pool another thread was still recording into. A thread that can't get the lock within the usual 3 s bound gets `nullptr` (skip the frame).
 - **Vulkan: headless devices enable `VK_KHR_swapchain`** whenever the GPU supports it (previously only when created with a window), so `createDefaultDevice(nullptr)` can present through surfaces created later. Android builds now also link `libandroid`.
 
+### Deprecated
+- **`Device::scheduleNextPresent()` and `Device::getSwapchainTextureView()`** (documentation only; both keep working): use a `Surface` per window instead. The device-wide present slot is shared by every window and thread.
+
 ### Fixed
 - **Vulkan `Surface` on Android after rotation/resize**: swapchains are now sized from the `ANativeWindow` (its current size) instead of `currentExtent`, which can still report the old size when the resize is handled; Android never reports such a swapchain out of date, so frames stayed cropped after rotating.
 

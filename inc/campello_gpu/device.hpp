@@ -623,6 +623,13 @@ namespace systems::leal::campello_gpu
          *
          * @param nativeDrawable  Platform drawable handle — on macOS/iOS this is
          *                        `(__bridge void*)id<CAMetalDrawable>`.
+         *
+         * @note Deprecated in favour of `Surface` (`createSurface()`,
+         *       `Surface::schedulePresent()`), which ties a present to one
+         *       command buffer. This device-wide slot is shared by every
+         *       window and thread, so with several windows on separate raster
+         *       threads one could present another's drawable. Kept working for
+         *       single-window code.
          */
         void scheduleNextPresent(void* nativeDrawable);
 
@@ -733,6 +740,11 @@ namespace systems::leal::campello_gpu
          *
          * @return A `TextureView` for the current back buffer, or `nullptr` if no
          *         swapchain is present.
+         *
+         * @note Deprecated in favour of `Surface::acquireNextTexture()`: a
+         *       device has at most one built-in swapchain, while a device can
+         *       have any number of surfaces (one per window). Kept working for
+         *       single-window code.
          */
         std::shared_ptr<TextureView> getSwapchainTextureView();
 
