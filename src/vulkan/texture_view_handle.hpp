@@ -6,6 +6,7 @@ namespace systems::leal::campello_gpu {
 
     struct TextureHandle;  // Forward declaration
     struct DeviceData;     // Forward declaration
+    struct SurfaceData;    // Forward declaration
 
     struct TextureViewHandle {
         VkDevice    device;
@@ -42,6 +43,10 @@ namespace systems::leal::campello_gpu {
         // happens to be attachment-bound elsewhere gets its layout corrupted instead.
         uint32_t baseArrayLayer = 0;
         uint32_t baseMipLevel   = 0;
+        /// Non-null for a Surface's swapchain image (Surface::acquireNextTexture()).
+        /// beginRenderPass() then treats the pass like a swapchain pass (present
+        /// layout transitions) using this view's image, instead of the offscreen path.
+        SurfaceData* surface = nullptr;
     };
 
 }

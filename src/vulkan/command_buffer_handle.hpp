@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <vulkan/vulkan.h>
+#include "surface_handle.hpp"
 
 namespace systems::leal::campello_gpu {
 
@@ -11,12 +12,17 @@ namespace systems::leal::campello_gpu {
         VkDevice        device;
         VkCommandPool   commandPool;
         DeviceData*     deviceData = nullptr;  // For gpu_mutex on vkFreeCommandBuffers
+        bool            holdsFrameLock = false; ///< Released at submit, or on destruction if never submitted.
         VkCommandBuffer commandBuffer;
         VkQueue         graphicsQueue;
         VkSwapchainKHR  swapchain;
         uint32_t        currentImageIndex;
         uint32_t        frameGen = 0; ///< Frames-in-flight ring slot — see DeviceData::beginFrameRing().
         bool            hasSwapchain; ///< False if the pass did not render to the swapchain.
+        /// Surface images to present after this buffer's submission
+        /// (Surface::schedulePresent()); independent of hasSwapchain, which is the
+        /// device's legacy implicit swapchain.
+        std::vector<SurfacePresent> surfacePresents;
         // Staging buffers allocated during command recording (e.g. TLAS instance uploads).
         // Freed after the command buffer is submitted and GPU work finishes.
         std::vector<VkBuffer>       stagingBuffers;

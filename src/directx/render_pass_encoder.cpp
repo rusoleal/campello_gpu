@@ -91,6 +91,9 @@ void RenderPassEncoder::end() {
             if (rt.msaaSource == th) { isResolveSource = true; break; }
         }
         if (isResolveSource) continue;
+        // A Surface back buffer is never sampled: it stays a render target
+        // until CommandEncoder::finish() returns it to PRESENT.
+        if (th->isSurfaceImage) continue;
         if (th->currentState == D3D12_RESOURCE_STATE_RENDER_TARGET) {
             D3D12_RESOURCE_BARRIER barrier = {};
             barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

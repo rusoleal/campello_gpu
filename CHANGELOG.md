@@ -4,6 +4,17 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Added
+- **`Surface`: one presentable swapchain per native window** (`inc/campello_gpu/surface.hpp`), the first step towards multi-window apps. `Device::createSurface(nativeWindow, width, height)` can be called any number of times on one device. Each frame calls `acquireNextTexture()`, renders into the result, then `schedulePresent(commandBuffer)` before `submit()`. The present is tied to that command buffer, not to a device-wide slot like `scheduleNextPresent()`, so windows on separate raster threads can't present each other's images. Implemented on **Metal** (wraps a `CAMetalLayer`) and **Vulkan** (Android `ANativeWindow*`, Linux `LinuxSurfaceInfo*`; each surface owns its swapchain, acquire semaphores and frame fences, and one command buffer can present several surfaces in a single `vkQueuePresentKHR`). On **WebGPU** a surface is a `GPUCanvasContext` on its own `<canvas>` (pass a CSS selector), so one device can drive several canvases; the swapchain follows the canvas drawing-buffer size. On **DirectX 12** each surface is a flip-model `IDXGISwapChain3` on its own `HWND` (with its own back buffers and RTV heap) on the device's single queue: back buffers move PRESENT→RENDER_TARGET when a pass begins on them and back in `finish()`, and `submit()` calls `Present()` for every surface scheduled on that command buffer, so one command buffer can present several windows. A surface follows its window's client size unless created with (or `resize()`d to) an explicit size; a minimised or zero-sized window acquires nothing. DXGI allows one flip-model swapchain per `HWND`, so `createSurface()` returns `nullptr` for a window that already has one (e.g. the legacy `createDefaultDevice(hwnd)` swapchain). DX12 recording is still single-threaded per device (unlike Vulkan's per-device lock): encode one window at a time. The single-swapchain API (`createDefaultDevice(pd)`, `getSwapchainTextureView()`, `scheduleNextPresent()`) is unchanged.
+- **Vulkan: several threads can record and submit on one device** (e.g. one raster thread per window). Recording is serialized per device: `createCommandEncoder()` holds a device lock until that command buffer is submitted (or the encoder / command buffer is dropped unsubmitted), recursive for the owning thread. The frames-in-flight ring and command pool assumed a single recording thread; two concurrent encoders could reset a descriptor pool another thread was still recording into. A thread that can't get the lock within the usual 3 s bound gets `nullptr` (skip the frame).
+- **Vulkan: headless devices enable `VK_KHR_swapchain`** whenever the GPU supports it (previously only when created with a window), so `createDefaultDevice(nullptr)` can present through surfaces created later. Android builds now also link `libandroid`.
+
+### Deprecated
+- **`Device::scheduleNextPresent()` and `Device::getSwapchainTextureView()`** (documentation only; both keep working): use a `Surface` per window instead. The device-wide present slot is shared by every window and thread.
+
+### Fixed
+- **Vulkan `Surface` on Android after rotation/resize**: swapchains are now sized from the `ANativeWindow` (its current size) instead of `currentExtent`, which can still report the old size when the resize is handled; Android never reports such a swapchain out of date, so frames stayed cropped after rotating.
+
 ## [0.28.2] - 2026-11-12
 
 ### Fixed

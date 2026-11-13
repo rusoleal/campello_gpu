@@ -27,6 +27,12 @@ CommandBuffer::~CommandBuffer() {
         if (data->deviceData) lock = std::unique_lock<std::mutex>(data->deviceData->gpu_mutex);
         vkFreeCommandBuffers(data->device, data->commandPool, 1, &data->commandBuffer);
     }
+    // Finished but never submitted: give up the recording slot (after
+    // gpu_mutex is released; see DeviceData::acquireFrameLock()).
+    if (data->holdsFrameLock && data->deviceData) {
+        data->holdsFrameLock = false;
+        data->deviceData->releaseFrameLock();
+    }
     delete data;
 }
 

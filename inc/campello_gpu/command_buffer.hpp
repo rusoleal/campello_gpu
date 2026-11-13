@@ -30,6 +30,7 @@ namespace systems::leal::campello_gpu
     {
         friend class Device;
         friend class CommandEncoder;
+        friend class Surface;
         void *native;
         CommandBuffer(void *pd);
     public:

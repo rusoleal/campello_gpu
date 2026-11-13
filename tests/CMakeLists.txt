@@ -74,6 +74,7 @@ if(BUILD_INTEGRATION_TESTS AND NOT EMSCRIPTEN)
         platform/test_query_set.cpp
         platform/test_pipeline_layout.cpp
         platform/test_adapter.cpp
+        platform/test_surface.cpp
     )
     # Device::createTextureFromDmaBuf()/getSupportedDmaBufModifiers()/
     # getDrmDeviceNode() don't exist as symbols outside Linux/Vulkan (see
@@ -103,6 +104,10 @@ if(BUILD_INTEGRATION_TESTS AND NOT EMSCRIPTEN)
     set_target_properties(campello_gpu_integration_tests PROPERTIES
         CXX_STANDARD 20
     )
+    # test_surface.cpp uses AImageReader windows as headless ANativeWindows.
+    if(ANDROID)
+        target_link_libraries(campello_gpu_integration_tests mediandk android)
+    endif()
     # On Windows, campello_gpu is a DLL. Copy it next to the test binary so
     # CTest can find it when running test discovery and execution.
     if(WIN32)

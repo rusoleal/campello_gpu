@@ -31,6 +31,9 @@ CommandEncoder::CommandEncoder(void* pd) : native(pd) {}
 CommandEncoder::~CommandEncoder() {
     if (!native) return;
     auto* h = static_cast<CommandEncoderHandle*>(native);
+    // Never finished: none of its barriers will execute, so the Surface back
+    // buffers it began rendering into are still in PRESENT on the GPU.
+    for (TextureHandle* th : h->surfaceImages) th->currentState = D3D12_RESOURCE_STATE_PRESENT;
     // If finish() was not called the list is still open — close it.
     if (h->cmdList)   { h->cmdList->Close(); h->cmdList->Release(); }
     if (h->allocator) h->allocator->Release();
@@ -111,6 +114,10 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
                 th->currentState = D3D12_RESOURCE_STATE_RENDER_TARGET;
             }
             colorAttachmentTextures.push_back(th);
+            if (th->isSurfaceImage &&
+                std::find(h->surfaceImages.begin(), h->surfaceImages.end(), th) == h->surfaceImages.end()) {
+                h->surfaceImages.push_back(th);
+            }
 
             // MSAA resolve target -- the actual end-of-pass ResolveSubresource
             // call happens in RenderPassEncoder::end(), once the pass's draws
@@ -771,6 +778,21 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
             h->cmdList->ResourceBarrier(1, &barrier);
         }
     }
+
+    // Surface back buffers rendered in this encoder go back to PRESENT, the
+    // state Present() needs (see TextureHandle::isSurfaceImage).
+    for (TextureHandle* th : h->surfaceImages) {
+        if (th->currentState == D3D12_RESOURCE_STATE_PRESENT || !th->resource) continue;
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource   = th->resource;
+        barrier.Transition.StateBefore = th->currentState;
+        barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PRESENT;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        h->cmdList->ResourceBarrier(1, &barrier);
+        th->currentState = D3D12_RESOURCE_STATE_PRESENT;
+    }
+    h->surfaceImages.clear();
 
     if (FAILED(h->cmdList->Close())) return nullptr;
 

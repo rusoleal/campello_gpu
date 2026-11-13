@@ -9,6 +9,7 @@ add_library(${PROJECT_NAME} STATIC
     src/pi/utils.cpp
     src/webgpu/conversions.cpp
     src/webgpu/device.cpp
+    src/webgpu/surface.cpp
     src/webgpu/adapter.cpp
     src/webgpu/buffer.cpp
     src/webgpu/texture.cpp

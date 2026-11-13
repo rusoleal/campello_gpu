@@ -34,6 +34,7 @@
 #include <campello_gpu/constants/feature.hpp>
 #include <campello_gpu/metrics.hpp>
 #include <campello_gpu/fence.hpp>
+#include <campello_gpu/surface.hpp>
 #include <campello_gpu/cooperative_matrix_properties.hpp>
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <campello_gpu/platform/linux_dmabuf.hpp>
@@ -622,8 +623,34 @@ namespace systems::leal::campello_gpu
          *
          * @param nativeDrawable  Platform drawable handle — on macOS/iOS this is
          *                        `(__bridge void*)id<CAMetalDrawable>`.
+         *
+         * @note Deprecated in favour of `Surface` (`createSurface()`,
+         *       `Surface::schedulePresent()`), which ties a present to one
+         *       command buffer. This device-wide slot is shared by every
+         *       window and thread, so with several windows on separate raster
+         *       threads one could present another's drawable. Kept working for
+         *       single-window code.
          */
         void scheduleNextPresent(void* nativeDrawable);
+
+        /**
+         * @brief Creates a presentable surface (its own swapchain) for one
+         *        native window, sharing this device's queue and resources.
+         *
+         * Use one surface per window for multi-window apps. See `Surface` for
+         * the per-frame protocol and the native handle each backend expects.
+         *
+         * @param nativeWindow Backend-specific window/layer handle.
+         * @param width        Initial width in physical pixels (0 = derive
+         *                     from the native window where possible).
+         * @param height       Initial height in physical pixels (0 = derive
+         *                     from the native window where possible).
+         * @return The new surface, or `nullptr` if `nativeWindow` is null or
+         *         this backend doesn't implement surfaces yet.
+         */
+        std::shared_ptr<Surface> createSurface(void *nativeWindow,
+                                               uint32_t width  = 0,
+                                               uint32_t height = 0);
 
         /**
          * @brief Blocks the calling thread until all previously submitted commands
@@ -713,6 +740,11 @@ namespace systems::leal::campello_gpu
          *
          * @return A `TextureView` for the current back buffer, or `nullptr` if no
          *         swapchain is present.
+         *
+         * @note Deprecated in favour of `Surface::acquireNextTexture()`: a
+         *       device has at most one built-in swapchain, while a device can
+         *       have any number of surfaces (one per window). Kept working for
+         *       single-window code.
          */
         std::shared_ptr<TextureView> getSwapchainTextureView();
 

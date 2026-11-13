@@ -176,4 +176,19 @@ inline MTL::PixelFormat toMTLPixelFormat(MTL::Device *device, PixelFormat format
     return (MTL::PixelFormat)format;
 }
 
+// One per Surface. On Metal the "swapchain" is the CAMetalLayer's drawable
+// pool: acquireNextTexture() takes a drawable from it, and schedulePresent()
+// hands that drawable to one specific command buffer with presentDrawable:.
+// Each surface keeps its own state, so there is no device-wide slot (unlike
+// MetalDeviceData::pendingPresentDrawable), and two windows can't present each
+// other's drawables.
+struct MetalSurfaceData {
+    CA::MetalLayer    *layer    = nullptr;  // retained
+    CA::MetalDrawable *drawable = nullptr;  // retained; acquired but not yet presented
+    // The contract is one thread per surface. The mutex also makes it safe to
+    // destroy a surface on the UI thread while its raster thread acquires
+    // (window close), and costs nothing next to nextDrawable().
+    std::mutex mutex;
+};
+
 } // namespace systems::leal::campello_gpu

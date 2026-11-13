@@ -23,6 +23,7 @@ namespace systems::leal::campello_gpu
         uint32_t                 currentImageIndex;       ///< Set by beginRenderPass after acquire.
         bool                     swapchainImageAcquired = false; ///< True after the first acquire this frame.
         DeviceData*              deviceData = nullptr; ///< Back-pointer for updating shared state.
+        bool                     holdsFrameLock = false; ///< See DeviceData::acquireFrameLock(); moves to the CommandBuffer at finish().
         // Staging resources (e.g. TLAS instance buffers) transferred to CommandBufferHandle in finish().
         std::vector<VkBuffer>       stagingBuffers;
         std::vector<VkDeviceMemory> stagingMemories;

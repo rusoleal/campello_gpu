@@ -73,6 +73,11 @@ CommandEncoder::CommandEncoder(void *pd) {
 
 CommandEncoder::~CommandEncoder() {
     auto data = (CommandEncoderHandle *)this->native;
+    // Never finished: give up the recording slot (see DeviceData::acquireFrameLock()).
+    if (data->holdsFrameLock && data->deviceData) {
+        data->holdsFrameLock = false;
+        data->deviceData->releaseFrameLock();
+    }
     // Clean up query pool if it wasn't transferred to CommandBuffer
     if (data->timestampQueryPool != VK_NULL_HANDLE) {
         vkDestroyQueryPool(data->device, data->timestampQueryPool, nullptr);
@@ -125,76 +130,99 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
 
     const bool useTraditional = data->deviceData && !data->deviceData->hasDynamicRendering;
 
-    if (!hasExplicitView && data->swapchain != VK_NULL_HANDLE) {
+    // A Surface's swapchain image (Surface::acquireNextTexture()) is passed as
+    // an explicit view, but needs the swapchain treatment, not the offscreen
+    // one: PRESENT_SRC_KHR layout transitions and no TextureHandle layout
+    // tracking. It was already acquired by the surface, so unlike the
+    // device's legacy implicit swapchain below there is nothing to acquire.
+    auto *surfaceViewHandle = hasExplicitView
+        ? (TextureViewHandle *)descriptor.colorAttachments[0].view->native : nullptr;
+    const bool surfacePass = surfaceViewHandle && surfaceViewHandle->surface;
+    // The swapchain image view / format this pass renders into, from whichever
+    // swapchain it is (a Surface's, or the device's legacy one).
+    VkImageView swapchainAttachView = VK_NULL_HANDLE;
+    VkFormat    swapchainFormat     = VK_FORMAT_UNDEFINED;
+
+    if (surfacePass || (!hasExplicitView && data->swapchain != VK_NULL_HANDLE)) {
         // ── Swapchain path ────────────────────────────────────────────────────
         isSwapchain = true;
 
-        if (!data->swapchainImageAcquired) {
-            // First beginRenderPass this frame: acquire the swapchain image.
-            // Bounded timeout, not UINT64_MAX — see DeviceData::
-            // beginFrameRing()'s doc comment; VK_TIMEOUT here just means
-            // "skip this frame", same as a beginFrameRing() timeout.
-            uint32_t imageIndex = 0;
+        if (surfacePass) {
+            firstImage          = surfaceViewHandle->image;
+            renderExtent        = { surfaceViewHandle->width, surfaceViewHandle->height };
+            swapchainAttachView = surfaceViewHandle->imageView;
+            swapchainFormat     = surfaceViewHandle->format;
+        } else {
+            if (!data->swapchainImageAcquired) {
+                // First beginRenderPass this frame: acquire the swapchain image.
+                // Bounded timeout, not UINT64_MAX — see DeviceData::
+                // beginFrameRing()'s doc comment; VK_TIMEOUT here just means
+                // "skip this frame", same as a beginFrameRing() timeout.
+                uint32_t imageIndex = 0;
 
-            VkResult acquireResult = vkAcquireNextImageKHR(
-                data->device, data->swapchain, DeviceData::kWaitTimeoutNs,
-                data->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+                VkResult acquireResult = vkAcquireNextImageKHR(
+                    data->device, data->swapchain, DeviceData::kWaitTimeoutNs,
+                    data->imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
 
-            if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-                if (data->deviceData) {
-                    recreateSwapchain(data->deviceData);
-                }
-                return nullptr;
-            }
-            if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
-                return nullptr;
-            }
-
-            data->currentImageIndex = imageIndex;
-            // Mark the image acquired as soon as the acquire semaphore is
-            // actually signaled, not only once the whole block below
-            // (images-in-flight wait included) succeeds. finish() reads
-            // this to decide whether the resulting command buffer owns a
-            // pending swapchain image that MUST be submitted (even with an
-            // empty render pass) to consume that semaphore and signal this
-            // frame-ring slot's fence — see the caller-side comment in
-            // Renderer::rasterFrame() for why silently dropping it here
-            // deadlocks the whole ring.
-            data->swapchainImageAcquired = true;
-            if (data->deviceData) {
-                data->deviceData->currentImageIndex = imageIndex;
-
-                // "Images in flight" — see DeviceData::imagesInFlight's doc
-                // comment. The swapchain has more images than
-                // kFramesInFlight ring slots, so this specific image may
-                // still be owned by an older frame than the one
-                // beginFrameRing() (in Device::createCommandEncoder(),
-                // already run for this frame by this point) just confirmed
-                // done via the ring-slot fence — that fence alone doesn't
-                // prove THIS image is free. Wait for its actual owner too.
-                if (imageIndex < data->deviceData->imagesInFlight.size()) {
-                    VkFence owner = data->deviceData->imagesInFlight[imageIndex];
-                    if (owner != VK_NULL_HANDLE) {
-                        // Bounded timeout — see DeviceData::beginFrameRing()'s
-                        // doc comment. A timeout here just means bailing out
-                        // of this frame rather than hanging indefinitely;
-                        // deliberately not overwriting imagesInFlight[imageIndex]
-                        // below in that case, so the next attempt re-waits on
-                        // the same (still real) owner instead of silently
-                        // dropping track of it.
-                        if (vkWaitForFences(data->device, 1, &owner, VK_TRUE,
-                                            DeviceData::kWaitTimeoutNs) != VK_SUCCESS) {
-                            return nullptr;
-                        }
+                if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+                    if (data->deviceData) {
+                        recreateSwapchain(data->deviceData);
                     }
-                    data->deviceData->imagesInFlight[imageIndex] =
-                        data->deviceData->inFlightFences[data->frameGen];
+                    return nullptr;
+                }
+                if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+                    return nullptr;
+                }
+
+                data->currentImageIndex = imageIndex;
+                // Mark the image acquired as soon as the acquire semaphore is
+                // actually signaled, not only once the whole block below
+                // (images-in-flight wait included) succeeds. finish() reads
+                // this to decide whether the resulting command buffer owns a
+                // pending swapchain image that MUST be submitted (even with an
+                // empty render pass) to consume that semaphore and signal this
+                // frame-ring slot's fence — see the caller-side comment in
+                // Renderer::rasterFrame() for why silently dropping it here
+                // deadlocks the whole ring.
+                data->swapchainImageAcquired = true;
+                if (data->deviceData) {
+                    data->deviceData->currentImageIndex = imageIndex;
+
+                    // "Images in flight" — see DeviceData::imagesInFlight's doc
+                    // comment. The swapchain has more images than
+                    // kFramesInFlight ring slots, so this specific image may
+                    // still be owned by an older frame than the one
+                    // beginFrameRing() (in Device::createCommandEncoder(),
+                    // already run for this frame by this point) just confirmed
+                    // done via the ring-slot fence — that fence alone doesn't
+                    // prove THIS image is free. Wait for its actual owner too.
+                    if (imageIndex < data->deviceData->imagesInFlight.size()) {
+                        VkFence owner = data->deviceData->imagesInFlight[imageIndex];
+                        if (owner != VK_NULL_HANDLE) {
+                            // Bounded timeout — see DeviceData::beginFrameRing()'s
+                            // doc comment. A timeout here just means bailing out
+                            // of this frame rather than hanging indefinitely;
+                            // deliberately not overwriting imagesInFlight[imageIndex]
+                            // below in that case, so the next attempt re-waits on
+                            // the same (still real) owner instead of silently
+                            // dropping track of it.
+                            if (vkWaitForFences(data->device, 1, &owner, VK_TRUE,
+                                                DeviceData::kWaitTimeoutNs) != VK_SUCCESS) {
+                                return nullptr;
+                            }
+                        }
+                        data->deviceData->imagesInFlight[imageIndex] =
+                            data->deviceData->inFlightFences[data->frameGen];
+                    }
                 }
             }
-        }
 
-        firstImage   = data->swapchainImages[data->currentImageIndex];
-        renderExtent = data->imageExtent;
+            firstImage   = data->swapchainImages[data->currentImageIndex];
+            renderExtent = data->imageExtent;
+            swapchainAttachView = data->swapchainImageViews[data->currentImageIndex];
+            swapchainFormat     = data->deviceData ? data->deviceData->surfaceFormat.format
+                                                   : VK_FORMAT_UNDEFINED;
+        }
 
         if (!useTraditional) {
             // Dynamic rendering: transition the swapchain image to COLOR_ATTACHMENT_OPTIMAL.
@@ -377,8 +405,10 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
         const bool colorLoadClear = descriptor.colorAttachments.empty() ||
                                     descriptor.colorAttachments[0].loadOp == LoadOp::clear;
 
-        if (isSwapchain && depthFormat == VK_FORMAT_UNDEFINED) {
-            // Use the pre-built swapchain render pass and framebuffer.
+        if (isSwapchain && !surfacePass && depthFormat == VK_FORMAT_UNDEFINED) {
+            // Use the pre-built swapchain render pass and framebuffer (legacy
+            // implicit swapchain only; a Surface image goes through the cached
+            // render pass + transient framebuffer below, with PRESENT_SRC final layout).
             rp = colorLoadClear ? data->deviceData->swapchainRenderPassClear
                                 : data->deviceData->swapchainRenderPassLoad;
             fb = data->deviceData->swapchainFramebuffers[data->currentImageIndex];
@@ -399,7 +429,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             VkFormat colorFormat = VK_FORMAT_UNDEFINED;
             uint32_t colorSampleCount = 1;
             if (isSwapchain) {
-                colorFormat = data->deviceData->surfaceFormat.format;
+                colorFormat = swapchainFormat;
             } else if (!descriptor.colorAttachments.empty()) {
                 auto *cvh = (TextureViewHandle *)descriptor.colorAttachments[0].view->native;
                 colorFormat = cvh->format;
@@ -441,7 +471,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             uint32_t    attachCount = 0;
             if (!descriptor.colorAttachments.empty()) {
                 attachments[attachCount++] = isSwapchain
-                    ? data->swapchainImageViews[data->currentImageIndex]
+                    ? swapchainAttachView
                     : ((TextureViewHandle *)descriptor.colorAttachments[0].view->native)->imageView;
             }
             if (depthView != VK_NULL_HANDLE)
@@ -506,7 +536,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
         for (uint32_t a = 0; a < (uint32_t)descriptor.colorAttachments.size(); a++) {
             VkImageView attachView;
             if (isSwapchain) {
-                attachView = data->swapchainImageViews[data->currentImageIndex];
+                attachView = swapchainAttachView;
             } else {
                 auto *vh = (TextureViewHandle *)descriptor.colorAttachments[a].view->native;
                 attachView = vh->imageView;
@@ -1017,6 +1047,10 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbHandle->device             = data->device;
     cbHandle->commandPool        = data->commandPool;
     cbHandle->deviceData         = data->deviceData;
+    // The recording slot now belongs to the command buffer: released when
+    // it's submitted, or destroyed unsubmitted.
+    cbHandle->holdsFrameLock     = data->holdsFrameLock;
+    data->holdsFrameLock         = false;
     cbHandle->commandBuffer      = data->commandBuffer;
     cbHandle->graphicsQueue      = data->graphicsQueue;
     cbHandle->swapchain          = data->swapchain;

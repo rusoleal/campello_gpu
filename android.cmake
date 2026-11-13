@@ -8,6 +8,7 @@ add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
     src/vulkan/device.cpp
+    src/vulkan/surface.cpp
     src/vulkan/fence.cpp
     src/vulkan/adapter.cpp
     src/vulkan/buffer.cpp
@@ -32,7 +33,8 @@ add_library(${PROJECT_NAME} SHARED
 
 target_link_libraries(${PROJECT_NAME}
         Vulkan::Vulkan
-        log)
+        log
+        android)
 
 target_include_directories (${PROJECT_NAME} PUBLIC 
                             "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"

@@ -485,6 +485,11 @@ Device::~Device() {
     auto* d = static_cast<DeviceData*>(native);
     d->waitForGpu();
 
+    // Retire the frame ring while the fence still exists: a retained command
+    // buffer may hold the last reference to a Surface, whose destructor waits
+    // on that fence.
+    for (auto& cb : d->genCommandBuffer) cb.reset();
+
     if (d->fenceEvent) CloseHandle(d->fenceEvent);
     if (d->fence)      d->fence->Release();
 
@@ -1872,6 +1877,9 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         d->frameIndex = d->swapChain->GetCurrentBackBufferIndex();
     }
 
+    // Surface presents (Surface::schedulePresent()), queued after this list.
+    if (!h->surfacePresents.empty()) presentSurfaces(h, d->fenceValue + 1);
+
     // Signal (don't wait) — this frame's fence value is recorded against
     // its ring slot; beginFrameRing() waits for it, and reclaims this
     // generation's pending descriptor-heap slots, once this same slot comes
@@ -1910,6 +1918,9 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
         d->swapChain->Present(1, 0);
         d->frameIndex = d->swapChain->GetCurrentBackBufferIndex();
     }
+
+    // Surface presents (Surface::schedulePresent()), queued after this list.
+    if (!h->surfacePresents.empty()) presentSurfaces(h, d->fenceValue + 1);
 
     // Signal the per-fence object instead of the global device fence.
     if (signalFence && signalFence->native) {
