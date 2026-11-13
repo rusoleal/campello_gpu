@@ -14,6 +14,28 @@ namespace {
 
 constexpr DXGI_FORMAT kSurfaceFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 
+#if !CAMPELLO_DX_UWP
+// IsWindow()/IsIconic() are desktop-partition APIs, missing from the GDK
+// games partition (WINAPI_FAMILY_GAMES). There a window is trusted to exist
+// and a minimised one shows up as a 0x0 client rect (handled by callers).
+bool windowExists(HWND hwnd) {
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_GAMES
+    return hwnd != nullptr;
+#else
+    return IsWindow(hwnd) != FALSE;
+#endif
+}
+
+bool windowMinimised(HWND hwnd) {
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_GAMES
+    (void)hwnd;
+    return false;
+#else
+    return IsIconic(hwnd) != FALSE;
+#endif
+}
+#endif  // !CAMPELLO_DX_UWP
+
 std::shared_ptr<SurfaceData> &surfaceRef(void *native) {
     return *static_cast<std::shared_ptr<SurfaceData> *>(native);
 }
@@ -115,7 +137,7 @@ std::shared_ptr<Surface> Device::createSurface(void *pd, uint32_t width, uint32_
 #else
     if (!pd) return nullptr;
     HWND hwnd = static_cast<HWND>(pd);
-    if (!IsWindow(hwnd)) return nullptr;
+    if (!windowExists(hwnd)) return nullptr;
     auto *d = static_cast<DeviceData *>(native);
 
     auto s = std::make_shared<SurfaceData>();
@@ -182,7 +204,7 @@ std::shared_ptr<TextureView> Surface::acquireNextTexture() {
     if (!s->swapChain) return nullptr;
     if (s->acquired) return s->acquiredView;  // abandoned last frame: reuse it
 
-    if (!IsWindow(s->hwnd) || IsIconic(s->hwnd)) return nullptr;
+    if (!windowExists(s->hwnd) || windowMinimised(s->hwnd)) return nullptr;
     UINT w = 0, h = 0;
     targetSize(s, w, h);
     if (w == 0 || h == 0) return nullptr;  // minimised / zero-sized: skip
