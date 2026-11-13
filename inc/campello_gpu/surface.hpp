@@ -47,10 +47,16 @@ namespace systems::leal::campello_gpu
      *   - DirectX 12: `HWND`.
      *   - WebGPU: a `<canvas>` CSS selector string such as `"#canvas"`.
      *
-     * Backend status: implemented on Metal, Vulkan (Android and Linux) and
-     * WebGPU; a headless `createDefaultDevice(nullptr)` device can present
-     * through surfaces on all three. DirectX 12 returns `nullptr` from
-     * `Device::createSurface()` until its implementation lands.
+     * Backend status: implemented on Metal, Vulkan (Android and Linux),
+     * WebGPU and DirectX 12; a headless `createDefaultDevice(nullptr)` device
+     * can present through surfaces on all of them.
+     *
+     * DirectX 12 specifics: DXGI allows one flip-model swapchain per `HWND`,
+     * so `createSurface()` returns `nullptr` for a window that already has one
+     * (such as the swapchain of `createDefaultDevice(hwnd)`). The surface
+     * follows the window's client size unless an explicit size was given. A
+     * minimised window acquires nothing. Recording is not thread-safe across
+     * threads on this backend: encode surfaces from one thread at a time.
      *
      * WebGPU specifics: the swapchain size *is* the canvas drawing-buffer
      * size (`canvas.width`/`height`). `createSurface()` with a non-zero size

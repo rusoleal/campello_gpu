@@ -58,6 +58,9 @@ inline HRESULT createD3D12Device(IUnknown* adapter, ID3D12Device** device) {
     return hr;
 }
 
+class TextureView;
+struct SurfaceData;  // see "Per-Surface state" below
+
 // -----------------------------------------------------------------------
 // Central device state
 // -----------------------------------------------------------------------
@@ -890,6 +893,13 @@ struct TextureHandle {
     // state (RENDER_TARGET) ... is invalid for use as a
     // NON_PIXEL_SHADER_RESOURCE|PIXEL_SHADER_RESOURCE" without this.
     D3D12_RESOURCE_STATES currentState = D3D12_RESOURCE_STATE_COMMON;
+
+    // A Surface's swapchain back buffer (see SurfaceData), not a texture from
+    // Device::createTexture(). It starts each frame in PRESENT (== COMMON);
+    // beginRenderPass() moves it to RENDER_TARGET like any color attachment,
+    // but RenderPassEncoder::end() leaves it there (it is never sampled), and
+    // CommandEncoder::finish() returns it to PRESENT before the list closes.
+    bool isSurfaceImage = false;
 };
 
 enum class ViewType { SRV, UAV, RTV, DSV };
@@ -1009,6 +1019,9 @@ struct CommandEncoderHandle {
     ID3D12GraphicsCommandList* cmdList           = nullptr;
     DeviceData*                deviceData        = nullptr;
     std::vector<ID3D12Resource*> stagingResources; // freed after GPU completes (via CommandBuffer)
+    // Surface back buffers used as color attachments in this encoder; finish()
+    // transitions them back to PRESENT (see TextureHandle::isSurfaceImage).
+    std::vector<TextureHandle*> surfaceImages;
     
     // GPU timestamp query resources
     ID3D12QueryHeap*           timestampQueryHeap = nullptr;
@@ -1070,6 +1083,11 @@ struct CommandBufferHandle {
     ID3D12CommandAllocator*    allocator         = nullptr;
     DeviceData*                deviceData        = nullptr;
     std::vector<ID3D12Resource*> stagingResources; // upload-heap buffers kept alive until GPU completes
+    // Surfaces to Present() right after this command list executes
+    // (Surface::schedulePresent()). Holding the SurfaceData keeps its
+    // swapchain alive until the frame ring retires this command buffer, so a
+    // window closed between schedulePresent() and the GPU finishing is safe.
+    std::vector<std::shared_ptr<SurfaceData>> surfacePresents;
     
     // GPU timing data
     ID3D12QueryHeap*           timestampQueryHeap = nullptr;
@@ -1079,6 +1097,71 @@ struct CommandBufferHandle {
     bool                       hasTimingData = false;
     double                     timestampFrequency = 0.0;  // Ticks per second
 };
+
+// -----------------------------------------------------------------------
+// Per-Surface state (Surface API: one swapchain per HWND, shared queue)
+// -----------------------------------------------------------------------
+/**
+ * One `IDXGISwapChain3` (flip model) per window, created on the device's
+ * single direct queue, plus its own back buffers and RTV heap. Completely
+ * independent from the device's legacy implicit swapchain
+ * (DeviceData::swapChain from createDefaultDevice(hwnd)), which is untouched.
+ *
+ * Per frame:
+ *   acquireNextTexture(): resizes the buffers if the requested size changed,
+ *     then returns a view on GetCurrentBackBufferIndex(). No CPU wait: the
+ *     queue is in order, so commands that render into a back buffer always
+ *     run after the Present() that last showed it.
+ *   beginRenderPass(): PRESENT -> RENDER_TARGET (TextureHandle::currentState).
+ *   CommandEncoder::finish(): RENDER_TARGET -> PRESENT.
+ *   schedulePresent(cmd): moves the acquisition into
+ *     CommandBufferHandle::surfacePresents.
+ *   Device::submit(cmd): ExecuteCommandLists, then Present() each surface.
+ *
+ * An abandoned acquisition (no schedulePresent()) is simply returned again
+ * by the next acquireNextTexture(): the back buffer index only advances on
+ * Present().
+ *
+ * Threading: one thread drives a surface. `mutex` guards it against the
+ * submitting thread and destruction. Recording on the DX12 backend is not
+ * thread-safe across threads (one frame ring per device), so callers must
+ * encode one window at a time (campello_widgets' Windows runner does all of
+ * it on the UI thread).
+ */
+struct SurfaceData {
+    static constexpr UINT kBufferCount = 2;
+
+    DeviceData*      deviceData = nullptr;
+    HWND             hwnd       = nullptr;
+    IDXGISwapChain3* swapChain  = nullptr;
+    ID3D12DescriptorHeap* rtvHeap = nullptr;
+    UINT             rtvDescSize = 0;
+    ID3D12Resource*  buffers[kBufferCount] = {};
+    TextureHandle    bufferHandles[kBufferCount];  // state tracking per back buffer
+    UINT             width  = 0;
+    UINT             height = 0;
+    // Size asked for by createSurface()/resize(); 0 = follow the client rect.
+    UINT             requestedWidth  = 0;
+    UINT             requestedHeight = 0;
+
+    bool             acquired      = false;
+    UINT             acquiredIndex = 0;
+    std::shared_ptr<TextureView> acquiredView;
+
+    // Device fence value of the last submit that presented this surface.
+    UINT64           lastSubmitFence = 0;
+    bool             occluded        = false;  // last Present() said DXGI_STATUS_OCCLUDED
+
+    std::mutex       mutex;
+
+    bool createBuffers();   // GetBuffer + RTVs for the current swapchain
+    void releaseBuffers();
+    ~SurfaceData();
+};
+
+// Device::submit(): Present()s every surface scheduled on `cb`, after its
+// command list has been executed. Defined in surface.cpp.
+void presentSurfaces(CommandBufferHandle* cb, UINT64 submitFenceValue);
 
 /**
  * @brief Per-Fence DirectX 12 state.
