@@ -348,6 +348,8 @@ void CommandEncoder::buildAccelerationStructure(
     auto [instanceDesc, instanceBuf] = makeInstanceASDescriptor(dev, descriptor, asToMTLData);
     if (!instanceDesc) { asEncoder->endEncoding(); return; }
 
+    // The instances may differ from creation: these are now the ones to keep resident.
+    static_cast<MetalAccelerationStructureData *>(dst->native)->setInstanced(instancedStructures(descriptor, asToMTLData));
     auto *scratchHandle = static_cast<MetalBufferHandle *>(scratchBuffer->native);
     asEncoder->buildAccelerationStructure(
         mtlAs,

@@ -74,8 +74,10 @@ void RayTracingPassEncoder::setBindGroup(uint32_t index,
             const auto &asPtr = std::get<std::shared_ptr<AccelerationStructure>>(entry.resource);
             if (!asPtr || !asPtr->native) continue;
             auto *asData = static_cast<MetalAccelerationStructureData *>(asPtr->native);
-            if (asData && asData->accelerationStructure)
+            if (asData && asData->accelerationStructure) {
                 enc->setAccelerationStructure(asData->accelerationStructure, entry.binding);
+                asData->useIn(enc);
+            }
         } else if (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource)) {
             const auto &texPtr = std::get<std::shared_ptr<Texture>>(entry.resource);
             if (!texPtr || !texPtr->native) continue;

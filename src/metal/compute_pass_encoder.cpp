@@ -5,6 +5,8 @@
 #include <campello_gpu/bind_group.hpp>
 #include "bind_group_data.hpp"
 #include "buffer_handle.hpp"
+#include "acceleration_structure_handle.hpp"
+#include <campello_gpu/acceleration_structure.hpp>
 
 using namespace systems::leal::campello_gpu;
 
@@ -83,6 +85,14 @@ void ComputePassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup>
             data->encoder->setBuffer(handle->buffer,
                                      static_cast<NS::UInteger>(bb->offset),
                                      static_cast<NS::UInteger>(entry.binding));
+        } else if (const auto* as = std::get_if<std::shared_ptr<AccelerationStructure>>(&entry.resource)) {
+            // Ray queries from compute: the structure and its instances' structures.
+            if (!*as || !(*as)->native) continue;
+            auto *asData = static_cast<MetalAccelerationStructureData *>((*as)->native);
+            if (!asData->accelerationStructure) continue;
+            data->encoder->setAccelerationStructure(asData->accelerationStructure,
+                                                    static_cast<NS::UInteger>(entry.binding));
+            asData->useIn(data->encoder);
         }
     }
 }

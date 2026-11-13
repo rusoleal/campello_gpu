@@ -11,6 +11,15 @@ All notable changes to campello_gpu are documented here.
 
 ### Fixed
 - **Vulkan `Surface` on Android after rotation/resize**: swapchains are now sized from the `ANativeWindow` (its current size) instead of `currentExtent`, which can still report the old size when the resize is handled; Android never reports such a swapchain out of date, so frames stayed cropped after rotating.
+
+## [0.28.2] - 2026-11-12
+
+### Fixed
+- **Metal: instanced acceleration structures weren't made resident.** A top-level acceleration structure bound to a ray tracing (or compute) pass reaches its instances' bottom-level structures by address, and Metal requires each one to be declared with `useResource()`; only the top level was bound. Rays hit the geometry only while the system happened to keep the bottom levels resident, and missed everything once memory pressure paged them out (found with campello_renderer's path tracer after Intel Open Image Denoise allocated large CPU buffers). Top levels now remember their instances' structures (at creation and each build) and passes that bind them `useResource()` them all. Compute passes now also bind acceleration structures from bind groups (ray queries).
+
+## [0.28.1] - 2026-11-11
+
+### Fixed
 - **Vulkan: `copyBufferToTexture()` ignored `bytesPerRow`** (always tightly packed), so padded rows (e.g. to the 256-byte alignment WebGPU requires) were read skewed. It now sets `bufferRowLength` for uncompressed formats.
 - **Vulkan: anisotropic filtering overrode nearest filtering** (`maxAnisotropy > 1` with nearest filters filtered linearly; Metal ignores it). Anisotropy is now enabled only when both filters are linear.
 - **Vulkan: depth-only render passes** (no color attachment, e.g. a shadow map) rendered over 1x1 pixels: the render area came from the color attachment only. It now comes from the depth attachment when there's no color attachment.
