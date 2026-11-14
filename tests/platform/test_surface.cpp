@@ -1384,7 +1384,7 @@ TEST(Surface, SurfaceRetainedByTheFrameRingIsReleasedWithTheDevice) {
     SUCCEED();
 }
 
-#elif defined(__linux__)
+#elif defined(__linux__) && defined(CAMPELLO_GPU_TEST_LINUX_WSI)
 
 // Vulkan on Linux desktop, through both window systems campello_widgets
 // uses. Each section skips when its display server isn't reachable, so the
@@ -2037,6 +2037,12 @@ TEST(Surface, WaylandDestroyingSurfaceWithPendingPresentIsSafe) {
     device->submit(cmd);
     device->waitForIdle();
     SUCCEED();
+}
+
+#elif defined(__linux__)
+
+TEST(Surface, LinuxWindowTestsNotBuilt) {
+    GTEST_SKIP() << "built without libx11-dev / libwayland-dev: no Linux Surface tests";
 }
 
 #else  // no other backend
