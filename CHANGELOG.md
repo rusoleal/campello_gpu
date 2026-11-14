@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-14
+
 ### Fixed
 - **Vulkan `Surface` on Linux always failed:** `createSurface(LinuxSurfaceInfo*)` returned `nullptr` for every X11 and Wayland window. `surface.cpp` checked `CAMPELLO_GPU_X11` / `CAMPELLO_GPU_WAYLAND` with `#if`, but only `device.cpp` defined them, so both platforms were compiled out. They now come from a header both files include (`src/vulkan/linux_wsi.hpp`). The legacy `createDefaultDevice(&surfaceInfo)` swapchain was never affected.
 
