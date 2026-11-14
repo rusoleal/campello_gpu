@@ -108,6 +108,18 @@ if(BUILD_INTEGRATION_TESTS AND NOT EMSCRIPTEN)
     if(ANDROID)
         target_link_libraries(campello_gpu_integration_tests mediandk android)
     endif()
+    # test_surface.cpp drives real X11 windows and Wayland xdg_toplevels on
+    # Linux (each half skips when its display server isn't reachable).
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(SURFACE_TEST_WSI REQUIRED x11 wayland-client)
+        enable_language(C)
+        target_sources(campello_gpu_integration_tests PRIVATE
+            platform/protocols/xdg-shell-protocol.c)
+        target_include_directories(campello_gpu_integration_tests PRIVATE
+            ${SURFACE_TEST_WSI_INCLUDE_DIRS})
+        target_link_libraries(campello_gpu_integration_tests ${SURFACE_TEST_WSI_LIBRARIES})
+    endif()
     # On Windows, campello_gpu is a DLL. Copy it next to the test binary so
     # CTest can find it when running test discovery and execution.
     if(WIN32)

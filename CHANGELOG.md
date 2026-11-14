@@ -4,6 +4,13 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **Vulkan `Surface` on Linux always failed:** `createSurface(LinuxSurfaceInfo*)` returned `nullptr` for every X11 and Wayland window. `surface.cpp` checked `CAMPELLO_GPU_X11` / `CAMPELLO_GPU_WAYLAND` with `#if`, but only `device.cpp` defined them, so both platforms were compiled out. They now come from a header both files include (`src/vulkan/linux_wsi.hpp`). The legacy `createDefaultDevice(&surfaceInfo)` swapchain was never affected.
+
+### Tests
+- **Linux Surface tests** (`tests/platform/test_surface.cpp`): 11 X11 tests on real windows that read back presented pixels with `XGetImage`, and 7 Wayland tests on real `xdg_toplevel`s that check sizes and frame callbacks. Covered: interleaved windows, one command buffer presenting two windows, resize, a surface destroyed with a pending present, two raster threads, and a hidden window (unmapped X11 window, Wayland surface without a role) that must not stall a visible one. Each half skips when its display server isn't reachable. The tests use a vendored, generated `xdg-shell` protocol (`tests/platform/protocols/`). Verified on Intel (Mesa ANV) under GNOME Wayland and XWayland, on lavapipe, and on Xvfb + lavapipe (Ubuntu 24.04).
+- Finding: with `FIFO` presentation, an unmapped X11 window's presents stalled a visible window on another thread for about 2 minutes. Surfaces use `MAILBOX` when the driver offers it, which avoids this, but a driver without `MAILBOX` would hit it. Apps should stop drawing windows that aren't shown.
+
 ## [0.29.0] - 2026-11-13
 
 ### Added

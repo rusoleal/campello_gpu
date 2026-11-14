@@ -5,25 +5,8 @@
 #include <vulkan/vulkan.h>
 #ifdef __ANDROID__
 #include <vulkan/vulkan_android.h>
-#else
-#include <campello_gpu/platform/linux_surface.hpp>
-#if __has_include(<X11/Xlib.h>)
-#include <X11/Xlib.h>
-#include <vulkan/vulkan_xlib.h>
-#define CAMPELLO_GPU_X11 1
-#else
-#define CAMPELLO_GPU_X11 0
 #endif
-#if __has_include(<wayland-client.h>)
-#include <wayland-client.h>
-#include <vulkan/vulkan_wayland.h>
-#define CAMPELLO_GPU_WAYLAND 1
-#else
-#define CAMPELLO_GPU_WAYLAND 0
-struct wl_display;
-struct wl_surface;
-#endif
-#endif
+#include "linux_wsi.hpp"
 #include "campello_gpu_config.h"
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/validation_diagnostics.hpp>
