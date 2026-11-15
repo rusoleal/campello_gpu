@@ -697,6 +697,38 @@
 - [x] Add a minimal raytracing example in `examples/android/` — `RaytracingDemo.h/.cpp` (single-triangle BLAS→TLAS→RT pipeline, SPIR-V shaders, writes to storage texture via traceRays)
 - [x] Add a minimal raytracing example in `examples/apple/` — `RaytracingDemo.h/.mm` + `RaytracingShaders.metal` (same flow using Metal raytracing kernel)
 
+### Future — emulated ray tracing on WebGPU (compute)
+> WebGPU has no ray tracing today, so the web backend reports no `Feature::raytracing`
+> (see the WebGPU section). Metal already shows it can be done without RT hardware:
+> `supportsRaytracing()` is true on Intel UHD 630 / AMD Macs, where Metal runs BVH traversal
+> and intersection in ordinary compute code. The same works on WebGPU in WGSL compute.
+> Not scheduled. Decide first whether to do it.
+- [ ] Emulate **ray queries** (inline `traceRay(as, ray) -> Hit`, like Metal's intersector /
+      Vulkan `rayQuery`), not the RT pipeline. The pipeline model (ray generation, miss and
+      hit shaders + shader binding table) would need all shaders merged into one compute
+      shader, since WGSL can't call another shader; not worth it
+- [ ] Acceleration structures as storage buffers: BLAS = BVH (wide nodes, compact layout), built on
+      the CPU first (GPU compute build later); TLAS = instances with transforms over BLASes.
+      Map the existing `createBottom/TopLevelAccelerationStructure()` API onto it
+- [ ] WGSL traversal library: iterative stack (no recursion), ray–box and ray–triangle tests,
+      instance transform into object space
+- [ ] Detection: inside the browser there's no access to the native API (`supportsRaytracing`,
+      DXR tier, Vulkan extensions), and `GPUAdapterInfo` is coarsened for privacy, so whether the
+      GPU has RT hardware can't be known. The emulation runs on any WebGPU device. Report it as
+      "RT API available (emulated)", and leave the use/don't-use decision to the app, based on
+      measured timing (calibration samples via `timestamp-query` / wall clock)
+- [ ] Consider splitting the feature: `raytracing` = API available (possibly emulated, which
+      Metal on Intel/AMD already is) vs `hardwareRaytracing` = real RT hardware (DXR, Vulkan KHR,
+      Metal `GPUFamilyApple9`+, a future native WebGPU feature). Fix the `Feature::raytracing`
+      doc comment ("Hardware-accelerated") to match either way
+- [ ] Robustness: split work into small dispatches (tiles, few bounces) so slow GPUs don't hit the
+      browser/OS GPU watchdog (device lost); check BVH size against the storage buffer limits;
+      keep everything in compute (compatibility mode limits storage buffers in other stages)
+- [ ] Track the official spec: gpuweb#11054 (acceleration structures, open since 2026-10),
+      gpuweb#11055 / #11056 (WGSL ray query), gpuweb#535 (full ray tracing). If they ship in
+      Dawn/browsers, use the native feature where present and keep the compute path as the fallback
+      behind the same interface
+
 ## Cooperative Matrix Multiply
 
 > Hardware-accelerated small-tile matrix multiply-accumulate, exposed differently per
