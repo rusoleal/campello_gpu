@@ -1,3 +1,4 @@
+#include "linux_wsi.hpp"  // first: defines CAMPELLO_GPU_X11 / CAMPELLO_GPU_WAYLAND
 #include <campello_gpu/surface.hpp>
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/texture_view.hpp>

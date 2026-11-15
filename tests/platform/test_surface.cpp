@@ -27,6 +27,8 @@
 #include <mutex>
 #include <thread>
 #include <tuple>
+#include <cstring>
+#include <algorithm>
 #include <vector>
 
 using namespace systems::leal::campello_gpu;
@@ -1382,13 +1384,673 @@ TEST(Surface, SurfaceRetainedByTheFrameRingIsReleasedWithTheDevice) {
     SUCCEED();
 }
 
-#else  // neither Apple, Android, Windows nor the web
+#elif defined(__linux__) && defined(CAMPELLO_GPU_TEST_LINUX_WSI)
+
+// Vulkan on Linux desktop, through both window systems campello_widgets
+// uses. Each section skips when its display server isn't reachable, so the
+// suite runs unchanged on a headless CI box (Xvfb gives the X11 half).
+//
+// X11: real windows; the presented pixels are read back with XGetImage
+// (works on Xvfb, with Mesa's software WSI, and on XWayland).
+// Wayland: real xdg_toplevels. A client can't read back what the compositor
+// shows, so these check sizes, return codes, frame callbacks (the compositor
+// received a new buffer) and that a hidden window never stalls another.
+
+#include <campello_gpu/platform/linux_surface.hpp>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <wayland-client.h>
+#include "protocols/xdg-shell-client-protocol.h"
+#include <poll.h>
+#include <chrono>
+#include <cstdlib>
+
+namespace {
+
+using SteadyClock = std::chrono::steady_clock;
+long long elapsedMs(SteadyClock::time_point since) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(SteadyClock::now() - since).count();
+}
+
+constexpr uint32_t kRed   = 0xFF0000FFu;
+constexpr uint32_t kGreen = 0x00FF00FFu;
+constexpr uint32_t kBlue  = 0x0000FFFFu;
+
+std::shared_ptr<CommandBuffer> clearPass(Device &device, const std::shared_ptr<TextureView> &view,
+                                         float r, float g, float b) {
+    auto encoder = device.createCommandEncoder();
+    if (!encoder) return nullptr;
+    BeginRenderPassDescriptor rp{};
+    ColorAttachment ca{};
+    ca.view    = view;
+    ca.loadOp  = LoadOp::clear;
+    ca.storeOp = StoreOp::store;
+    ca.clearValue[0] = r; ca.clearValue[1] = g; ca.clearValue[2] = b; ca.clearValue[3] = 1;
+    rp.colorAttachments.push_back(ca);
+    auto pass = encoder->beginRenderPass(rp);
+    if (!pass) return nullptr;
+    pass->end();
+    return encoder->finish();
+}
+
+bool presentClear(Device &device, Surface &surface, float r, float g, float b,
+                  std::shared_ptr<Fence> fence = nullptr) {
+    auto view = surface.acquireNextTexture();
+    if (!view) return false;
+    auto cmd = clearPass(device, view, r, g, b);
+    if (!cmd || !surface.schedulePresent(cmd)) return false;
+    if (fence) device.submit(cmd, fence); else device.submit(cmd);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// X11
+// ---------------------------------------------------------------------------
+
+// One connection for the whole suite. Opening and closing a Display per test
+// is slow on XWayland, and Mesa's X11 WSI keeps per-connection state.
+Display *x11Display() {
+    static Display *dpy = [] {
+        XInitThreads();  // raster threads present while the test thread reads back
+        return XOpenDisplay(nullptr);
+    }();
+    return dpy;
+}
+
+struct X11Window {
+    Display         *dpy = nullptr;
+    Window           win = 0;
+    int              width = 0, height = 0;
+    LinuxSurfaceInfo info{};
+
+    X11Window(int w, int h) : dpy(x11Display()), width(w), height(h) {
+        if (!dpy) return;
+        XSetWindowAttributes swa{};
+        swa.event_mask       = StructureNotifyMask | ExposureMask;
+        swa.background_pixel = BlackPixel(dpy, DefaultScreen(dpy));
+        // Side by side: without a window manager (Xvfb) every window would
+        // open at 0,0, and XGetImage on a covered window returns the pixels
+        // of the window on top of it.
+        static int next = 0;
+        const int x = (next++ % 8) * 120;
+        win = XCreateWindow(dpy, DefaultRootWindow(dpy), x, 0, w, h, 0, CopyFromParent,
+                            InputOutput, CopyFromParent, CWEventMask | CWBackPixel, &swa);
+        XStoreName(dpy, win, "campello_gpu Surface test");
+        pinSize(w, h);
+        XMapWindow(dpy, win);
+        waitFor(MapNotify);
+        info.display = dpy;
+        info.window  = reinterpret_cast<void *>(static_cast<uintptr_t>(win));
+        info.api     = LinuxWindowApi::x11;
+    }
+    ~X11Window() {
+        if (dpy && win) { XDestroyWindow(dpy, win); XSync(dpy, False); }
+    }
+
+    // A window manager may resize a new window (minimum sizes, tiling):
+    // pin it to exactly the size the test asked for.
+    void pinSize(int w, int h) {
+        XSizeHints *hints = XAllocSizeHints();
+        hints->flags      = PMinSize | PMaxSize;
+        hints->min_width  = hints->max_width  = w;
+        hints->min_height = hints->max_height = h;
+        XSetWMNormalHints(dpy, win, hints);
+        XFree(hints);
+    }
+
+    // Waits for an event of `type` (and, if given, matching `accept`).
+    template <typename Accept>
+    bool waitFor(int type, Accept accept, int timeoutMs = 2000) {
+        auto start = SteadyClock::now();
+        XEvent ev;
+        while (elapsedMs(start) < timeoutMs) {
+            if (XCheckTypedWindowEvent(dpy, win, type, &ev)) {
+                if (accept(ev)) return true;
+                continue;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return false;
+    }
+    bool waitFor(int type) { return waitFor(type, [](const XEvent &) { return true; }); }
+
+    // Resizes and waits until the window manager has applied it: the first
+    // ConfigureNotify after the request can still carry the old size.
+    bool resize(int w, int h) {
+        width = w; height = h;
+        pinSize(w, h);
+        XResizeWindow(dpy, win, w, h);
+        XSync(dpy, False);
+        return waitFor(ConfigureNotify, [&](const XEvent &ev) {
+            return ev.xconfigure.width == w && ev.xconfigure.height == h;
+        });
+    }
+
+    // A pixel well inside the window as 0xRRGGBBAA (opaque), or 0 if it
+    // can't be read.
+    uint32_t centrePixel() {
+        XImage *img = XGetImage(dpy, win, width / 3, height / 3, 1, 1, AllPlanes, ZPixmap);
+        if (!img) return 0;
+        const unsigned long p = XGetPixel(img, 0, 0);
+        XDestroyImage(img);
+        return (uint32_t(p & 0xFFFFFFu) << 8) | 0xFFu;
+    }
+
+    // Presentation completes asynchronously (the X server or compositor
+    // copies the image after the GPU is done): wait for `expected`, and
+    // return whatever was last read if it never shows.
+    uint32_t waitForPixel(uint32_t expected, int timeoutMs = 2000) {
+        auto start = SteadyClock::now();
+        uint32_t last = 0;
+        while (elapsedMs(start) < timeoutMs) {
+            last = centrePixel();
+            if (last == expected) return last;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return last;
+    }
+};
+
+#define REQUIRE_X11()                                                        \
+    if (!x11Display()) GTEST_SKIP() << "no X display (DISPLAY unset?)";     \
+    auto device = Device::createDefaultDevice(nullptr);                      \
+    if (!device) GTEST_SKIP() << "no GPU device"
+
+} // namespace
+
+TEST(Surface, X11CreateReportsWindowSizeAndFormat) {
+    REQUIRE_X11();
+    X11Window win(64, 48);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    EXPECT_EQ(surface->getWidth(), 64u);
+    EXPECT_EQ(surface->getHeight(), 48u);
+    auto fmt = surface->getPixelFormat();
+    EXPECT_TRUE(fmt == PixelFormat::bgra8unorm || fmt == PixelFormat::rgba8unorm)
+        << "format " << (int)fmt;
+}
+
+TEST(Surface, X11PresentDeliversRenderedPixels) {
+    REQUIRE_X11();
+    X11Window win(64, 64);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+
+    auto fence = device->createFence();
+    ASSERT_TRUE(presentClear(*device, *surface, 1, 0, 0, fence));
+    fence->wait();
+    EXPECT_EQ(win.waitForPixel(kRed), kRed);
+
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 1, 0));  // fence-less overload
+    EXPECT_EQ(win.waitForPixel(kGreen), kGreen);
+}
+
+TEST(Surface, X11SchedulePresentWithoutAcquireIsNoop) {
+    REQUIRE_X11();
+    X11Window win(16, 16);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    auto encoder = device->createCommandEncoder();
+    auto cmd = encoder->finish();
+    EXPECT_FALSE(surface->schedulePresent(cmd));
+    device->submit(cmd);
+}
+
+TEST(Surface, X11AbandonedAcquireIsReturnedAgain) {
+    REQUIRE_X11();
+    X11Window win(32, 32);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    auto first  = surface->acquireNextTexture();
+    ASSERT_NE(first, nullptr);
+    auto second = surface->acquireNextTexture();
+    EXPECT_EQ(first.get(), second.get());
+    auto cmd = clearPass(*device, second, 0, 0, 1);
+    ASSERT_NE(cmd, nullptr);
+    ASSERT_TRUE(surface->schedulePresent(cmd));
+    device->submit(cmd);
+    EXPECT_EQ(win.waitForPixel(kBlue), kBlue);
+}
+
+TEST(Surface, X11ManyFramesCycleSlotsWithoutStalling) {
+    REQUIRE_X11();
+    X11Window win(32, 32);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    auto start = SteadyClock::now();
+    for (int i = 0; i < 240; ++i) {
+        const bool red = (i % 2) == 0;
+        ASSERT_TRUE(presentClear(*device, *surface, red ? 1 : 0, 0, red ? 0 : 1)) << "frame " << i;
+    }
+    device->waitForIdle();
+    EXPECT_LT(elapsedMs(start), 10000) << "frames are stalling";
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 1, 0));
+    EXPECT_EQ(win.waitForPixel(kGreen), kGreen);
+}
+
+TEST(Surface, X11WindowResizeIsFollowed) {
+    // X11 reports currentExtent, so the swapchain follows the window once
+    // the app calls resize() (or the present reports OUT_OF_DATE).
+    REQUIRE_X11();
+    X11Window win(32, 32);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    ASSERT_TRUE(presentClear(*device, *surface, 1, 0, 0));
+    EXPECT_EQ(win.waitForPixel(kRed), kRed);
+
+    ASSERT_TRUE(win.resize(96, 80)) << "the window manager didn't apply the resize";
+    surface->resize(96, 80);
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 0, 1));
+    EXPECT_EQ(surface->getWidth(), 96u);
+    EXPECT_EQ(surface->getHeight(), 80u);
+    EXPECT_EQ(win.waitForPixel(kBlue), kBlue);
+}
+
+TEST(Surface, X11TwoSurfacesPresentTheirOwnContent) {
+    REQUIRE_X11();
+    X11Window winA(32, 32), winB(48, 24);
+    auto surfA = device->createSurface(&winA.info);
+    auto surfB = device->createSurface(&winB.info);
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+    for (int i = 0; i < 20; ++i) {
+        const bool flip = (i % 2) == 1;  // swap colours every frame
+        ASSERT_TRUE(presentClear(*device, *surfA, flip ? 0 : 1, 0, flip ? 1 : 0)) << "A frame " << i;
+        ASSERT_TRUE(presentClear(*device, *surfB, flip ? 1 : 0, 0, flip ? 0 : 1)) << "B frame " << i;
+        const uint32_t a = flip ? kBlue : kRed, b = flip ? kRed : kBlue;
+        EXPECT_EQ(winA.waitForPixel(a), a) << "A frame " << i;
+        EXPECT_EQ(winB.waitForPixel(b), b) << "B frame " << i;
+    }
+}
+
+TEST(Surface, X11OneCommandBufferPresentsTwoSurfaces) {
+    REQUIRE_X11();
+    X11Window winA(32, 32), winB(32, 32);
+    auto surfA = device->createSurface(&winA.info);
+    auto surfB = device->createSurface(&winB.info);
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+    for (int i = 0; i < 6; ++i) {
+        auto viewA = surfA->acquireNextTexture();
+        auto viewB = surfB->acquireNextTexture();
+        ASSERT_NE(viewA, nullptr);
+        ASSERT_NE(viewB, nullptr);
+        auto encoder = device->createCommandEncoder();
+        ASSERT_NE(encoder, nullptr);
+        for (auto [view, r, b] : {std::tuple{viewA, 1.f, 0.f}, std::tuple{viewB, 0.f, 1.f}}) {
+            BeginRenderPassDescriptor rp{};
+            ColorAttachment ca{};
+            ca.view = view; ca.loadOp = LoadOp::clear; ca.storeOp = StoreOp::store;
+            ca.clearValue[0] = r; ca.clearValue[1] = 0; ca.clearValue[2] = b; ca.clearValue[3] = 1;
+            rp.colorAttachments.push_back(ca);
+            auto pass = encoder->beginRenderPass(rp);
+            ASSERT_NE(pass, nullptr);
+            pass->end();
+        }
+        auto cmd = encoder->finish();
+        ASSERT_TRUE(surfA->schedulePresent(cmd));
+        ASSERT_TRUE(surfB->schedulePresent(cmd));
+        device->submit(cmd);
+        EXPECT_EQ(winA.waitForPixel(kRed), kRed)   << "frame " << i;
+        EXPECT_EQ(winB.waitForPixel(kBlue), kBlue) << "frame " << i;
+    }
+}
+
+TEST(Surface, X11DestroyingSurfaceWithPendingPresentIsSafe) {
+    REQUIRE_X11();
+    X11Window win(16, 16);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    auto view = surface->acquireNextTexture();
+    ASSERT_NE(view, nullptr);
+    auto cmd = clearPass(*device, view, 1, 0, 0);
+    ASSERT_TRUE(surface->schedulePresent(cmd));
+    view.reset();
+    surface.reset();
+    device->submit(cmd);
+    device->waitForIdle();
+    EXPECT_EQ(win.waitForPixel(kRed), kRed);
+}
+
+TEST(Surface, X11TwoRasterThreadsDriveTwoWindowsConcurrently) {
+    REQUIRE_X11();
+    X11Window winA(32, 32), winB(48, 24);
+    auto surfA = device->createSurface(&winA.info);
+    auto surfB = device->createSurface(&winB.info);
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+
+    constexpr int kFrames = 300;
+    std::atomic<int> failuresA{0}, failuresB{0};
+    auto raster = [&](Surface &surface, float r, float b, std::atomic<int> &failures) {
+        for (int i = 0; i < kFrames; ++i)
+            if (!presentClear(*device, surface, r, 0, b)) ++failures;
+    };
+    auto start = SteadyClock::now();
+    std::thread a([&] { raster(*surfA, 1, 0, failuresA); });
+    std::thread b([&] { raster(*surfB, 0, 1, failuresB); });
+    a.join();
+    b.join();
+    device->waitForIdle();
+    EXPECT_EQ(failuresA.load(), 0);
+    EXPECT_EQ(failuresB.load(), 0);
+    EXPECT_LT(elapsedMs(start), 20000) << "raster threads stalled each other";
+    EXPECT_EQ(winA.waitForPixel(kRed), kRed);
+    EXPECT_EQ(winB.waitForPixel(kBlue), kBlue);
+}
+
+TEST(Surface, X11UnmappedWindowDoesNotStallAnother) {
+    // A minimised (unmapped) window keeps being drawn by an app that hasn't
+    // noticed yet. With several raster threads sharing the device's
+    // recording lock, a present that blocks would stop every window.
+    REQUIRE_X11();
+    X11Window shown(32, 32), hidden(32, 32);
+    auto surfShown  = device->createSurface(&shown.info);
+    auto surfHidden = device->createSurface(&hidden.info);
+    ASSERT_NE(surfShown, nullptr);
+    ASSERT_NE(surfHidden, nullptr);
+    XUnmapWindow(hidden.dpy, hidden.win);
+    XSync(hidden.dpy, False);
+
+    std::atomic<bool> stop{false};
+    std::thread h([&] {
+        while (!stop) presentClear(*device, *surfHidden, 0, 0, 1);
+    });
+    auto start = SteadyClock::now();
+    int failures = 0;
+    for (int i = 0; i < 120; ++i)
+        if (!presentClear(*device, *surfShown, 1, 0, 0)) ++failures;
+    const auto ms = elapsedMs(start);
+    stop = true;
+    h.join();
+    device->waitForIdle();
+    EXPECT_EQ(failures, 0);
+    EXPECT_LT(ms, 10000) << "the hidden window's presents stalled the visible one";
+    EXPECT_EQ(shown.waitForPixel(kRed), kRed);
+}
+
+// ---------------------------------------------------------------------------
+// Wayland
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct WaylandConnection {
+    wl_display    *display    = nullptr;
+    wl_registry   *registry   = nullptr;
+    wl_compositor *compositor = nullptr;
+    xdg_wm_base   *wm_base    = nullptr;
+
+    WaylandConnection() {
+        const char *name = std::getenv("WAYLAND_DISPLAY");
+        if (!name || !*name) return;
+        display = wl_display_connect(nullptr);
+        if (!display) return;
+        registry = wl_display_get_registry(display);
+        static const wl_registry_listener listener = {
+            [](void *data, wl_registry *reg, uint32_t id, const char *iface, uint32_t version) {
+                auto *self = static_cast<WaylandConnection *>(data);
+                if (std::strcmp(iface, wl_compositor_interface.name) == 0)
+                    self->compositor = static_cast<wl_compositor *>(
+                        wl_registry_bind(reg, id, &wl_compositor_interface, std::min(version, 4u)));
+                else if (std::strcmp(iface, xdg_wm_base_interface.name) == 0)
+                    self->wm_base = static_cast<xdg_wm_base *>(
+                        wl_registry_bind(reg, id, &xdg_wm_base_interface, 1));
+            },
+            [](void *, wl_registry *, uint32_t) {},
+        };
+        wl_registry_add_listener(registry, &listener, this);
+        wl_display_roundtrip(display);
+        if (wm_base) {
+            static const xdg_wm_base_listener ping = {
+                [](void *, xdg_wm_base *base, uint32_t serial) { xdg_wm_base_pong(base, serial); },
+            };
+            xdg_wm_base_add_listener(wm_base, &ping, nullptr);
+        }
+    }
+    ~WaylandConnection() {
+        if (wm_base)    xdg_wm_base_destroy(wm_base);
+        if (compositor) wl_compositor_destroy(compositor);
+        if (registry)   wl_registry_destroy(registry);
+        if (display)    wl_display_disconnect(display);
+    }
+    bool ok() const { return display && compositor && wm_base; }
+
+    // Dispatches events on the default queue for up to `ms` milliseconds,
+    // or until `done()` is true.
+    template <typename Pred>
+    bool pumpUntil(Pred done, int ms = 2000) {
+        auto start = SteadyClock::now();
+        while (!done()) {
+            if (elapsedMs(start) > ms) return false;
+            while (wl_display_prepare_read(display) != 0) wl_display_dispatch_pending(display);
+            wl_display_flush(display);
+            pollfd pfd{wl_display_get_fd(display), POLLIN, 0};
+            if (poll(&pfd, 1, 10) > 0) wl_display_read_events(display);
+            else wl_display_cancel_read(display);
+            wl_display_dispatch_pending(display);
+        }
+        return true;
+    }
+};
+
+struct WaylandWindow {
+    WaylandConnection &conn;
+    wl_surface        *surface  = nullptr;
+    xdg_surface       *xsurface = nullptr;
+    xdg_toplevel      *toplevel = nullptr;
+    bool               configured = false;
+    int                frames_done = 0;
+    LinuxSurfaceInfo   info{};
+
+    // `role` false: a bare wl_surface the compositor never shows (and never
+    // sends frame callbacks for), the worst case of a hidden window.
+    WaylandWindow(WaylandConnection &c, int w, int h, bool role = true) : conn(c) {
+        surface = wl_compositor_create_surface(conn.compositor);
+        if (role) {
+            xsurface = xdg_wm_base_get_xdg_surface(conn.wm_base, surface);
+            static const xdg_surface_listener xl = {
+                [](void *data, xdg_surface *xs, uint32_t serial) {
+                    xdg_surface_ack_configure(xs, serial);
+                    static_cast<WaylandWindow *>(data)->configured = true;
+                },
+            };
+            xdg_surface_add_listener(xsurface, &xl, this);
+            toplevel = xdg_surface_get_toplevel(xsurface);
+            xdg_toplevel_set_title(toplevel, "campello_gpu Surface test");
+            wl_surface_commit(surface);
+            conn.pumpUntil([this] { return configured; });
+        }
+        info.display = conn.display;
+        info.window  = surface;
+        info.api     = LinuxWindowApi::wayland;
+        info.width   = static_cast<uint32_t>(w);
+        info.height  = static_cast<uint32_t>(h);
+    }
+    ~WaylandWindow() {
+        if (toplevel) xdg_toplevel_destroy(toplevel);
+        if (xsurface) xdg_surface_destroy(xsurface);
+        if (surface)  wl_surface_destroy(surface);
+        wl_display_roundtrip(conn.display);
+    }
+
+    // Asks for a frame callback; the WSI's next commit (in the present)
+    // carries it, and the compositor answers once it has used that buffer.
+    void requestFrameCallback() {
+        static const wl_callback_listener cl = {
+            [](void *data, wl_callback *cb, uint32_t) {
+                ++static_cast<WaylandWindow *>(data)->frames_done;
+                wl_callback_destroy(cb);
+            },
+        };
+        wl_callback_add_listener(wl_surface_frame(surface), &cl, this);
+    }
+};
+
+#define REQUIRE_WAYLAND()                                                       \
+    WaylandConnection conn;                                                     \
+    if (!conn.ok()) GTEST_SKIP() << "no Wayland compositor with xdg_wm_base";   \
+    auto device = Device::createDefaultDevice(nullptr);                         \
+    if (!device) GTEST_SKIP() << "no GPU device"
+
+} // namespace
+
+TEST(Surface, WaylandCreateUsesRequestedSize) {
+    // Wayland reports currentExtent = UINT32_MAX: the size the app asks for
+    // is the swapchain's size.
+    REQUIRE_WAYLAND();
+    WaylandWindow win(conn, 64, 48);
+    ASSERT_TRUE(win.configured);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    EXPECT_EQ(surface->getWidth(), 64u);
+    EXPECT_EQ(surface->getHeight(), 48u);
+    auto fmt = surface->getPixelFormat();
+    EXPECT_TRUE(fmt == PixelFormat::bgra8unorm || fmt == PixelFormat::rgba8unorm)
+        << "format " << (int)fmt;
+}
+
+TEST(Surface, WaylandPresentReachesTheCompositor) {
+    REQUIRE_WAYLAND();
+    WaylandWindow win(conn, 64, 64);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    for (int i = 0; i < 3; ++i) {
+        const int before = win.frames_done;
+        win.requestFrameCallback();
+        ASSERT_TRUE(presentClear(*device, *surface, 1, 0, 0)) << "frame " << i;
+        EXPECT_TRUE(conn.pumpUntil([&] { return win.frames_done > before; }))
+            << "no frame callback for frame " << i;
+    }
+}
+
+TEST(Surface, WaylandResizeChangesSwapchainSize) {
+    // What campello_widgets' Wayland runner needs instead of recreating its
+    // device on every configure: Surface::resize() picks the new size.
+    REQUIRE_WAYLAND();
+    WaylandWindow win(conn, 64, 64);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    ASSERT_TRUE(presentClear(*device, *surface, 1, 0, 0));
+    surface->resize(160, 120);
+    const int before = win.frames_done;
+    win.requestFrameCallback();
+    ASSERT_TRUE(presentClear(*device, *surface, 0, 0, 1));
+    EXPECT_EQ(surface->getWidth(), 160u);
+    EXPECT_EQ(surface->getHeight(), 120u);
+    EXPECT_TRUE(conn.pumpUntil([&] { return win.frames_done > before; }));
+}
+
+TEST(Surface, WaylandTwoWindowsPresentIndependently) {
+    REQUIRE_WAYLAND();
+    WaylandWindow winA(conn, 64, 64), winB(conn, 96, 48);
+    auto surfA = device->createSurface(&winA.info);
+    auto surfB = device->createSurface(&winB.info);
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+    for (int i = 0; i < 5; ++i) {
+        const int a0 = winA.frames_done, b0 = winB.frames_done;
+        winA.requestFrameCallback();
+        winB.requestFrameCallback();
+        ASSERT_TRUE(presentClear(*device, *surfA, 1, 0, 0)) << "A frame " << i;
+        ASSERT_TRUE(presentClear(*device, *surfB, 0, 0, 1)) << "B frame " << i;
+        EXPECT_TRUE(conn.pumpUntil([&] { return winA.frames_done > a0 && winB.frames_done > b0; }))
+            << "frame " << i << ": A " << winA.frames_done - a0 << ", B " << winB.frames_done - b0;
+    }
+}
+
+TEST(Surface, WaylandTwoRasterThreadsDriveTwoWindowsConcurrently) {
+    REQUIRE_WAYLAND();
+    WaylandWindow winA(conn, 64, 64), winB(conn, 96, 48);
+    auto surfA = device->createSurface(&winA.info);
+    auto surfB = device->createSurface(&winB.info);
+    ASSERT_NE(surfA, nullptr);
+    ASSERT_NE(surfB, nullptr);
+    constexpr int kFrames = 300;
+    std::atomic<int> failuresA{0}, failuresB{0};
+    auto raster = [&](Surface &surface, float r, float b, std::atomic<int> &failures) {
+        for (int i = 0; i < kFrames; ++i)
+            if (!presentClear(*device, surface, r, 0, b)) ++failures;
+    };
+    // The compositor's buffer releases arrive on the WSI's own queue, but
+    // keep the default queue moving too (pings, configures) as an app would.
+    std::atomic<bool> done{false};
+    auto start = SteadyClock::now();
+    std::thread a([&] { raster(*surfA, 1, 0, failuresA); });
+    std::thread b([&] { raster(*surfB, 0, 1, failuresB); });
+    std::thread joiner([&] { a.join(); b.join(); done = true; });
+    conn.pumpUntil([&] { return done.load(); }, 30000);
+    joiner.join();
+    device->waitForIdle();
+    EXPECT_EQ(failuresA.load(), 0);
+    EXPECT_EQ(failuresB.load(), 0);
+    EXPECT_LT(elapsedMs(start), 20000) << "raster threads stalled each other";
+}
+
+TEST(Surface, WaylandHiddenSurfaceDoesNotStallAnother) {
+    // A surface the compositor never shows (no role: same as a minimised or
+    // fully covered window, which gets no frame callbacks). Under FIFO,
+    // Mesa's Wayland WSI would block its presents; that thread would then
+    // hold the device's recording lock and stop every other window.
+    REQUIRE_WAYLAND();
+    WaylandWindow shown(conn, 64, 64), hidden(conn, 64, 64, /*role=*/false);
+    auto surfShown  = device->createSurface(&shown.info);
+    auto surfHidden = device->createSurface(&hidden.info);
+    ASSERT_NE(surfShown, nullptr);
+    ASSERT_NE(surfHidden, nullptr);
+
+    std::atomic<bool> stop{false};
+    std::atomic<int>  hiddenFrames{0};
+    std::thread h([&] {
+        while (!stop) if (presentClear(*device, *surfHidden, 0, 0, 1)) ++hiddenFrames;
+    });
+    std::atomic<int>  failures{0};
+    std::atomic<bool> done{false};
+    auto start = SteadyClock::now();
+    std::thread s([&] {
+        for (int i = 0; i < 120; ++i)
+            if (!presentClear(*device, *surfShown, 1, 0, 0)) ++failures;
+        done = true;
+    });
+    conn.pumpUntil([&] { return done.load(); }, 30000);
+    const auto ms = elapsedMs(start);
+    s.join();
+    stop = true;
+    h.join();
+    device->waitForIdle();
+    EXPECT_EQ(failures.load(), 0);
+    EXPECT_LT(ms, 10000) << "the hidden surface stalled the visible one (" << hiddenFrames
+                         << " hidden frames)";
+}
+
+TEST(Surface, WaylandDestroyingSurfaceWithPendingPresentIsSafe) {
+    REQUIRE_WAYLAND();
+    WaylandWindow win(conn, 32, 32);
+    auto surface = device->createSurface(&win.info);
+    ASSERT_NE(surface, nullptr);
+    auto view = surface->acquireNextTexture();
+    ASSERT_NE(view, nullptr);
+    auto cmd = clearPass(*device, view, 1, 0, 0);
+    ASSERT_TRUE(surface->schedulePresent(cmd));
+    view.reset();
+    surface.reset();
+    device->submit(cmd);
+    device->waitForIdle();
+    SUCCEED();
+}
+
+#elif defined(__linux__)
+
+TEST(Surface, LinuxWindowTestsNotBuilt) {
+    GTEST_SKIP() << "built without libx11-dev / libwayland-dev: no Linux Surface tests";
+}
+
+#else  // no other backend
 
 TEST(Surface, NotYetImplementedBackendsReturnNull) {
     auto device = makeDevice();
     if (!device) GTEST_SKIP() << "no GPU device";
     int dummy = 0;
-    // Backend stub: no per-surface swapchain yet (Phase 17 M0.2-M0.4).
     EXPECT_EQ(device->createSurface(&dummy), nullptr);
 }
 

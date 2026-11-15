@@ -612,6 +612,18 @@
 - [x] Add `src/pi/utils.cpp` to `macos.cmake`
 - [x] Add `src/pi/utils.cpp` to `windows.cmake` once DirectX `createBuffer` is wired up
 
+### Linux CI (found 2026-11-14)
+- [x] The Linux / Vulkan job never ran a test: `ctest -R campello_gpu_universal_tests`
+      / `-R campello_gpu_integration_tests` match executable names, but ctest registers
+      each gtest case under its own name ("No tests were found!!!", exit 0). It now
+      runs the binaries; the integration step runs only `Surface.*` under Xvfb.
+- [ ] Run the full integration suite on lavapipe + validation in CI. Run for real
+      (Ubuntu 24.04 in Docker), it **segfaults** (exit 139), after
+      `ShaderModule.CreateWithArbitraryBytesReturnsNonNull` fails (191 s). Validation also
+      reports `VUID-vkFreeMemory-memory-00677` (memory freed while a buffer using it is in
+      flight), and `Raytracing.CreateTlasWithEmptyInstancesReturnsNull` fails on lavapipe
+      (also locally, at v0.29.0). Fix these, then widen the CI filter.
+
 ## Raytracing
 
 ### Constants & Enums

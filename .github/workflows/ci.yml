@@ -66,7 +66,10 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers
+        # libx11-dev / libwayland-dev: the library's X11 and Wayland surface
+        # code (compiled out without their headers) and the Surface tests.
+        # xvfb: real X11 windows for those tests.
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers libx11-dev libwayland-dev xvfb
 
       - name: Configure
         run: cmake -B build -DBUILD_TESTS=ON -DBUILD_INTEGRATION_TESTS=ON -DCAMPELLO_GPU_VALIDATION=ON
@@ -80,12 +83,31 @@ jobs:
       - name: Build & run universal tests
         run: |
           cmake --build build --target campello_gpu_universal_tests
-          ctest --test-dir build --output-on-failure -R campello_gpu_universal_tests
+          # Run the binary: ctest registers each gtest case under its own
+          # name, so `ctest -R campello_gpu_universal_tests` matched nothing
+          # and this step passed without running a test.
+          ./build/tests/campello_gpu_universal_tests
 
       - name: Run integration tests (lavapipe)
+        # Only the Surface tests for now. Like the universal step, this used
+        # `ctest -R campello_gpu_integration_tests`, which matched nothing.
+        # The full suite on lavapipe + validation segfaults and has failures
+        # that were never seen here (see TODO.md, "Linux CI"); widen the
+        # filter as those are fixed.
         run: |
-          export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          ctest --test-dir build --output-on-failure -R campello_gpu_integration_tests
+          set -o pipefail  # keep the test binary's exit status through tee
+          # Ubuntu 24.04 names it lvp_icd.json (lvp_icd.x86_64.json, used
+          # before, doesn't exist there: every test skipped with "no GPU
+          # device" and the step still passed).
+          export VK_ICD_FILENAMES=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -n1)
+          test -f "$VK_ICD_FILENAMES" || { echo "lavapipe ICD not found"; exit 1; }
+          # Xvfb gives the X11 Surface tests a display; the Wayland ones skip.
+          xvfb-run -a -s "-screen 0 1280x800x24" \
+            ./build/tests/campello_gpu_integration_tests --gtest_filter='Surface.*' | tee it.log
+          # A missing device or display shows up as skips, not failures.
+          if grep -qE "no GPU device|no X display" it.log; then
+            echo "Surface tests skipped: no lavapipe device or no X display"; exit 1
+          fi
 
   # ---------------------------------------------------------------------------
   # Metal integration tests — macOS only.
