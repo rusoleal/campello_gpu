@@ -5,6 +5,8 @@
 // stays that colour everywhere, and invalid descriptors are refused.
 
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <vector>

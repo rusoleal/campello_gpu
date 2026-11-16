@@ -1,10 +1,16 @@
 // TemporalUpscaler on Metal: MetalFX's temporal scaler (MTLFXTemporalScaler,
-// macOS 13 / iOS 16 and later; MetalFX is weak-linked, so older systems load
-// the library and report no support). Objective-C++ with ARC: the backend's
-// metal-cpp objects are the same Objective-C objects, bridged here.
+// macOS 13 / iOS 16 and later). MetalFX is loaded at run time (dlopen, classes
+// by name), not linked: systems without it, and SDKs without it (Xcode 16's
+// iOS Simulator; then built without the header), report no support.
+// Objective-C++ with ARC: the backend's metal-cpp objects are the same
+// Objective-C objects, bridged here.
 
 #import <Metal/Metal.h>
+#include <dlfcn.h>
+#if __has_include(<MetalFX/MetalFX.h>)
 #import <MetalFX/MetalFX.h>
+#define CAMPELLO_GPU_METALFX 1
+#endif
 
 #include "common.hpp"
 #include "texture_handle.hpp"
@@ -14,6 +20,19 @@
 #include <campello_gpu/texture.hpp>
 
 using namespace systems::leal::campello_gpu;
+
+#if !defined(CAMPELLO_GPU_METALFX)
+
+TemporalUpscaler::TemporalUpscaler(void *pd, const TemporalUpscalerDescriptor &descriptor)
+    : native(pd), descriptor_(descriptor) {}
+TemporalUpscaler::~TemporalUpscaler() {}
+TextureUsage TemporalUpscaler::outputUsage() const { return static_cast<TextureUsage>(0); }
+bool Device::supportsTemporalUpscaler() { return false; }
+float Device::getTemporalUpscalerMaxScale() { return 0.0f; }
+std::shared_ptr<TemporalUpscaler> Device::createTemporalUpscaler(const TemporalUpscalerDescriptor &) { return nullptr; }
+void CommandEncoder::encodeTemporalUpscale(std::shared_ptr<TemporalUpscaler>, const TemporalUpscaleInputs &) {}
+
+#else
 
 namespace {
 
@@ -25,6 +44,15 @@ struct MetalTemporalUpscaler {
     id scaler = nil;            // id<MTLFXTemporalScaler>
     id<MTLTexture> output = nil;
 };
+
+// MTLFXTemporalScalerDescriptor, MetalFX loaded on first use (nil without it).
+Class descriptorClass() {
+    static Class cls = [] () -> Class {
+        if (!dlopen("/System/Library/Frameworks/MetalFX.framework/MetalFX", RTLD_LAZY | RTLD_LOCAL)) return nil;
+        return NSClassFromString(@"MTLFXTemporalScalerDescriptor");
+    }();
+    return cls;
+}
 
 } // namespace
 
@@ -51,7 +79,8 @@ bool Device::supportsTemporalUpscaler() {
     if (!native) return false;
     if (@available(macOS 13.0, iOS 16.0, *)) {
         id<MTLDevice> device = (__bridge id<MTLDevice>)static_cast<MetalDeviceData *>(native)->device;
-        return [MTLFXTemporalScalerDescriptor supportsDevice:device];
+        Class cls = descriptorClass();
+        return cls && [cls supportsDevice:device];
     }
     return false;
 }
@@ -60,7 +89,10 @@ float Device::getTemporalUpscalerMaxScale() {
     if (!supportsTemporalUpscaler()) return 0.0f;
     if (@available(macOS 14.0, iOS 17.0, *)) {
         id<MTLDevice> device = (__bridge id<MTLDevice>)static_cast<MetalDeviceData *>(native)->device;
-        return [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:device];
+        Class cls = descriptorClass();
+        if ([cls respondsToSelector:@selector(supportedInputContentMaxScaleForDevice:)]) {
+            return [cls supportedInputContentMaxScaleForDevice:device];
+        }
     }
     return 2.0f;
 }
@@ -79,7 +111,7 @@ std::shared_ptr<TemporalUpscaler> Device::createTemporalUpscaler(const TemporalU
     if (@available(macOS 13.0, iOS 16.0, *)) {
         auto *deviceData = static_cast<MetalDeviceData *>(native);
         id<MTLDevice> device = (__bridge id<MTLDevice>)deviceData->device;
-        MTLFXTemporalScalerDescriptor *d = [MTLFXTemporalScalerDescriptor new];
+        MTLFXTemporalScalerDescriptor *d = [descriptorClass() new];
         d.inputWidth = descriptor.inputWidth;
         d.inputHeight = descriptor.inputHeight;
         d.outputWidth = descriptor.outputWidth;
@@ -141,3 +173,5 @@ void CommandEncoder::encodeTemporalUpscale(std::shared_ptr<TemporalUpscaler> ups
         [blit endEncoding];
     }
 }
+
+#endif // CAMPELLO_GPU_METALFX
