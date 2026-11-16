@@ -4,6 +4,13 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-11-16
+
+### Fixed
+- **Consumers configure again on macOS and iOS.** v0.30.0 called `enable_language(OBJCXX)` in `macos.cmake` and `ios.cmake` for MetalFX's `temporal_upscaler.mm`. `enable_language()` only works in the top-level project. In a project that pulls campello_gpu in with FetchContent or `add_subdirectory` and doesn't enable OBJCXX itself (campello_widgets, for one), it left `CMAKE_OBJCXX_COMPILE_OBJECT` unset, and the generate step failed.
+  - The call is gone. Without OBJCXX, CMake compiles the `.mm` as CXX and clang picks Objective-C++ from the extension; ARC stays on for that file (`-fobjc-arc`).
+  - Projects that enable OBJCXX at their top level compile it as OBJCXX, as before.
+
 ## [0.30.0] - 2026-11-16
 
 ### Added
