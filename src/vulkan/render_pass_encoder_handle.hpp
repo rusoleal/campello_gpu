@@ -22,6 +22,9 @@ namespace systems::leal::campello_gpu {
         VkImage            sampledDepthImage   = VK_NULL_HANDLE;
         VkImageAspectFlags sampledDepthAspect  = 0;
         TextureHandle*     sampledDepthTexture = nullptr;
+        /// The depth attachment's texture, sampled or not: end() records the
+        /// layout the pass leaves it in, which the next pass loading it starts from.
+        TextureHandle*     depthTexture        = nullptr;
         VkExtent2D       offscreenExtent       = {};
         // Owning texture of offscreenImage (from the view's TextureViewHandle::ownerTexture),
         // so end() can write the post-pass layout back to TextureHandle::currentLayout —

@@ -4,6 +4,23 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-11-16
+
+### Fixed
+All Vulkan. Found by running campello_renderer's suite on an Adreno 618 (Android 13, Vulkan 1.1, so the traditional render pass path).
+- **Storage buffers are bound.** `createBindGroup()` wrote every buffer descriptor as `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER`, including bindings the layout declares as storage buffers. That's invalid, and Adreno left those bindings empty: compute shaders read and wrote nothing (a GPU bake came back all zeros). Buffer descriptors now use the layout's type.
+- **Depth is kept when a pass asks for it (traditional render pass path).** `buildRenderPass()` hardcoded the depth attachment to clear on load and discard on store, whatever the pass descriptor said. A depth buffer sampled afterwards (screen-space AO, a depth pre-pass) read nothing, and a second pass loading the depth started from a clear.
+  - The depth and stencil load/store ops and the attachment's initial layout are now part of the render pass and its cache key (`DepthAttachmentOps`).
+  - A loaded depth attachment starts in the layout the previous pass left it in: render passes record it on the texture when they end.
+  - The dynamic rendering path also transitioned depth from `UNDEFINED` on every pass, which discards it; a loaded depth attachment now transitions from its recorded layout.
+- **Render pass dependency.** The external subpass dependency had no source access mask, so the previous pass's attachment writes weren't made visible to a pass loading them. It now covers color and depth attachment writes.
+- **Compute pass barriers.** `ComputePassEncoder::end()` was a no-op, and `beginComputePass()` added no barrier, so a `copyBufferToBuffer()` (or a draw) right after a dispatch could read its output before the shader wrote it. Both ends now record a memory barrier, as Metal and WebGPU order these on their own.
+- **Pipelines keep their layout alive.** Render, compute and ray tracing pipelines recorded only the raw `VkPipelineLayout`. A caller that dropped its `PipelineLayout` after creating the pipeline (fine on Metal) left later descriptor binds pointing at a destroyed layout. The pipeline now holds a reference to it.
+
+### Tests
+- `tests/platform/test_compute_dispatch.cpp` (Vulkan): a dispatch reads a uniform and a read-only storage buffer, writes a storage buffer, and the result is copied back and checked, waited on with a fence and with `waitForIdle()`. Before the bind group fix both failed on Adreno (every element 0).
+- The full suite passes on an Adreno 618: 224 passed, 45 skipped (ray tracing).
+
 ## [0.31.0] - 2026-11-16
 
 ### Added

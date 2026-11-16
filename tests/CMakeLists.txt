@@ -67,6 +67,7 @@ if(BUILD_INTEGRATION_TESTS AND NOT EMSCRIPTEN)
         platform/test_render_pipeline.cpp
         platform/test_render_pass_encoder.cpp
         platform/test_compute_pass_encoder.cpp
+        platform/test_compute_dispatch.cpp
         platform/test_raytracing.cpp
         platform/test_frame_ring.cpp
         platform/test_sampler.cpp
