@@ -103,6 +103,24 @@ namespace systems::leal::campello_gpu {
      * image-specific state), so any two calls with the same key produce
      * functionally-identical render passes — safe to reuse indefinitely.
      */
+    /// The depth/stencil attachment's load/store ops and the layout it starts
+    /// in, for the traditional (vkCmdBeginRenderPass) path. The defaults are a
+    /// cleared, discarded attachment; a pass that stores depth (sampled later,
+    /// e.g. SSAO or a shadow map) or loads it (a second pass over the same
+    /// depth) says so here, or the render pass throws the depth away.
+    struct DepthAttachmentOps {
+        VkAttachmentLoadOp  loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        VkAttachmentStoreOp storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        VkAttachmentLoadOp  stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        VkAttachmentStoreOp stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        VkImageLayout       initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        bool operator==(const DepthAttachmentOps& o) const noexcept {
+            return loadOp == o.loadOp && storeOp == o.storeOp && stencilLoadOp == o.stencilLoadOp &&
+                   stencilStoreOp == o.stencilStoreOp && initialLayout == o.initialLayout;
+        }
+    };
+
     struct RenderPassKey {
         VkFormat            colorFormat;
         VkFormat            depthFormat;
@@ -119,6 +137,7 @@ namespace systems::leal::campello_gpu {
         // one; empty for a single target. Same load op and final layout as
         // the first.
         std::vector<VkFormat> extraColorFormats;
+        DepthAttachmentOps    depthOps;
 
         bool operator==(const RenderPassKey& other) const noexcept {
             return colorFormat == other.colorFormat &&
@@ -127,7 +146,8 @@ namespace systems::leal::campello_gpu {
                    colorFinalLayout == other.colorFinalLayout &&
                    sampleCount == other.sampleCount &&
                    resolveFormat == other.resolveFormat &&
-                   extraColorFormats == other.extraColorFormats;
+                   extraColorFormats == other.extraColorFormats &&
+                   depthOps == other.depthOps;
         }
     };
 
@@ -140,6 +160,11 @@ namespace systems::leal::campello_gpu {
             h = h * 31 + std::hash<unsigned>{}((unsigned)k.sampleCount);
             h = h * 31 + std::hash<int>{}((int)k.resolveFormat);
             for (VkFormat f : k.extraColorFormats) h = h * 31 + std::hash<int>{}((int)f);
+            h = h * 31 + std::hash<int>{}((int)k.depthOps.loadOp);
+            h = h * 31 + std::hash<int>{}((int)k.depthOps.storeOp);
+            h = h * 31 + std::hash<int>{}((int)k.depthOps.stencilLoadOp);
+            h = h * 31 + std::hash<int>{}((int)k.depthOps.stencilStoreOp);
+            h = h * 31 + std::hash<int>{}((int)k.depthOps.initialLayout);
             return h;
         }
     };
@@ -614,6 +639,8 @@ namespace systems::leal::campello_gpu {
 // extraColorFormats: color attachments 1..N-1 (multiple render targets), with the
 // first one's load op and final layout; they come last in the attachment list
 // (after color 0, depth and resolve) and are never resolved.
+// depthOps: the depth attachment's load/store ops and initial layout (render
+// pass compatibility ignores them, so pipelines can use the defaults).
 VkRenderPass buildRenderPass(VkDevice device,
                               VkFormat colorFormat,
                               VkFormat depthFormat,
@@ -621,4 +648,5 @@ VkRenderPass buildRenderPass(VkDevice device,
                               VkImageLayout colorFinalLayout,
                               uint32_t sampleCount = 1,
                               VkFormat resolveFormat = VK_FORMAT_UNDEFINED,
-                              const std::vector<VkFormat>& extraColorFormats = {});
+                              const std::vector<VkFormat>& extraColorFormats = {},
+                              const systems::leal::campello_gpu::DepthAttachmentOps& depthOps = {});

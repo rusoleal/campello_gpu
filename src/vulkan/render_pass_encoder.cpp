@@ -71,6 +71,9 @@ namespace {
 /// A depth attachment that is also sampled (e.g. a shadow map): from the
 /// attachment layout to SHADER_READ_ONLY_OPTIMAL, after its writes.
 void transitionSampledDepth(RenderPassEncoderHandle *data) {
+    if (data->depthTexture) {
+        data->depthTexture->currentLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
     if (data->sampledDepthImage == VK_NULL_HANDLE) return;
     VkImageMemoryBarrier barrier{};
     barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;

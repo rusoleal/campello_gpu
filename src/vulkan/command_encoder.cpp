@@ -401,6 +401,19 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rpeHandle->resolveBaseArrayLayer   = resolveArrayLayer;
     rpeHandle->resolveBaseMipLevel     = resolveMipLevel;
     rpeHandle->extraColors             = extraColors;
+    TextureHandle *depthOwner = nullptr;  // the depth attachment's texture, when it has one
+    if (descriptor.depthStencilAttachment.has_value() && descriptor.depthStencilAttachment->view) {
+        auto *dvh = (TextureViewHandle *)descriptor.depthStencilAttachment->view->native;
+        depthOwner = dvh ? dvh->ownerTexture : nullptr;
+    }
+    rpeHandle->depthTexture = depthOwner;
+    // A depth attachment that is loaded starts in the layout the last pass
+    // left it in (end() records it); a cleared one's contents don't matter.
+    const bool depthLoaded = descriptor.depthStencilAttachment.has_value() &&
+                             (descriptor.depthStencilAttachment->depthLoadOp == LoadOp::load ||
+                              descriptor.depthStencilAttachment->depthReadOnly);
+    const VkImageLayout depthStartLayout = depthLoaded && depthOwner ? depthOwner->currentLayout
+                                                                     : VK_IMAGE_LAYOUT_UNDEFINED;
     if (descriptor.depthStencilAttachment.has_value() && descriptor.depthStencilAttachment->view &&
         !descriptor.depthStencilAttachment->depthReadOnly) {
         auto *dvh = (TextureViewHandle *)descriptor.depthStencilAttachment->view->native;
@@ -498,15 +511,34 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
                 extraColorFormats.push_back(
                     ((TextureViewHandle *)descriptor.colorAttachments[a].view->native)->format);
             }
+            DepthAttachmentOps depthOps{};
+            if (descriptor.depthStencilAttachment.has_value()) {
+                const auto &dsa = *descriptor.depthStencilAttachment;
+                depthOps.loadOp  = depthLoaded ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                depthOps.storeOp = dsa.depthReadOnly || dsa.depthStoreOp == StoreOp::store
+                                       ? VK_ATTACHMENT_STORE_OP_STORE
+                                       : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                depthOps.stencilLoadOp  = dsa.stencilReadOnly || dsa.stencilLoadOp == LoadOp::load
+                                              ? VK_ATTACHMENT_LOAD_OP_LOAD
+                                              : VK_ATTACHMENT_LOAD_OP_CLEAR;
+                depthOps.stencilStoreOp = dsa.stencilReadOnly || dsa.stencilStoreOp == StoreOp::store
+                                              ? VK_ATTACHMENT_STORE_OP_STORE
+                                              : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                // A stencil load also keeps the image's contents.
+                const bool keepContents = depthOps.loadOp == VK_ATTACHMENT_LOAD_OP_LOAD ||
+                                          depthOps.stencilLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD;
+                depthOps.initialLayout = keepContents && depthOwner ? depthOwner->currentLayout
+                                                                    : VK_IMAGE_LAYOUT_UNDEFINED;
+            }
             const RenderPassKey rpKey{colorFormat, depthFormat, colorLoadOp, finalLayout,
-                                       colorSampleCount, resolveFormat, extraColorFormats};
+                                       colorSampleCount, resolveFormat, extraColorFormats, depthOps};
             auto& rpCache = data->deviceData->offscreenRenderPassCache;
             auto  rpIt    = rpCache.find(rpKey);
             if (rpIt != rpCache.end()) {
                 rp = rpIt->second;
             } else {
                 rp = buildRenderPass(data->device, colorFormat, depthFormat, colorLoadOp, finalLayout,
-                                      colorSampleCount, resolveFormat, extraColorFormats);
+                                      colorSampleCount, resolveFormat, extraColorFormats, depthOps);
                 rpCache.emplace(rpKey, rp);
             }
 
@@ -650,17 +682,21 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             // Transition depth image to DEPTH_STENCIL_ATTACHMENT_OPTIMAL.
             VkImageMemoryBarrier dsBarrier{};
             dsBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            dsBarrier.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+            // From the layout the last pass left it in when it's loaded (UNDEFINED
+            // would discard it), else UNDEFINED.
+            dsBarrier.oldLayout           = depthStartLayout;
             dsBarrier.newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             dsBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             dsBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             dsBarrier.image               = dvh->image;
             dsBarrier.subresourceRange    = { depthAspect, 0, 1, 0, 1 };
-            dsBarrier.srcAccessMask       = VK_ACCESS_NONE;
-            dsBarrier.dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            // Earlier depth writes (and shader reads, when it was sampled) finish first.
+            dsBarrier.srcAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+            dsBarrier.dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
             vkCmdPipelineBarrier(data->commandBuffer,
-                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                                 VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                                  0, 0, nullptr, 0, nullptr, 1, &dsBarrier);
 
             if (formatHasDepth) {
@@ -726,6 +762,19 @@ std::shared_ptr<ComputePassEncoder> CommandEncoder::beginComputePass() {
 
     auto handle = new ComputePassEncoderHandle();
     handle->commandBuffer = data->commandBuffer;
+
+    // Earlier work in this command buffer (copies, render passes, dispatches)
+    // must land before the pass's shaders read or overwrite it; see
+    // ComputePassEncoder::end() for the other direction.
+    VkMemoryBarrier barrier{};
+    barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                            VK_ACCESS_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier(data->commandBuffer,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 1, &barrier, 0, nullptr, 0, nullptr);
     return std::shared_ptr<ComputePassEncoder>(new ComputePassEncoder(handle));
 }
 

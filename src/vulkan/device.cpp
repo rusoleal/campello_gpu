@@ -137,7 +137,8 @@ VkRenderPass buildRenderPass(VkDevice device,
                                      VkImageLayout colorFinalLayout,
                                      uint32_t sampleCount,
                                      VkFormat resolveFormat,
-                                     const std::vector<VkFormat>& extraColorFormats)
+                                     const std::vector<VkFormat>& extraColorFormats,
+                                     const DepthAttachmentOps& depthOps)
 {
     std::vector<VkAttachmentDescription> attachments;
     const bool hasResolve = (resolveFormat != VK_FORMAT_UNDEFINED);
@@ -189,11 +190,13 @@ VkRenderPass buildRenderPass(VkDevice device,
         // Every attachment in a subpass must share one sample count -- see
         // RenderPipelineDescriptor::sampleCount's doc comment.
         depthAtt.samples        = samples;
-        depthAtt.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAtt.storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAtt.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        depthAtt.loadOp         = depthOps.loadOp;
+        depthAtt.storeOp        = depthOps.storeOp;
+        depthAtt.stencilLoadOp  = depthOps.stencilLoadOp;
+        depthAtt.stencilStoreOp = depthOps.stencilStoreOp;
+        // Loading keeps the contents, so the layout they are in now; a clear
+        // discards them (UNDEFINED is always a valid starting layout then).
+        depthAtt.initialLayout  = depthOps.initialLayout;
         depthAtt.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         attachments.push_back(depthAtt);
         depthRef.attachment = (uint32_t)attachments.size() - 1;
@@ -255,13 +258,19 @@ VkRenderPass buildRenderPass(VkDevice device,
     VkSubpassDependency dep{};
     dep.srcSubpass    = VK_SUBPASS_EXTERNAL;
     dep.dstSubpass    = 0;
+    // Earlier passes' attachment writes land before this one loads (or
+    // overwrites) them: a pass that loads the depth or color of the previous one.
     dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                      | (hasDepth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT : 0u);
-    dep.srcAccessMask = 0;
-    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                      | (hasDepth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT : 0u);
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                      | (hasDepth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : 0u);
+    dep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
                       | (hasDepth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0u);
+    dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                      | (hasDepth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : 0u);
+    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                      | (hasDepth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0u);
 
     VkRenderPassCreateInfo rpInfo{};
     rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -2701,6 +2710,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     toReturn->pipeline            = pipeline;
     toReturn->pipelineLayout      = pipelineLayout;
     toReturn->ownsPipelineLayout  = ownsPipelineLayout;
+    toReturn->layoutRef           = descriptor.layout;
 
     deviceData->renderPipelineCount++;
     return std::shared_ptr<RenderPipeline>(new RenderPipeline(toReturn));
@@ -2766,6 +2776,7 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     toReturn->pipeline           = pipeline;
     toReturn->pipelineLayout     = pipelineLayout;
     toReturn->ownsPipelineLayout = ownsPipelineLayout;
+    toReturn->layoutRef          = descriptor.layout;
 
     deviceData->computePipelineCount++;
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(toReturn));
@@ -3155,7 +3166,11 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor &de
             bufferInfos[a].buffer = bufHandle->buffer;
             bufferInfos[a].offset = bb.offset;
             bufferInfos[a].range  = bb.size;
-            write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            // The layout's type: a storage binding written as a uniform one
+            // is invalid (VUID-VkWriteDescriptorSet-descriptorType-00319), and
+            // Adreno then left the binding empty, so compute shaders read and
+            // wrote nothing.
+            write.descriptorType  = expectedType;
             write.pBufferInfo     = &bufferInfos[a];
             writes.push_back(write);
         } else if (std::holds_alternative<std::shared_ptr<Texture>>(entry.resource)) {
@@ -4614,6 +4629,7 @@ Device::createRayTracingPipeline(const RayTracingPipelineDescriptor &descriptor)
     h->device         = d->device;
     h->pipeline       = pipeline;
     h->pipelineLayout = pipelineLayout;
+    h->layoutRef      = descriptor.layout;
     h->sbtBuffer      = sbtBuffer;
     h->sbtMemory      = sbtMemory;
 
