@@ -4,6 +4,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <campello_gpu/temporal_upscaler.hpp>
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/render_pipeline.hpp>
@@ -580,6 +581,22 @@ namespace systems::leal::campello_gpu
          */
         std::shared_ptr<RayTracingPipeline> createRayTracingPipeline(
             const RayTracingPipelineDescriptor &descriptor);
+
+        /**
+         * @brief Whether this device can create a `TemporalUpscaler`.
+         *
+         * Metal: MetalFX's temporal scaler is available (macOS 13 / iOS 16
+         * and later) and supports this GPU. Other backends: false.
+         */
+        bool supportsTemporalUpscaler();
+
+        /**
+         * @brief Creates a temporal upscaler (see `TemporalUpscaler`).
+         *
+         * @return The upscaler, or `nullptr` where unsupported or the
+         * descriptor's sizes / formats aren't accepted.
+         */
+        std::shared_ptr<TemporalUpscaler> createTemporalUpscaler(const TemporalUpscalerDescriptor &descriptor);
 
         /**
          * @brief Submits a completed command buffer to the GPU for execution.

@@ -741,6 +741,15 @@
       Dawn/browsers, use the native feature where present and keep the compute path as the fallback
       behind the same interface
 
+## Temporal upscaling (`TemporalUpscaler`)
+
+- [x] Public API: `TemporalUpscalerDescriptor`, `TemporalUpscaleInputs`, `Device::supportsTemporalUpscaler()` / `createTemporalUpscaler()`, `CommandEncoder::encodeTemporalUpscale()`
+- [x] Metal: MetalFX `MTLFXTemporalScaler` (weak-linked; renders into a private texture, then blits to the output)
+- [ ] Metal: also expose MetalFX's spatial scaler (`MTLFXSpatialScaler`) for apps without motion vectors
+- [ ] Vulkan: AMD FSR 2/3 (vendor-neutral), then DLSS where `VK_NVX_binary_import` / NGX is available
+- [ ] DirectX 12: FSR, DLSS (NGX) and XeSS behind the same interface
+- [ ] Exposure / reactive-mask inputs (FSR and MetalFX both accept them), and HDR output
+
 ## Cooperative Matrix Multiply
 
 > Hardware-accelerated small-tile matrix multiply-accumulate, exposed differently per

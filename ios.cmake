@@ -3,6 +3,10 @@
 # CMake handles the sysroot and architecture differences via
 # CMAKE_SYSTEM_NAME=iOS / CMAKE_OSX_SYSROOT / CMAKE_OSX_ARCHITECTURES.
 
+# MetalFX (TemporalUpscaler) is Objective-C++ (ARC); weak-linked: macOS 13 / iOS 16 and later.
+enable_language(OBJCXX)
+set_source_files_properties(src/metal/temporal_upscaler.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
 add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
@@ -30,10 +34,11 @@ add_library(${PROJECT_NAME} SHARED
     src/metal/shader_module.cpp
     src/metal/texture.cpp
     src/metal/texture_view.cpp
+    src/metal/temporal_upscaler.mm
 )
 
 target_link_libraries(${PROJECT_NAME}
-    "-framework Metal" "-framework Foundation" "-framework QuartzCore" objc
+    "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-weak_framework MetalFX" objc
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

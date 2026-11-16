@@ -4,6 +4,20 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-16
+
+### Added
+- **`TemporalUpscaler`: temporal upscaling** (`inc/campello_gpu/temporal_upscaler.hpp`). A temporal upscaler rebuilds an output-size image from jittered frames rendered at a smaller input size, using their depth and motion vectors. It keeps its own history between frames.
+  - Check `Device::supportsTemporalUpscaler()`, then create one with `Device::createTemporalUpscaler(descriptor)`. The descriptor sets the input and output sizes, the colour, depth, motion and output formats, and `depthReversed`.
+  - Encode it each frame with `CommandEncoder::encodeTemporalUpscale(upscaler, inputs)`. The inputs are the colour, depth, motion and output textures, the jitter in input pixels, the motion-vector scale, and `reset`.
+  - Create the output with `TemporalUpscaler::outputUsage()`.
+  - Implemented on **Metal** with MetalFX's `MTLFXTemporalScaler` (macOS 13 / iOS 16 and later). MetalFX is weak-linked, so older systems still load the library and report no support.
+  - MetalFX only writes private-storage textures, so the upscaler renders into an internal private texture and blits it into the caller's output. The output can therefore be any texture, including one you download.
+  - Other backends report no support, and `createTemporalUpscaler()` returns `nullptr` there. FSR, DLSS and XeSS on Vulkan and DirectX 12 are future work.
+
+### Tests
+- `tests/platform/test_temporal_upscaler.cpp`: invalid descriptors are refused, and a uniform 32×32 frame upscaled to 64×64 keeps its colour everywhere. Both pass under Metal API validation. The tests skip where there's no support.
+
 ## [0.29.1] - 2026-11-14
 
 ### Fixed
