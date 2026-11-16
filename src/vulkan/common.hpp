@@ -115,6 +115,10 @@ namespace systems::leal::campello_gpu {
         // VK_FORMAT_UNDEFINED means "no resolve attachment" (the pre-MSAA case).
         uint32_t            sampleCount;
         VkFormat            resolveFormat;
+        // Color attachments 1..N-1 (multiple render targets), after the first
+        // one; empty for a single target. Same load op and final layout as
+        // the first.
+        std::vector<VkFormat> extraColorFormats;
 
         bool operator==(const RenderPassKey& other) const noexcept {
             return colorFormat == other.colorFormat &&
@@ -122,7 +126,8 @@ namespace systems::leal::campello_gpu {
                    colorLoadOp == other.colorLoadOp &&
                    colorFinalLayout == other.colorFinalLayout &&
                    sampleCount == other.sampleCount &&
-                   resolveFormat == other.resolveFormat;
+                   resolveFormat == other.resolveFormat &&
+                   extraColorFormats == other.extraColorFormats;
         }
     };
 
@@ -134,6 +139,7 @@ namespace systems::leal::campello_gpu {
             h = h * 31 + std::hash<int>{}((int)k.colorFinalLayout);
             h = h * 31 + std::hash<unsigned>{}((unsigned)k.sampleCount);
             h = h * 31 + std::hash<int>{}((int)k.resolveFormat);
+            for (VkFormat f : k.extraColorFormats) h = h * 31 + std::hash<int>{}((int)f);
             return h;
         }
     };
@@ -605,10 +611,14 @@ namespace systems::leal::campello_gpu {
 // vkCmdBeginRenderPass path, which has no equivalent field of its own.
 // colorFinalLayout applies to the resolve attachment (the image actually sampled
 // afterward) when resolveFormat is set, not to the transient MSAA color attachment.
+// extraColorFormats: color attachments 1..N-1 (multiple render targets), with the
+// first one's load op and final layout; they come last in the attachment list
+// (after color 0, depth and resolve) and are never resolved.
 VkRenderPass buildRenderPass(VkDevice device,
                               VkFormat colorFormat,
                               VkFormat depthFormat,
                               VkAttachmentLoadOp colorLoadOp,
                               VkImageLayout colorFinalLayout,
                               uint32_t sampleCount = 1,
-                              VkFormat resolveFormat = VK_FORMAT_UNDEFINED);
+                              VkFormat resolveFormat = VK_FORMAT_UNDEFINED,
+                              const std::vector<VkFormat>& extraColorFormats = {});

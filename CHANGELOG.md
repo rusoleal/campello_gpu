@@ -4,6 +4,19 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Vulkan: multiple render targets.** A render pipeline with several `FragmentDescriptor::targets` and a render pass with several `colorAttachments` now write every attachment, not just the first. A G-buffer can be drawn in one pass.
+  - Pipelines declare every target's format: `VkPipelineRenderingCreateInfo` for dynamic rendering, the compatible render pass otherwise.
+  - Render passes move attachments 1..N-1 to `COLOR_ATTACHMENT_OPTIMAL` on begin, and to `SHADER_READ_ONLY_OPTIMAL` on end, like the first one. `loadOp::load` keeps their contents.
+  - The traditional render pass path (devices without dynamic rendering) adds them to the render pass, its cache key, the framebuffer and the clear values. They're never resolved.
+
+### Tests
+- `tests/platform/test_multiple_render_targets.cpp`:
+  - Three attachments are each cleared to their own colour (rgba8unorm and rgba16float).
+  - `loadOp::load` keeps two attachments across passes.
+  - On Vulkan, a draw writes a different colour to each of three targets.
+  - Passes on an Adreno 618 (Android 13). The clear tests also pass on Metal. Before this change the Vulkan tests failed: attachments 1 and 2 were never written.
+
 ## [0.30.1] - 2026-11-16
 
 ### Fixed

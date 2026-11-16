@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <vulkan/vulkan.h>
 
 namespace systems::leal::campello_gpu {
@@ -49,6 +50,17 @@ namespace systems::leal::campello_gpu {
         uint32_t         resolveBaseArrayLayer = 0;
         uint32_t         resolveBaseMipLevel   = 0;
         std::shared_ptr<void> resolveViewRef;
+        // Color attachments 1..N-1 of an offscreen pass (multiple render
+        // targets): end() moves each to SHADER_READ_ONLY_OPTIMAL like
+        // offscreenImage and records it in its TextureHandle.
+        struct ExtraColorAttachment {
+            VkImage               image          = VK_NULL_HANDLE;
+            TextureHandle*        textureHandle  = nullptr;
+            uint32_t              baseArrayLayer = 0;
+            uint32_t              baseMipLevel   = 0;
+            std::shared_ptr<void> viewRef;
+        };
+        std::vector<ExtraColorAttachment> extraColors;
         // Occlusion queries
         VkQueryPool      queryPool             = VK_NULL_HANDLE;
         // True when using traditional vkCmdBeginRenderPass / vkCmdEndRenderPass.

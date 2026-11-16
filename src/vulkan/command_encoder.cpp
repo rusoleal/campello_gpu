@@ -129,6 +129,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     uint32_t       resolveMipLevel      = 0;
 
     const bool useTraditional = data->deviceData && !data->deviceData->hasDynamicRendering;
+    std::vector<RenderPassEncoderHandle::ExtraColorAttachment> extraColors;
 
     // A Surface's swapchain image (Surface::acquireNextTexture()) is passed as
     // an explicit view, but needs the swapchain treatment, not the offscreen
@@ -338,6 +339,42 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
                                      0, 0, nullptr, 0, nullptr, 1, &resolveBarrier);
             }
         }
+
+        // Color attachments 1..N-1 (multiple render targets): the same
+        // entry transition as the first one (dynamic rendering; a
+        // traditional render pass does it with initialLayout), recorded
+        // for end().
+        for (size_t a = 1; a < descriptor.colorAttachments.size(); a++) {
+            const auto &ca = descriptor.colorAttachments[a];
+            if (!ca.view) continue;
+            auto *evh = (TextureViewHandle *)ca.view->native;
+            RenderPassEncoderHandle::ExtraColorAttachment extra;
+            extra.image          = evh->image;
+            extra.textureHandle  = evh->ownerTexture;
+            extra.baseArrayLayer = evh->baseArrayLayer;
+            extra.baseMipLevel   = evh->baseMipLevel;
+            extra.viewRef        = ca.view;
+            extraColors.push_back(extra);
+            if (!useTraditional) {
+                const bool preserving = ca.loadOp == LoadOp::load;
+                VkImageMemoryBarrier barrier{};
+                barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                barrier.oldLayout           = preserving ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                          : VK_IMAGE_LAYOUT_UNDEFINED;
+                barrier.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barrier.image               = extra.image;
+                barrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, extra.baseMipLevel, 1, extra.baseArrayLayer, 1 };
+                barrier.srcAccessMask       = preserving ? VK_ACCESS_SHADER_READ_BIT
+                                                          : VK_ACCESS_MEMORY_READ_BIT;
+                barrier.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                vkCmdPipelineBarrier(data->commandBuffer,
+                                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                     0, 0, nullptr, 0, nullptr, 1, &barrier);
+            }
+        }
     } else {
         // ── No color attachment: a depth-only pass (e.g. a shadow map) renders
         // over its depth attachment; with no attachment at all, 1x1.
@@ -363,6 +400,7 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
     rpeHandle->resolveTextureHandle    = resolveOwnerTexture;
     rpeHandle->resolveBaseArrayLayer   = resolveArrayLayer;
     rpeHandle->resolveBaseMipLevel     = resolveMipLevel;
+    rpeHandle->extraColors             = extraColors;
     if (descriptor.depthStencilAttachment.has_value() && descriptor.depthStencilAttachment->view &&
         !descriptor.depthStencilAttachment->depthReadOnly) {
         auto *dvh = (TextureViewHandle *)descriptor.depthStencilAttachment->view->native;
@@ -455,19 +493,24 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
                 resolveImageView = rvh->imageView;
             }
 
+            std::vector<VkFormat> extraColorFormats;
+            for (size_t a = 1; !isSwapchain && a < descriptor.colorAttachments.size(); a++) {
+                extraColorFormats.push_back(
+                    ((TextureViewHandle *)descriptor.colorAttachments[a].view->native)->format);
+            }
             const RenderPassKey rpKey{colorFormat, depthFormat, colorLoadOp, finalLayout,
-                                       colorSampleCount, resolveFormat};
+                                       colorSampleCount, resolveFormat, extraColorFormats};
             auto& rpCache = data->deviceData->offscreenRenderPassCache;
             auto  rpIt    = rpCache.find(rpKey);
             if (rpIt != rpCache.end()) {
                 rp = rpIt->second;
             } else {
                 rp = buildRenderPass(data->device, colorFormat, depthFormat, colorLoadOp, finalLayout,
-                                      colorSampleCount, resolveFormat);
+                                      colorSampleCount, resolveFormat, extraColorFormats);
                 rpCache.emplace(rpKey, rp);
             }
 
-            VkImageView attachments[3];
+            std::vector<VkImageView> attachments(3 + extraColorFormats.size());
             uint32_t    attachCount = 0;
             if (!descriptor.colorAttachments.empty()) {
                 attachments[attachCount++] = isSwapchain
@@ -480,12 +523,17 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             // (color, then depth, then resolve) exactly.
             if (resolveImageView != VK_NULL_HANDLE)
                 attachments[attachCount++] = resolveImageView;
+            // Then color attachments 1..N-1 (buildRenderPass() pushes them last).
+            for (size_t a = 1; a <= extraColorFormats.size(); a++) {
+                attachments[attachCount++] =
+                    ((TextureViewHandle *)descriptor.colorAttachments[a].view->native)->imageView;
+            }
 
             VkFramebufferCreateInfo fbInfo{};
             fbInfo.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
             fbInfo.renderPass      = rp;
             fbInfo.attachmentCount = attachCount;
-            fbInfo.pAttachments    = attachments;
+            fbInfo.pAttachments    = attachments.data();
             fbInfo.width           = renderExtent.width;
             fbInfo.height          = renderExtent.height;
             fbInfo.layers          = 1;
@@ -516,6 +564,20 @@ CommandEncoder::beginRenderPass(const BeginRenderPassDescriptor &descriptor) {
             dv.depthStencil = { descriptor.depthStencilAttachment->depthClearValue,
                                 descriptor.depthStencilAttachment->stencilClearValue };
             clearValues.push_back(dv);
+        }
+        // Clear values are indexed by attachment: color attachments 1..N-1
+        // come after the resolve attachment (never cleared).
+        if (!isSwapchain && descriptor.colorAttachments.size() > 1) {
+            if (!descriptor.colorAttachments.empty() && descriptor.colorAttachments[0].resolveTarget) {
+                clearValues.push_back(VkClearValue{});
+            }
+            for (size_t a = 1; a < descriptor.colorAttachments.size(); a++) {
+                VkClearValue cv{};
+                const auto &ca = descriptor.colorAttachments[a];
+                cv.color = { .float32 = { ca.clearValue[0], ca.clearValue[1],
+                                          ca.clearValue[2], ca.clearValue[3] } };
+                clearValues.push_back(cv);
+            }
         }
 
         VkRenderPassBeginInfo rpBegin{};
