@@ -56,9 +56,24 @@ bool Device::supportsTemporalUpscaler() {
     return false;
 }
 
+float Device::getTemporalUpscalerMaxScale() {
+    if (!supportsTemporalUpscaler()) return 0.0f;
+    if (@available(macOS 14.0, iOS 17.0, *)) {
+        id<MTLDevice> device = (__bridge id<MTLDevice>)static_cast<MetalDeviceData *>(native)->device;
+        return [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:device];
+    }
+    return 2.0f;
+}
+
 std::shared_ptr<TemporalUpscaler> Device::createTemporalUpscaler(const TemporalUpscalerDescriptor &descriptor) {
     if (!supportsTemporalUpscaler() || descriptor.inputWidth == 0 || descriptor.inputHeight == 0 ||
-        descriptor.outputWidth == 0 || descriptor.outputHeight == 0) {
+        descriptor.outputWidth < descriptor.inputWidth || descriptor.outputHeight < descriptor.inputHeight) {
+        return nullptr;
+    }
+    // MetalFX asserts (rather than failing) on a ratio past its limit.
+    const float maxScale = getTemporalUpscalerMaxScale();
+    if (float(descriptor.outputWidth) > float(descriptor.inputWidth) * maxScale + 0.5f ||
+        float(descriptor.outputHeight) > float(descriptor.inputHeight) * maxScale + 0.5f) {
         return nullptr;
     }
     if (@available(macOS 13.0, iOS 16.0, *)) {

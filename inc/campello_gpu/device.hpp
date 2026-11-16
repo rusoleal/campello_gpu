@@ -591,6 +591,13 @@ namespace systems::leal::campello_gpu
         bool supportsTemporalUpscaler();
 
         /**
+         * @brief The largest output / input size ratio, per axis, a
+         * `TemporalUpscaler` accepts (Metal: MetalFX's, e.g. 2 or 3 by GPU;
+         * 2 before macOS 14 / iOS 17). 0 where unsupported.
+         */
+        float getTemporalUpscalerMaxScale();
+
+        /**
          * @brief Creates a temporal upscaler (see `TemporalUpscaler`).
          *
          * @return The upscaler, or `nullptr` where unsupported or the

@@ -17,6 +17,8 @@ TextureUsage TemporalUpscaler::outputUsage() const {
     return static_cast<TextureUsage>(0);
 }
 
+float Device::getTemporalUpscalerMaxScale() { return 0.0f; }
+
 bool Device::supportsTemporalUpscaler() {
     return false;
 }

@@ -11,12 +11,13 @@ All notable changes to campello_gpu are documented here.
   - Check `Device::supportsTemporalUpscaler()`, then create one with `Device::createTemporalUpscaler(descriptor)`. The descriptor sets the input and output sizes, the colour, depth, motion and output formats, and `depthReversed`.
   - Encode it each frame with `CommandEncoder::encodeTemporalUpscale(upscaler, inputs)`. The inputs are the colour, depth, motion and output textures, the jitter in input pixels, the motion-vector scale, and `reset`.
   - Create the output with `TemporalUpscaler::outputUsage()`.
+  - `Device::getTemporalUpscalerMaxScale()` gives the largest output/input ratio per axis that the device accepts (MetalFX: 2 or 3 depending on the GPU; 2 before macOS 14 / iOS 17). `createTemporalUpscaler()` returns `nullptr` for a descriptor past that ratio, or one whose output is smaller than its input, because MetalFX would assert on them rather than fail.
   - Implemented on **Metal** with MetalFX's `MTLFXTemporalScaler` (macOS 13 / iOS 16 and later). MetalFX is weak-linked, so older systems still load the library and report no support.
   - MetalFX only writes private-storage textures, so the upscaler renders into an internal private texture and blits it into the caller's output. The output can therefore be any texture, including one you download.
   - Other backends report no support, and `createTemporalUpscaler()` returns `nullptr` there. FSR, DLSS and XeSS on Vulkan and DirectX 12 are future work.
 
 ### Tests
-- `tests/platform/test_temporal_upscaler.cpp`: invalid descriptors are refused, and a uniform 32×32 frame upscaled to 64×64 keeps its colour everywhere. Both pass under Metal API validation. The tests skip where there's no support.
+- `tests/platform/test_temporal_upscaler.cpp`: invalid descriptors are refused (zero sizes, a shrinking output, a ratio past the maximum scale), a descriptor at the maximum scale is accepted, and a uniform 32×32 frame upscaled to 64×64 keeps its colour everywhere. Both pass under Metal API validation. The tests skip where there's no support.
 
 ## [0.29.1] - 2026-11-14
 

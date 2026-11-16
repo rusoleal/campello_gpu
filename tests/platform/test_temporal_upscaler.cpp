@@ -61,10 +61,26 @@ TEST(TemporalUpscaler, RefusesInvalidDescriptors) {
         d.inputWidth = d.inputHeight = 32;
         d.outputWidth = d.outputHeight = 64;
         EXPECT_EQ(device->createTemporalUpscaler(d), nullptr) << "unsupported: none created";
+        EXPECT_EQ(device->getTemporalUpscalerMaxScale(), 0.0f);
         GTEST_SKIP() << "No temporal upscaling on this device";
     }
     TemporalUpscalerDescriptor empty;
     EXPECT_EQ(device->createTemporalUpscaler(empty), nullptr) << "zero sizes";
+    const float maxScale = device->getTemporalUpscalerMaxScale();
+    EXPECT_GE(maxScale, 1.0f);
+    TemporalUpscalerDescriptor smaller;
+    smaller.inputWidth = smaller.inputHeight = 64;
+    smaller.outputWidth = smaller.outputHeight = 32;
+    EXPECT_EQ(device->createTemporalUpscaler(smaller), nullptr) << "output smaller than the input";
+    // Past the limit: refused (MetalFX itself would assert).
+    TemporalUpscalerDescriptor tooFar;
+    tooFar.inputWidth = tooFar.inputHeight = 16;
+    tooFar.outputWidth = tooFar.outputHeight = uint32_t(16.0f * maxScale) + 16;
+    EXPECT_EQ(device->createTemporalUpscaler(tooFar), nullptr) << "past the maximum scale";
+    TemporalUpscalerDescriptor atLimit;
+    atLimit.inputWidth = atLimit.inputHeight = 32;
+    atLimit.outputWidth = atLimit.outputHeight = uint32_t(32.0f * maxScale);
+    EXPECT_NE(device->createTemporalUpscaler(atLimit), nullptr) << "at the maximum scale";
 }
 
 TEST(TemporalUpscaler, UpscalesAUniformFrame) {
