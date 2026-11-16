@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-16
+
 ### Added
 - **Vulkan: multiple render targets.** A render pipeline with several `FragmentDescriptor::targets` and a render pass with several `colorAttachments` now write every attachment, not just the first. A G-buffer can be drawn in one pass.
   - Pipelines declare every target's format: `VkPipelineRenderingCreateInfo` for dynamic rendering, the compatible render pass otherwise.
