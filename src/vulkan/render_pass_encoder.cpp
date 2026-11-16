@@ -114,6 +114,9 @@ void RenderPassEncoder::end() {
         if (!data->isSwapchain && data->resolveTextureHandle) {
             data->resolveTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
+        for (auto &extra : data->extraColors) {
+            if (extra.textureHandle) extra.textureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         return;
     }
 
@@ -186,6 +189,27 @@ void RenderPassEncoder::end() {
                                  0, 0, nullptr, 0, nullptr, 1, &resolveBarrier);
             if (data->resolveTextureHandle) {
                 data->resolveTextureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
+        }
+
+        // Color attachments 1..N-1 (multiple render targets), like the first.
+        for (auto &extra : data->extraColors) {
+            VkImageMemoryBarrier extraBarrier{};
+            extraBarrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            extraBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            extraBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            extraBarrier.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, extra.baseMipLevel, 1, extra.baseArrayLayer, 1 };
+            extraBarrier.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            extraBarrier.oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            extraBarrier.image               = extra.image;
+            extraBarrier.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            extraBarrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(data->commandBuffer,
+                                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &extraBarrier);
+            if (extra.textureHandle) {
+                extra.textureHandle->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
         }
     }

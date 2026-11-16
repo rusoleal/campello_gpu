@@ -136,7 +136,8 @@ VkRenderPass buildRenderPass(VkDevice device,
                                      VkAttachmentLoadOp colorLoadOp,
                                      VkImageLayout colorFinalLayout,
                                      uint32_t sampleCount,
-                                     VkFormat resolveFormat)
+                                     VkFormat resolveFormat,
+                                     const std::vector<VkFormat>& extraColorFormats)
 {
     std::vector<VkAttachmentDescription> attachments;
     const bool hasResolve = (resolveFormat != VK_FORMAT_UNDEFINED);
@@ -216,11 +217,39 @@ VkRenderPass buildRenderPass(VkDevice device,
         resolveRef.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
 
+    // Color attachments 1..N-1 (multiple render targets): pushed last, so
+    // color 0 / depth / resolve keep their indices; never resolved.
+    std::vector<VkAttachmentReference> colorRefs;
+    std::vector<VkAttachmentReference> resolveRefs;
+    if (hasColor) {
+        colorRefs.push_back(colorRef);
+        resolveRefs.push_back(resolveRef);
+        for (VkFormat extraFormat : extraColorFormats) {
+            VkAttachmentDescription extraAtt{};
+            extraAtt.format         = extraFormat;
+            extraAtt.samples        = samples;
+            extraAtt.loadOp         = colorLoadOp;
+            extraAtt.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+            extraAtt.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            extraAtt.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            extraAtt.initialLayout  = (colorLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
+                                      ? colorFinalLayout
+                                      : VK_IMAGE_LAYOUT_UNDEFINED;
+            extraAtt.finalLayout    = colorFinalLayout;
+            attachments.push_back(extraAtt);
+            VkAttachmentReference ref{};
+            ref.attachment = (uint32_t)attachments.size() - 1;
+            ref.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorRefs.push_back(ref);
+            resolveRefs.push_back({VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_UNDEFINED});
+        }
+    }
+
     VkSubpassDescription subpass{};
     subpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount    = hasColor ? 1 : 0;
-    subpass.pColorAttachments       = hasColor ? &colorRef : nullptr;
-    subpass.pResolveAttachments     = (hasColor && hasResolve) ? &resolveRef : nullptr;
+    subpass.colorAttachmentCount    = (uint32_t)colorRefs.size();
+    subpass.pColorAttachments       = hasColor ? colorRefs.data() : nullptr;
+    subpass.pResolveAttachments     = (hasColor && hasResolve) ? resolveRefs.data() : nullptr;
     subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
 
     VkSubpassDependency dep{};
@@ -2588,6 +2617,16 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     if (descriptor.fragment.has_value() && !descriptor.fragment->targets.empty()) {
         colorAttachmentFormat = pixelFormatToNative(descriptor.fragment->targets[0].format);
     }
+    // Every target's format (multiple render targets): the first one above,
+    // then targets 1..N-1.
+    std::vector<VkFormat> colorAttachmentFormats{colorAttachmentFormat};
+    std::vector<VkFormat> extraColorFormats;
+    if (descriptor.fragment.has_value()) {
+        for (size_t t = 1; t < descriptor.fragment->targets.size(); t++) {
+            extraColorFormats.push_back(pixelFormatToNative(descriptor.fragment->targets[t].format));
+            colorAttachmentFormats.push_back(extraColorFormats.back());
+        }
+    }
 
     VkPipelineRenderingCreateInfo pipelineRenderingCreateInfo = {};
     VkRenderPass compatibleRenderPass = VK_NULL_HANDLE;
@@ -2595,8 +2634,8 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     if (deviceData->hasDynamicRendering) {
         pipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
         pipelineRenderingCreateInfo.pNext = nullptr;
-        pipelineRenderingCreateInfo.colorAttachmentCount = 1;
-        pipelineRenderingCreateInfo.pColorAttachmentFormats = &colorAttachmentFormat;
+        pipelineRenderingCreateInfo.colorAttachmentCount = (uint32_t)colorAttachmentFormats.size();
+        pipelineRenderingCreateInfo.pColorAttachmentFormats = colorAttachmentFormats.data();
         pipelineRenderingCreateInfo.depthAttachmentFormat   = depthAttachmentFormat;
         pipelineRenderingCreateInfo.stencilAttachmentFormat = stencilAttachmentFormat;
     } else {
@@ -2616,7 +2655,8 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
                                                VK_ATTACHMENT_LOAD_OP_CLEAR,
                                                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                                                descriptor.sampleCount,
-                                               resolveFormat);
+                                               resolveFormat,
+                                               extraColorFormats);
     }
 
     VkGraphicsPipelineCreateInfo pipelineInfo = {};
