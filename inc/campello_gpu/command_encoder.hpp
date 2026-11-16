@@ -12,6 +12,7 @@
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/query_set.hpp>
+#include <campello_gpu/temporal_upscaler.hpp>
 #include <campello_gpu/types/offset_3d.hpp>
 #include <campello_gpu/types/extent_3d.hpp>
 
@@ -289,6 +290,14 @@ namespace systems::leal::campello_gpu
             std::shared_ptr<AccelerationStructure> src,
             std::shared_ptr<AccelerationStructure> dst,
             std::shared_ptr<Buffer> scratchBuffer);
+
+        /**
+         * @brief Records a temporal upscale (see `TemporalUpscaler`): the
+         * inputs' frame, depth and motion into the output, at the point
+         * of the command buffer it's recorded (no pass may be open).
+         * Does nothing where temporal upscaling is unsupported.
+         */
+        void encodeTemporalUpscale(std::shared_ptr<TemporalUpscaler> upscaler, const TemporalUpscaleInputs &inputs);
 
         /**
          * @brief Records an acceleration structure copy (for compaction or cloning).

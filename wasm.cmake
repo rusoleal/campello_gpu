@@ -7,6 +7,7 @@ message(STATUS "Building campello_gpu for Emscripten (WebGPU)")
 add_library(${PROJECT_NAME} STATIC
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
+    src/pi/temporal_upscaler_unsupported.cpp
     src/webgpu/conversions.cpp
     src/webgpu/device.cpp
     src/webgpu/surface.cpp

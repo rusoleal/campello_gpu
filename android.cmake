@@ -7,6 +7,7 @@ message(STATUS "Vulkan Lib = ${Vulkan_LIBRARY}")
 add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
     src/pi/utils.cpp
+    src/pi/temporal_upscaler_unsupported.cpp
     src/vulkan/device.cpp
     src/vulkan/surface.cpp
     src/vulkan/fence.cpp
