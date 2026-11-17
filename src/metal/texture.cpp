@@ -84,8 +84,29 @@ bool Texture::upload(uint64_t offset, uint64_t length, void *data) {
     NS::UInteger bytesPerRow   = (h > 0) ? (length / h) : length;
     NS::UInteger bytesPerImage = length;
 
-    MTL::Region region = MTL::Region::Make3D(0, 0, 0, w, h, d);
-    tex->replaceRegion(region, 0, 0, data, bytesPerRow, bytesPerImage);
+    if (tex->storageMode() != MTL::StorageModePrivate) {
+        MTL::Region region = MTL::Region::Make3D(0, 0, 0, w, h, d);
+        tex->replaceRegion(region, 0, 0, data, bytesPerRow, bytesPerImage);
+        return true;
+    }
+    // Private (GPU-written textures, see Device::createTexture()): the CPU
+    // can't write it, so the data goes through a shared staging buffer and a
+    // blit, finished before returning like replaceRegion.
+    if (!handle->deviceData || !handle->deviceData->commandQueue) return false;
+    auto *staging = tex->device()->newBuffer(data, length, MTL::ResourceStorageModeShared);
+    if (!staging) return false;
+    auto *cmdBuffer = handle->deviceData->commandQueue->commandBuffer();
+    auto *blit = cmdBuffer ? cmdBuffer->blitCommandEncoder() : nullptr;
+    if (!blit) {
+        staging->release();
+        return false;
+    }
+    blit->copyFromBuffer(staging, 0, bytesPerRow, bytesPerImage, MTL::Size::Make(w, h, d), tex, 0, 0,
+                         MTL::Origin::Make(0, 0, 0));
+    blit->endEncoding();
+    cmdBuffer->commit();
+    cmdBuffer->waitUntilCompleted();
+    staging->release();
     return true;
 }
 
