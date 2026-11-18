@@ -2,6 +2,11 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.32.1] - 2026-11-18
+
+### Fixed
+- **DirectX 12: a compute shader's output read back as zeros on some drivers** (WARP). A writable storage buffer is promoted to `UNORDERED_ACCESS` by the dispatch that writes it, and stays there for the rest of the command list, so copying it afterwards in the same command list (to a readback buffer, say) was an invalid state. Intel's driver tolerated it, WARP didn't, and the debug layer can't see implicit promotions. `ComputePassEncoder::end()` now returns the writable storage buffers its bind groups bound to `COMMON`.
+
 ## [0.32.0] - 2026-11-18
 
 All DirectX 12, found while bringing campello_renderer's G-buffer, TAA, denoiser, skinning, shadows and SSAO to DirectX.

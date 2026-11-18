@@ -1699,6 +1699,7 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
                     uavDesc.Buffer.NumElements  = static_cast<UINT>(size / 4);
                     uavDesc.Buffer.Flags        = D3D12_BUFFER_UAV_FLAG_RAW;
                     dev->CreateUnorderedAccessView(bh->resource, nullptr, &uavDesc, dst);
+                    h->writableBuffers.push_back(bb.buffer);
                 } else if (storage) {
                     const uint64_t size = bb.size > 0 ? bb.size : (bh->size > bb.offset ? bh->size - bb.offset : 0);
                     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
