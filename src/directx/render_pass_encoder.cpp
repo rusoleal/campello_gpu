@@ -5,6 +5,7 @@
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/constants/index_format.hpp>
 #include <campello_gpu/bind_group.hpp>
+#include <campello_gpu/texture.hpp>
 #include <algorithm>
 
 using namespace systems::leal::campello_gpu;
@@ -99,6 +100,23 @@ void RenderPassEncoder::end() {
             barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             barrier.Transition.pResource   = th->resource;
             barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            barriers.push_back(barrier);
+            th->currentState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        }
+    }
+    // A sampled depth attachment: DEPTH_WRITE -> shader-readable, so a later
+    // pass can read it (e.g. a G-buffer's depth). beginRenderPass() returns
+    // it to DEPTH_WRITE.
+    if (TextureHandle* th = h->sampledDepthTexture) {
+        if (th->currentState == D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+            D3D12_RESOURCE_BARRIER barrier = {};
+            barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            barrier.Transition.pResource   = th->resource;
+            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
             barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -213,6 +231,7 @@ void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     auto* rph = static_cast<RenderPipelineHandle*>(pipeline->native);
     h->topology       = rph->topology;
     h->vertexStrides  = rph->vertexStrides;
+    h->groupParams    = rph->groupParams;
     h->cmdList->SetPipelineState(rph->pso);
     h->cmdList->SetGraphicsRootSignature(rph->rootSignature);
     h->hasRootSignature = true;
@@ -283,8 +302,37 @@ void RenderPassEncoder::setBindGroup(uint32_t index, std::shared_ptr<BindGroup> 
     if (!bindGroup->native) return;
     auto* bgh = static_cast<BindGroupHandle*>(bindGroup->native);
 
-    if (bgh->gpuHandle.ptr != 0)
-        h->cmdList->SetGraphicsRootDescriptorTable(index, bgh->gpuHandle);
-    if (bgh->samplerHandle.ptr != 0)
-        h->cmdList->SetGraphicsRootDescriptorTable(index + 1, bgh->samplerHandle);
+    // Render targets read by this group that are still writable (sampled
+    // before any pass rendered into them, or a sampled depth texture):
+    // shader-readable first. This pass's own attachments are left alone.
+    std::vector<D3D12_RESOURCE_BARRIER> barriers;
+    for (const auto& weak : bgh->textures) {
+        auto texture = weak.lock();
+        if (!texture || !texture->native) continue;
+        auto* th = static_cast<TextureHandle*>(texture->native);
+        if (th->currentState != D3D12_RESOURCE_STATE_RENDER_TARGET &&
+            th->currentState != D3D12_RESOURCE_STATE_DEPTH_WRITE) continue;
+        if (th == h->sampledDepthTexture ||
+            std::find(h->colorAttachmentTextures.begin(), h->colorAttachmentTextures.end(), th) !=
+                h->colorAttachmentTextures.end()) continue;
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource   = th->resource;
+        barrier.Transition.StateBefore = th->currentState;
+        barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                                          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barriers.push_back(barrier);
+        th->currentState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    }
+    if (!barriers.empty())
+        h->cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+
+    // Bind group `index`'s root parameters (see BindGroupRootParams).
+    const auto params = rootParamsFor(h->groupParams, index);
+    if (bgh->gpuHandle.ptr != 0 && params[0] >= 0)
+        h->cmdList->SetGraphicsRootDescriptorTable(static_cast<UINT>(params[0]), bgh->gpuHandle);
+    if (bgh->samplerHandle.ptr != 0 && params[1] >= 0)
+        h->cmdList->SetGraphicsRootDescriptorTable(static_cast<UINT>(params[1]), bgh->samplerHandle);
 }

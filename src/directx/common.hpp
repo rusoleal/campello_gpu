@@ -24,6 +24,7 @@ typedef HANDLE HMONITOR;
 #include <algorithm>
 #include <array>
 #include <vector>
+#include <map>
 #include <set>
 #include <atomic>
 #include <cstdint>
@@ -437,6 +438,22 @@ struct DeviceData {
     // for a run of N contiguous indices, since campello_renderer rebuilds
     // combined-material BindGroups (with multiple distinct Sampler entries
     // each) every render() call.
+    // Shared sampler tables. Bind groups with the same samplers in the same
+    // order share one contiguous run of samplerHeap (samplers are immutable),
+    // reference-counted by BindGroupHandle::samplerKey. Without sharing, every
+    // bind group took its own run, and an app rebuilding many material bind
+    // groups per frame (campello_renderer: 64 materials x 3 frames x 11
+    // samplers) ran past the 2048-slot hardware limit, which hung the GPU.
+    // Keyed by SamplerHandle::id, which is never reused.
+    struct SamplerTable {
+        UINT base  = 0;
+        UINT count = 0;
+        UINT refs  = 0;
+    };
+    std::mutex                                     samplerTableMutex;
+    std::map<std::vector<uint64_t>, SamplerTable>  samplerTables;
+    std::atomic<uint64_t>                          nextSamplerId{1};
+
     std::mutex        samplerMutex;
     std::set<UINT>    samplerFreeSlots;
     std::array<std::vector<UINT>, kFramesInFlight> samplerPendingFreeSlots;
@@ -760,6 +777,45 @@ struct DeviceData {
             fence->SetEventOnCompletion(fenceValue, fenceEvent);
             WaitForSingleObject(fenceEvent, INFINITE);
         }
+        collectReleases();
+    }
+
+    // Deferred release of resources the GPU may still use. A Texture or
+    // Buffer dropped right after the commands using it were submitted (or
+    // while they're still being recorded) used to Release() its
+    // ID3D12Resource at once, which the debug layer reports as CORRUPTION
+    // ("referenced by GPU operations in-flight") and raises as an exception
+    // when no debugger is attached. Metal and Vulkan keep such resources
+    // alive until the GPU is done. Here the object waits until the fence
+    // reaches the next submit's value (which covers commands recorded but
+    // not yet submitted), checked on every submit (beginFrameRing()) and
+    // in waitForGpu(). Thread-safe: destructors can run on any thread.
+    std::mutex                                   releaseMutex;
+    std::vector<std::pair<UINT64, IUnknown*>>    pendingReleases;
+
+    void deferRelease(IUnknown* object) {
+        if (!object) return;
+        if (!fence) { object->Release(); return; }
+        std::lock_guard<std::mutex> lock(releaseMutex);
+        pendingReleases.push_back({ fenceValue + 1, object });
+    }
+
+    // Releases the deferred objects the GPU is done with (all of them when
+    // `everything`, at device destruction once the GPU is idle).
+    void collectReleases(bool everything = false) {
+        std::vector<IUnknown*> ready;
+        {
+            std::lock_guard<std::mutex> lock(releaseMutex);
+            if (pendingReleases.empty()) return;
+            const UINT64 done = everything || !fence ? UINT64_MAX : fence->GetCompletedValue();
+            auto keep = pendingReleases.begin();
+            for (auto& entry : pendingReleases) {
+                if (entry.first <= done) ready.push_back(entry.second);
+                else *keep++ = entry;
+            }
+            pendingReleases.erase(keep, pendingReleases.end());
+        }
+        for (IUnknown* object : ready) object->Release();
     }
 
     // Blocks the CPU until the device-global fence reaches `value` — unlike
@@ -832,6 +888,7 @@ struct DeviceData {
         recycleRtvExtraSlots(nextGen);
         recycleSamplerSlots(nextGen);
         recycleDsvSlots(nextGen);
+        collectReleases();
         currentFrameGen.store(nextGen);
         return nextGen;
     }
@@ -900,7 +957,41 @@ struct TextureHandle {
     // but RenderPassEncoder::end() leaves it there (it is never sampled), and
     // CommandEncoder::finish() returns it to PRESENT before the list closes.
     bool isSurfaceImage = false;
+
+    // Owners: the Texture plus each TextureView made from it (Texture::
+    // createView()). The handle's descriptors and resource are released when
+    // the last one goes (releaseTextureHandle()), so a view keeps its texture
+    // alive as on Metal: before, a view kept after its Texture was dropped
+    // pointed at a freed handle and at descriptor slots reused by other
+    // textures. Surface back buffers aren't heap-owned and aren't counted.
+    // A plain int updated through std::atomic_ref, so the struct stays
+    // assignable (surface.cpp resets its back buffer handles by assignment).
+    int refs = 1;
 };
+
+inline void retainTextureHandle(TextureHandle* h) {
+    if (h) std::atomic_ref<int>(h->refs).fetch_add(1);
+}
+
+// Drops one reference to `h`; the last one frees its descriptor slots, defers
+// the resource's release until the GPU is done with it, and deletes `h`.
+inline void releaseTextureHandle(TextureHandle* h) {
+    if (!h || std::atomic_ref<int>(h->refs).fetch_sub(1) != 1) return;
+    if (h->deviceData) {
+        h->deviceData->textureCount--;
+        h->deviceData->textureBytes.fetch_sub(h->allocatedSize);
+        if (h->rtvExtraIndex != static_cast<UINT>(-1))
+            h->deviceData->freeRtvExtraSlots({ h->rtvExtraIndex });
+        if (h->dsvIndex != static_cast<UINT>(-1))
+            h->deviceData->freeDsvSlots({ h->dsvIndex });
+    }
+    // Released once the GPU can no longer be using it (DeviceData::deferRelease()).
+    if (h->resource) {
+        if (h->deviceData) h->deviceData->deferRelease(h->resource);
+        else h->resource->Release();
+    }
+    delete h;
+}
 
 enum class ViewType { SRV, UAV, RTV, DSV };
 
@@ -918,6 +1009,8 @@ struct TextureViewHandle {
     // PRESENT<->RENDER_TARGET transition separately and must NOT be
     // transitioned to a shader-resource state.
     TextureHandle* sourceHandle = nullptr;
+    // Whether this view holds a reference to sourceHandle (TextureHandle::refs).
+    bool holdsSourceRef = false;
 
     // rtvExtraHeap slot backing cpuHandle, for views onto a non-default
     // (non-zero mip/array) render-target subresource — see Texture::
@@ -937,9 +1030,26 @@ struct ShaderModuleHandle {
     std::vector<uint8_t> bytecode;
 };
 
+// Per bind group index (PipelineLayoutDescriptor::bindGroupLayouts' order):
+// its root parameters, [resource table, sampler table], -1 where the group
+// has none (createUniversalRootSignature()). setBindGroup(index) binds through
+// this, so `index` is the bind group index as on Vulkan/Metal/WebGPU, not a
+// root parameter index: a group with samplers takes two root parameters,
+// which used to shift every later group's literal index.
+using BindGroupRootParams = std::vector<std::array<int, 2>>;
+
+// The root parameters of bind group `index`. Without a pipeline layout (or
+// past its groups), the old literal mapping: resources at `index`, samplers
+// at `index + 1`.
+inline std::array<int, 2> rootParamsFor(const BindGroupRootParams& params, uint32_t index) {
+    if (index < params.size()) return params[index];
+    return { static_cast<int>(index), static_cast<int>(index) + 1 };
+}
+
 struct RenderPipelineHandle {
     ID3D12PipelineState*     pso           = nullptr;
     ID3D12RootSignature*     rootSignature = nullptr;
+    BindGroupRootParams      groupParams;   // from the pipeline layout
     D3D12_PRIMITIVE_TOPOLOGY topology      = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
     std::vector<UINT>        vertexStrides; // arrayStride per buffer slot
 };
@@ -947,12 +1057,15 @@ struct RenderPipelineHandle {
 struct ComputePipelineHandle {
     ID3D12PipelineState*  pso           = nullptr;
     ID3D12RootSignature*  rootSignature = nullptr;
+    BindGroupRootParams   groupParams;   // from the pipeline layout
 };
 
 struct BindGroupLayoutHandle {
     std::vector<D3D12_DESCRIPTOR_RANGE1> ranges;
     uint32_t                             numDescriptors = 0;
 };
+
+class Texture;
 
 struct BindGroupHandle {
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle     = {};
@@ -967,11 +1080,21 @@ struct BindGroupHandle {
     // see allocSamplerIndexRange()'s doc comment. Freed the same way as
     // srvSlotIndices.
     std::vector<UINT> samplerSlotIndices;
+    // The shared sampler table this bind group uses (its samplers' ids, in
+    // entry order; DeviceData::samplerTables), released in ~BindGroup().
+    // Empty when the group has no samplers.
+    std::vector<uint64_t> samplerKey;
     DeviceData*        deviceData = nullptr;
+    // The textures this bind group reads (not owned): RenderPassEncoder::
+    // setBindGroup() moves any still in RENDER_TARGET or DEPTH_WRITE (e.g.
+    // a render target sampled before anything rendered into it) to a
+    // shader-readable state. See TextureHandle::currentState.
+    std::vector<std::weak_ptr<Texture>> textures;
 };
 
 struct PipelineLayoutHandle {
     ID3D12RootSignature* rootSignature = nullptr;
+    BindGroupRootParams  groupParams;   // see BindGroupRootParams
 };
 
 struct SamplerHandle {
@@ -979,6 +1102,9 @@ struct SamplerHandle {
     // per-BindGroup contiguous run of the shader-visible samplerHeap by
     // createBindGroup(). See samplerStagingHeap's doc comment.
     D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+    // Unique for the device's lifetime (never reused, unlike cpuHandle's
+    // slot): identifies this sampler in DeviceData::samplerTables' keys.
+    uint64_t id = 0;
 };
 
 struct QuerySetHandle {
@@ -1006,12 +1132,14 @@ struct RayTracingPipelineHandle {
     ID3D12Resource*              missTable     = nullptr;
     ID3D12Resource*              hitGroupTable = nullptr;
     D3D12_DISPATCH_RAYS_DESC     dispatchDesc  = {};
+    BindGroupRootParams          groupParams;   // from the pipeline layout
 };
 
 struct RayTracingPassEncoderHandle {
     ID3D12GraphicsCommandList4* cmdList4      = nullptr;
     DeviceData*                 deviceData    = nullptr;
     D3D12_DISPATCH_RAYS_DESC    dispatchDesc  = {};
+    BindGroupRootParams         groupParams;   // the current pipeline's
 };
 
 struct CommandEncoderHandle {
@@ -1032,6 +1160,7 @@ struct CommandEncoderHandle {
 struct RenderPassEncoderHandle {
     ID3D12GraphicsCommandList* cmdList    = nullptr;
     DeviceData*                deviceData = nullptr;
+    BindGroupRootParams        groupParams;   // the current pipeline's
     // Index buffer state for drawIndexed
     D3D12_INDEX_BUFFER_VIEW    ibv        = {};
     bool                       hasIBV     = false;
@@ -1055,6 +1184,10 @@ struct RenderPassEncoderHandle {
     // shader-readable state in end(). See TextureHandle::currentState's doc
     // comment.
     std::vector<TextureHandle*> colorAttachmentTextures;
+    // The depth attachment when it can also be sampled (it has an SRV):
+    // end() moves it from DEPTH_WRITE to a shader-readable state, like
+    // colorAttachmentTextures. Null otherwise (it stays DEPTH_WRITE).
+    TextureHandle* sampledDepthTexture = nullptr;
 
     // MSAA resolve targets for this pass's color attachments, populated by
     // beginRenderPass() whenever ColorAttachment::resolveTarget is set.
@@ -1076,6 +1209,7 @@ struct RenderPassEncoderHandle {
 struct ComputePassEncoderHandle {
     ID3D12GraphicsCommandList* cmdList     = nullptr;
     DeviceData*                deviceData  = nullptr;
+    BindGroupRootParams        groupParams;   // the current pipeline's
 };
 
 struct CommandBufferHandle {
@@ -1249,6 +1383,31 @@ inline DXGI_FORMAT toDXGIFormat(systems::leal::campello_gpu::PixelFormat f) {
         case PixelFormat::bc6h_rgb_float:        return DXGI_FORMAT_BC6H_SF16;
         case PixelFormat::bc7_rgba_unorm:        return DXGI_FORMAT_BC7_UNORM;
         case PixelFormat::bc7_rgba_unorm_srgb:   return DXGI_FORMAT_BC7_UNORM_SRGB;
+        default:                                 return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
+// Depth textures that are also sampled (TextureUsage::textureBinding) are
+// created typeless, so one resource has a depth-stencil view (the D format)
+// and a shader resource view of its depth plane (the R format).
+inline DXGI_FORMAT depthTypelessFormat(systems::leal::campello_gpu::PixelFormat f) {
+    using namespace systems::leal::campello_gpu;
+    switch (f) {
+        case PixelFormat::depth16unorm:          return DXGI_FORMAT_R16_TYPELESS;
+        case PixelFormat::depth24plus_stencil8:  return DXGI_FORMAT_R24G8_TYPELESS;
+        case PixelFormat::depth32float:          return DXGI_FORMAT_R32_TYPELESS;
+        case PixelFormat::depth32float_stencil8: return DXGI_FORMAT_R32G8X24_TYPELESS;
+        default:                                 return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
+inline DXGI_FORMAT depthSrvFormat(systems::leal::campello_gpu::PixelFormat f) {
+    using namespace systems::leal::campello_gpu;
+    switch (f) {
+        case PixelFormat::depth16unorm:          return DXGI_FORMAT_R16_UNORM;
+        case PixelFormat::depth24plus_stencil8:  return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+        case PixelFormat::depth32float:          return DXGI_FORMAT_R32_FLOAT;
+        case PixelFormat::depth32float_stencil8: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
         default:                                 return DXGI_FORMAT_UNKNOWN;
     }
 }

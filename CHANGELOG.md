@@ -2,6 +2,32 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.32.0] - 2026-11-18
+
+All DirectX 12, found while bringing campello_renderer's G-buffer, TAA, denoiser, skinning, shadows and SSAO to DirectX.
+
+### Added
+- **Sampled depth textures.** A depth texture created with `textureBinding` usage (2D, single sample) is now typeless, with a depth-stencil view and a shader resource view of its depth plane (`R32_FLOAT` for `depth32float`). Before, depth textures had no SRV, so binding one to a shader read nothing. `RenderPassEncoder::end()` moves such a depth attachment to a shader-readable state, and `beginRenderPass()` moves it back to `DEPTH_WRITE`.
+- **Storage buffers are raw views.** A buffer bound where the layout declares a read-only storage buffer gets a raw SRV (`ByteAddressBuffer`), a (writable) storage buffer a raw UAV (`RWByteAddressBuffer`, UAV range in the root signature). Before, every buffer became a constant buffer view, and writable storage had an SRV range, so a compute shader writing a buffer didn't match its root signature.
+
+### Changed
+- **`setBindGroup(index)` takes the bind group index** (the position in `PipelineLayoutDescriptor::bindGroupLayouts`), as on Vulkan, Metal and WebGPU, in render, compute and ray tracing passes. It took a root parameter index: a group with samplers uses two root parameters, so every later group's index was off, and apps couldn't use two groups with samplers. Pipelines now record each group's root parameters from their layout (`BindGroupRootParams`). Layouts whose groups before the last have no samplers bind as before.
+
+### Fixed
+- **Resources released while the GPU still used them.** `~Texture()` and `~Buffer()` released their `ID3D12Resource` at once. The debug layer reports that as CORRUPTION and, without a debugger attached, raises it as an exception (code 0x87d); without the debug layer it's undefined behaviour. They're now released once the queue's fence passes the next submit (`DeviceData::deferRelease()`, collected on every submit, in `waitForIdle()` and when the device is destroyed). Fixes `Texture.DroppingTextureImmediatelyAfterSubmitTriggersNoValidationError`.
+- **Sampler heap exhaustion hung the GPU.** Every bind group copied its samplers into its own run of the 2048-slot shader-visible sampler heap, so an app with many material bind groups rebuilt per frame ran out. Bind groups with the same samplers in the same order now share one reference-counted table (keyed by a per-sampler id that is never reused).
+- **`generateMipmaps()` left cube and array textures, and textures without render target usage, without mips.** It returned early for anything but `tt2d` and rendered into textures that couldn't be render targets. It now handles each array layer, and colour textures with a mip chain are created render-target capable when their format allows it (flag only: no view, same initial state).
+- **Storage buffers can be read by shaders and uploaded to.** They're created in `COMMON` (implicitly promoted to shader resource, unordered access or copy states) instead of `UNORDERED_ACCESS`, where reading them as a shader resource was an invalid state. `Buffer::upload()` copies through a staging buffer for default-heap buffers; before it returned false, so `createBuffer(size, storage, data)` made a buffer of zeros.
+- **Render targets bound before anything rendered into them.** A render target texture stays in `RENDER_TARGET` from creation until a pass writes it. Binding it to a shader before then (a history texture on its first frame) was an invalid resource state. `RenderPassEncoder::setBindGroup()` now moves bound render targets and sampled depth textures that are still writable into a shader-readable state, except the pass's own attachments. Bind groups keep weak references to their render target textures for this.
+- **Depth-only pipelines** (no fragment stage) have no render targets; they declared one `R8G8B8A8_UNORM` target, which disagreed with a pass that has only a depth attachment.
+- **Comparison samplers** (`SamplerDescriptor::compare`) use a comparison filter, so `SampleCmp` compares; before only the comparison function was set.
+- **A `TextureView` keeps its texture alive**, as on Metal. The view and the texture share a reference-counted handle; its descriptors and resource go with the last of them. Before, a view kept after its `Texture` was dropped pointed at a freed handle, and its render target descriptor was reused by other textures (draws then went to the wrong texture, and the debug layer reported format mismatches).
+- **The debug layer's "clear values do not match" hint is filtered.** Passes clear render targets to their own colour, so no optimized clear value can match them all, and the hint (one per clear) drowned out real messages.
+
+### Tests
+- On Windows (Intel Iris 550, D3D12 debug layer): universal 76 passed; integration 225 passed (before: 224 passed, 1 failed).
+- campello_renderer's suite against this build: 104 passed, 34 skipped (ray tracing and other Metal-only features), 0 failed, no debug layer errors.
+
 ## [0.31.2] - 2026-11-18
 
 ### Changed

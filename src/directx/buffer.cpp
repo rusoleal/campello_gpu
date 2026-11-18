@@ -19,7 +19,9 @@ Buffer::~Buffer() {
     
     if (h->resource) {
         if (h->mapped) h->resource->Unmap(0, nullptr);
-        h->resource->Release();
+        // Released once the GPU can no longer be using it (DeviceData::deferRelease()).
+        if (h->deviceData) h->deviceData->deferRelease(h->resource);
+        else h->resource->Release();
     }
     delete h;
 }
@@ -32,10 +34,72 @@ uint64_t Buffer::getLength() {
 bool Buffer::upload(uint64_t offset, uint64_t length, void* data) {
     if (!native || !data) return false;
     auto* h = static_cast<BufferHandle*>(native);
-    if (!h->mapped) return false;
     if (offset + length > h->size) return false;
-    std::memcpy(static_cast<uint8_t*>(h->mapped) + offset, data, length);
-    return true;
+    if (h->mapped) {
+        std::memcpy(static_cast<uint8_t*>(h->mapped) + offset, data, length);
+        return true;
+    }
+    // A default-heap (storage) buffer isn't CPU-visible: copy through a
+    // staging upload buffer and wait for the copy, as Texture::upload() does.
+    // It's in COMMON (Device::createBuffer()), which promotes to COPY_DEST.
+    // Before, this returned false, so createBuffer(size, storage, data) made
+    // a buffer of zeros.
+    if (h->isReadback || !h->device || !h->queue || length == 0) return false;
+
+    D3D12_HEAP_PROPERTIES hp = {};
+    hp.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC rd = {};
+    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width            = length;
+    rd.Height           = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels        = 1;
+    rd.Format           = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ID3D12Resource* staging = nullptr;
+    if (FAILED(h->device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                   IID_PPV_ARGS(&staging)))) return false;
+    void* mapped = nullptr;
+    D3D12_RANGE noRead = { 0, 0 };
+    if (FAILED(staging->Map(0, &noRead, &mapped))) { staging->Release(); return false; }
+    std::memcpy(mapped, data, length);
+    staging->Unmap(0, nullptr);
+
+    ID3D12CommandAllocator* alloc = nullptr;
+    ID3D12GraphicsCommandList* list = nullptr;
+    if (FAILED(h->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc)))) {
+        staging->Release();
+        return false;
+    }
+    if (FAILED(h->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, nullptr, IID_PPV_ARGS(&list)))) {
+        alloc->Release();
+        staging->Release();
+        return false;
+    }
+    list->CopyBufferRegion(h->resource, offset, staging, 0, length);
+    bool ok = SUCCEEDED(list->Close());
+    if (ok) {
+        ID3D12CommandList* lists[] = { list };
+        h->queue->ExecuteCommandLists(1, lists);
+        ID3D12Fence* fence = nullptr;
+        ok = SUCCEEDED(h->device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
+        if (ok) {
+            h->queue->Signal(fence, 1);
+            if (fence->GetCompletedValue() < 1) {
+                HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                fence->SetEventOnCompletion(1, event);
+                WaitForSingleObject(event, INFINITE);
+                CloseHandle(event);
+            }
+            fence->Release();
+        }
+    }
+    list->Release();
+    alloc->Release();
+    staging->Release();
+    return ok;
 }
 
 bool Buffer::download(uint64_t offset, uint64_t length, void* data) {
