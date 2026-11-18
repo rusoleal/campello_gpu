@@ -1066,6 +1066,7 @@ struct BindGroupLayoutHandle {
 };
 
 class Texture;
+class Buffer;
 
 struct BindGroupHandle {
     D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle     = {};
@@ -1090,6 +1091,11 @@ struct BindGroupHandle {
     // a render target sampled before anything rendered into it) to a
     // shader-readable state. See TextureHandle::currentState.
     std::vector<std::weak_ptr<Texture>> textures;
+    // The writable storage buffers this group binds (raw UAVs): a compute
+    // pass using it returns them to COMMON when it ends (ComputePassEncoder::
+    // end()), so a later copy or read in the same command list sees a valid
+    // state. Not owned.
+    std::vector<std::weak_ptr<Buffer>> writableBuffers;
 };
 
 struct PipelineLayoutHandle {
@@ -1209,6 +1215,9 @@ struct RenderPassEncoderHandle {
 struct ComputePassEncoderHandle {
     ID3D12GraphicsCommandList* cmdList     = nullptr;
     DeviceData*                deviceData  = nullptr;
+    // Writable storage buffers bound in this pass (BindGroupHandle::
+    // writableBuffers): end() returns them from UNORDERED_ACCESS to COMMON.
+    std::vector<ID3D12Resource*> writtenBuffers;
     BindGroupRootParams        groupParams;   // the current pipeline's
 };
 
