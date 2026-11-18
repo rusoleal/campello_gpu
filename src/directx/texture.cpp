@@ -19,21 +19,8 @@ Texture::Texture(void* pd) : native(pd) {}
 
 Texture::~Texture() {
     if (!native) return;
-    auto* h = static_cast<TextureHandle*>(native);
-    
-    // Phase 2: Update memory tracking
-    if (h->deviceData) {
-        h->deviceData->textureCount--;
-        h->deviceData->textureBytes.fetch_sub(h->allocatedSize);
-
-        if (h->rtvExtraIndex != static_cast<UINT>(-1))
-            h->deviceData->freeRtvExtraSlots({ h->rtvExtraIndex });
-        if (h->dsvIndex != static_cast<UINT>(-1))
-            h->deviceData->freeDsvSlots({ h->dsvIndex });
-    }
-
-    if (h->resource) h->resource->Release();
-    delete h;
+    // The handle (descriptors, resource) goes when its last view does too.
+    releaseTextureHandle(static_cast<TextureHandle*>(native));
 }
 
 std::shared_ptr<TextureView> Texture::createView(
@@ -180,6 +167,11 @@ std::shared_ptr<TextureView> Texture::createView(
         }
     }
 
+    // The view keeps its texture alive (TextureHandle::refs).
+    if (!h->isSurfaceImage) {
+        retainTextureHandle(h);
+        vh->holdsSourceRef = true;
+    }
     return std::shared_ptr<TextureView>(new TextureView(vh));
 }
 

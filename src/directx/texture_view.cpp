@@ -10,6 +10,8 @@ TextureView::~TextureView() {
     auto* h = static_cast<TextureViewHandle*>(native);
     if (h->rtvExtraIndex != static_cast<UINT>(-1) && h->deviceData)
         h->deviceData->freeRtvExtraSlots({ h->rtvExtraIndex });
+    // Its reference to the texture (Texture::createView()).
+    if (h->holdsSourceRef) releaseTextureHandle(h->sourceHandle);
     delete h;
 }
 

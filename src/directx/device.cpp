@@ -220,6 +220,16 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd,
         HRESULT hr = dev->QueryInterface(IID_PPV_ARGS(&data->infoQueue));
         if (SUCCEEDED(hr)) {
             std::cerr << "[D3D12 debug layer] ID3D12InfoQueue acquired — draining once per frame" << std::endl;
+            // Clearing a render target to a colour other than its optimized
+            // clear value (or with none) is a performance hint, not an error:
+            // the API takes a clear colour per pass, so no single value
+            // passed at creation can match them all, and the hint drowned
+            // out real messages.
+            D3D12_MESSAGE_ID hidden[] = { D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE };
+            D3D12_INFO_QUEUE_FILTER filter = {};
+            filter.DenyList.NumIDs  = static_cast<UINT>(std::size(hidden));
+            filter.DenyList.pIDList = hidden;
+            data->infoQueue->AddStorageFilterEntries(&filter);
         } else {
             std::cerr << "[D3D12 debug layer] QueryInterface(ID3D12InfoQueue) FAILED hr=0x"
                        << std::hex << hr << std::dec << std::endl;
@@ -385,7 +395,8 @@ static DeviceData* createDeviceData(IDXGIAdapter1* adapter, void* pd,
 // -----------------------------------------------------------------------
 
 static ID3D12RootSignature* createUniversalRootSignature(ID3D12Device* device,
-    const std::vector<BindGroupLayoutHandle*>& layouts) {
+    const std::vector<BindGroupLayoutHandle*>& layouts,
+    BindGroupRootParams* groupParams = nullptr) {
 
     // Build descriptor tables from each bind group layout. Sampler
     // descriptors live in a separate heap from CBV/SRV/UAV descriptors, so a
@@ -412,6 +423,7 @@ static ID3D12RootSignature* createUniversalRootSignature(ID3D12Device* device,
         params.push_back(p);
     };
 
+    if (groupParams) groupParams->assign(layouts.size(), { -1, -1 });
     for (UINT groupIndex = 0; groupIndex < layouts.size(); ++groupIndex) {
         auto* layout = layouts[groupIndex];
         if (!layout || layout->ranges.empty()) continue;
@@ -444,7 +456,12 @@ static ID3D12RootSignature* createUniversalRootSignature(ID3D12Device* device,
                 resourceRanges.push_back(range);
         }
 
+        // This group's root parameters, for setBindGroup(groupIndex).
+        const bool haveResources = !resourceRanges.empty();
+        const bool haveSamplers  = !samplerRanges.empty();
+        if (groupParams && haveResources) (*groupParams)[groupIndex][0] = static_cast<int>(params.size());
         addTable(std::move(resourceRanges));
+        if (groupParams && haveSamplers) (*groupParams)[groupIndex][1] = static_cast<int>(params.size());
         addTable(std::move(samplerRanges));
     }
 
@@ -489,6 +506,8 @@ Device::~Device() {
     // buffer may hold the last reference to a Surface, whose destructor waits
     // on that fence.
     for (auto& cb : d->genCommandBuffer) cb.reset();
+    // The GPU is idle: every resource still waiting for it (deferRelease()).
+    d->collectReleases(/*everything=*/true);
 
     if (d->fenceEvent) CloseHandle(d->fenceEvent);
     if (d->fence)      d->fence->Release();
@@ -942,10 +961,20 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, BufferUsage usage) {
     rd.Flags            = isUAV ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
                                 : D3D12_RESOURCE_FLAG_NONE;
 
+    // Storage buffers start in COMMON: a buffer in COMMON is promoted
+    // implicitly to the state its first use in a command list needs (shader
+    // resource, unordered access, copy source or destination) and decays back
+    // to COMMON when the command list completes, so a storage buffer can be
+    // read by a vertex shader (a joint palette), written by a compute shader or
+    // uploaded to without barriers. In UNORDERED_ACCESS, reading it as a shader
+    // resource was an invalid state. Acceleration structure storage keeps
+    // UNORDERED_ACCESS, as before.
+    const bool isAccelerationStructure = (u & static_cast<int>(BufferUsage::accelerationStructureStorage)) != 0;
     D3D12_RESOURCE_STATES initialState =
-        isReadback ? D3D12_RESOURCE_STATE_COPY_DEST :
-        isUAV      ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
-                     D3D12_RESOURCE_STATE_GENERIC_READ;
+        isReadback              ? D3D12_RESOURCE_STATE_COPY_DEST :
+        isAccelerationStructure ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
+        isUAV                   ? D3D12_RESOURCE_STATE_COMMON :
+                                  D3D12_RESOURCE_STATE_GENERIC_READ;
 
     ID3D12Resource* resource = nullptr;
     if (FAILED(dev->CreateCommittedResource(
@@ -1025,6 +1054,12 @@ std::shared_ptr<Texture> Device::createTexture(
     rd.SampleDesc.Count = std::max(samples, 1u);
 
     const int u = static_cast<int>(usageMode);
+    // A sampled depth texture: typeless, with a DSV and an SRV of their own
+    // formats (see depthTypelessFormat()).
+    const bool sampledDepth = isDepthFormat(pixelFormat) && pixelFormat != PixelFormat::stencil8 &&
+                              (u & static_cast<int>(TextureUsage::textureBinding)) &&
+                              type == TextureType::tt2d && resolvedDepth == 1 && std::max(samples, 1u) == 1;
+    if (sampledDepth) rd.Format = depthTypelessFormat(pixelFormat);
     rd.Flags = D3D12_RESOURCE_FLAG_NONE;
     if (u & static_cast<int>(TextureUsage::renderTarget)) {
         if (isDepthFormat(pixelFormat))
@@ -1034,6 +1069,22 @@ std::shared_ptr<Texture> Device::createTexture(
     }
     if (u & static_cast<int>(TextureUsage::storageBinding))
         rd.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    // A colour texture with a mip chain can also be a render target, so
+    // CommandEncoder::generateMipmaps() (which renders each mip from the one
+    // above) works on it whatever its usage. Without the flag its RTVs were
+    // invalid and the generated mips stayed black (e.g. an environment cube
+    // uploaded with copyDst | textureBinding). Only the resource flag: no RTV
+    // is made and the initial state is unchanged. Skipped for formats that
+    // can't be render targets (block-compressed ones).
+    if (rd.MipLevels > 1 && !isDepthFormat(pixelFormat) && type != TextureType::tt3d &&
+        !(rd.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {};
+        support.Format = fmt;
+        if (SUCCEEDED(dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) &&
+            (support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET)) {
+            rd.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        }
+    }
 
     switch (type) {
         case TextureType::tt1d:
@@ -1058,6 +1109,9 @@ std::shared_ptr<Texture> Device::createTexture(
             clearVal.DepthStencil.Stencil = 0;
             pClear = &clearVal;
         } else {
+            // Opaque black. Passes clear to their own colour, which the debug
+            // layer reports as a mismatch: a performance hint, filtered in
+            // the info queue (see where it's acquired).
             initialState = D3D12_RESOURCE_STATE_RENDER_TARGET;
             clearVal.Format   = fmt;
             clearVal.Color[3] = 1.0f;
@@ -1098,7 +1152,15 @@ std::shared_ptr<Texture> Device::createTexture(
                 return nullptr;
             }
             handle->dsvHandle = d->dsvCpuAt(handle->dsvIndex);
-            dev->CreateDepthStencilView(resource, nullptr, handle->dsvHandle);
+            if (sampledDepth) {
+                D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+                dsvDesc.Format             = fmt;
+                dsvDesc.ViewDimension      = D3D12_DSV_DIMENSION_TEXTURE2D;
+                dsvDesc.Texture2D.MipSlice = 0;
+                dev->CreateDepthStencilView(resource, &dsvDesc, handle->dsvHandle);
+            } else {
+                dev->CreateDepthStencilView(resource, nullptr, handle->dsvHandle);
+            }
         } else {
             handle->rtvExtraIndex = d->allocRtvExtraIndex();
             if (handle->rtvExtraIndex == static_cast<UINT>(-1)) {
@@ -1112,6 +1174,18 @@ std::shared_ptr<Texture> Device::createTexture(
             handle->rtvHandle = d->rtvExtraCpuAt(handle->rtvExtraIndex);
             dev->CreateRenderTargetView(resource, nullptr, handle->rtvHandle);
         }
+    }
+
+    // A sampled depth texture's SRV reads its depth plane.
+    if (sampledDepth) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format                    = depthSrvFormat(pixelFormat);
+        srvDesc.Shader4ComponentMapping   = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.ViewDimension             = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MostDetailedMip = 0;
+        srvDesc.Texture2D.MipLevels       = handle->mipLevels;
+        handle->srvCpuHandle = d->allocSrvStagingCpu();
+        dev->CreateShaderResourceView(resource, &srvDesc, handle->srvCpuHandle);
     }
 
     // Pre-create an SRV for shader-sampled textures so createBindGroup can copy it
@@ -1381,8 +1455,10 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
         for (size_t i = 0; i < descriptor.fragment->targets.size() && i < 8; ++i)
             psd.RTVFormats[i] = toDXGIFormat(descriptor.fragment->targets[i].format);
     } else {
-        psd.NumRenderTargets = 1;
-        psd.RTVFormats[0]    = DXGI_FORMAT_R8G8B8A8_UNORM;
+        // Depth-only pipelines (no fragment stage, e.g. a shadow map pass)
+        // have no render targets. Declaring one made the PSO disagree with a
+        // pass that binds only a depth attachment.
+        psd.NumRenderTargets = 0;
     }
 
     // Topology type
@@ -1407,6 +1483,8 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(
     auto* h           = new RenderPipelineHandle();
     h->pso            = pso;
     h->rootSignature  = rootSig;
+    if (descriptor.layout && descriptor.layout->native)
+        h->groupParams = static_cast<PipelineLayoutHandle*>(descriptor.layout->native)->groupParams;
     h->topology       = toPrimitiveTopology(descriptor.topology);
     h->vertexStrides.reserve(descriptor.vertex.buffers.size());
     for (const auto& layout : descriptor.vertex.buffers)
@@ -1444,6 +1522,8 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(
     auto* h          = new ComputePipelineHandle();
     h->pso           = pso;
     h->rootSignature = rootSig;
+    if (descriptor.layout && descriptor.layout->native)
+        h->groupParams = static_cast<PipelineLayoutHandle*>(descriptor.layout->native)->groupParams;
     d->computePipelineCount++;
     return std::shared_ptr<ComputePipeline>(new ComputePipeline(h));
 }
@@ -1463,9 +1543,14 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(
 
         switch (entry.type) {
             case EntryObjectType::buffer:
-                range.RangeType = (entry.data.buffer.type == EntryObjectBufferType::uniform)
+                // Uniform -> CBV, read-only storage -> SRV, (writable)
+                // storage -> UAV; storage buffers are raw views
+                // ((RW)ByteAddressBuffer, see createBindGroup()).
+                range.RangeType = entry.data.buffer.type == EntryObjectBufferType::uniform
                     ? D3D12_DESCRIPTOR_RANGE_TYPE_CBV
-                    : D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                    : entry.data.buffer.type == EntryObjectBufferType::storage
+                        ? D3D12_DESCRIPTOR_RANGE_TYPE_UAV
+                        : D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
                 break;
             case EntryObjectType::texture:
                 range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -1505,6 +1590,9 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
     auto* d   = static_cast<DeviceData*>(native);
     auto* dev = d->device;
     h->deviceData = d;
+    auto* layoutHandle = descriptor.layout && descriptor.layout->native
+                             ? static_cast<BindGroupLayoutHandle*>(descriptor.layout->native)
+                             : nullptr;
 
     // Count non-sampler entries up front and reserve one contiguous run for
     // all of them — see allocSrvIndexRange()'s doc comment for why this
@@ -1527,12 +1615,41 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
     UINT baseIdx  = haveSrv ? d->allocSrvIndexRange(nonSamplerCount) : 0;
     UINT nextIdx  = baseIdx;
 
-    // Reserve one contiguous run in the shader-visible sampler heap for all
-    // of this bind group's sampler entries — mirrors baseIdx/nextIdx above.
-    // See allocSamplerIndexRange()'s doc comment for why contiguity is
-    // required (the root signature's sampler descriptor table).
+    // The sampler table: one contiguous run of the shader-visible sampler heap
+    // for this bind group's sampler entries (see allocSamplerIndexRange()'s
+    // doc comment for why contiguity is required), shared with every other
+    // bind group that has the same samplers in the same order
+    // (DeviceData::samplerTables).
     bool haveSampler   = samplerCount > 0;
-    UINT baseSamplerIdx = haveSampler ? d->allocSamplerIndexRange(samplerCount) : 0;
+    UINT baseSamplerIdx = 0;
+    if (haveSampler) {
+        std::vector<SamplerHandle*> samplers;
+        for (const auto& entry : descriptor.entries) {
+            if (auto* sampPtr = std::get_if<std::shared_ptr<Sampler>>(&entry.resource)) {
+                if (*sampPtr && (*sampPtr)->native) {
+                    auto* sh = static_cast<SamplerHandle*>((*sampPtr)->native);
+                    samplers.push_back(sh);
+                    h->samplerKey.push_back(sh->id);
+                }
+            }
+        }
+        std::lock_guard<std::mutex> lock(d->samplerTableMutex);
+        auto it = d->samplerTables.find(h->samplerKey);
+        if (it != d->samplerTables.end()) {
+            ++it->second.refs;
+            baseSamplerIdx = it->second.base;
+        } else {
+            baseSamplerIdx = d->allocSamplerIndexRange(samplerCount);
+            if (baseSamplerIdx != static_cast<UINT>(-1)) {
+                for (UINT i = 0; i < samplerCount; ++i) {
+                    if (samplers[i]->cpuHandle.ptr != 0)
+                        dev->CopyDescriptorsSimple(1, d->samplerCpuAt(baseSamplerIdx + i), samplers[i]->cpuHandle,
+                                                   D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+                }
+                d->samplerTables[h->samplerKey] = { baseSamplerIdx, samplerCount, 1 };
+            }
+        }
+    }
     if (haveSampler && baseSamplerIdx == static_cast<UINT>(-1)) {
         // samplerHeap exhausted (see allocSamplerIndexRange()'s doc
         // comment) — fail the bind group instead of writing sampler
@@ -1547,7 +1664,6 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
         delete h;
         return nullptr;
     }
-    UINT nextSamplerIdx = baseSamplerIdx;
 
     for (const auto& entry : descriptor.entries) {
         if (auto* bbPtr = std::get_if<BufferBinding>(&entry.resource)) {
@@ -1557,11 +1673,48 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
                 UINT idx = nextIdx++;
                 h->srvSlotIndices.push_back(idx);
                 D3D12_CPU_DESCRIPTOR_HANDLE dst = d->srvCpuAt(idx);
-                // Uniform buffers → CBV; others → raw SRV
-                D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-                cbvDesc.BufferLocation = bh->resource->GetGPUVirtualAddress() + bb.offset;
-                cbvDesc.SizeInBytes    = static_cast<UINT>((bb.size + 255) & ~255ULL);
-                dev->CreateConstantBufferView(&cbvDesc, dst);
+                // Uniform buffers -> CBV; (read-only) storage buffers, whose
+                // layout range is an SRV, -> a raw SRV (ByteAddressBuffer).
+                // A binding number can also be a texture's (separate
+                // register types), so a CBV range at this binding wins.
+                // A UAV range (writable storage) -> a raw UAV (RWByteAddressBuffer).
+                bool storage = false, writable = false;
+                if (layoutHandle) {
+                    bool cbv = false, srv = false, uav = false;
+                    for (const auto& range : layoutHandle->ranges) {
+                        if (range.BaseShaderRegister != entry.binding) continue;
+                        cbv |= range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+                        srv |= range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                        uav |= range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+                    }
+                    storage  = srv && !cbv && !uav;
+                    writable = uav && !cbv;
+                }
+                if (writable) {
+                    const uint64_t size = bb.size > 0 ? bb.size : (bh->size > bb.offset ? bh->size - bb.offset : 0);
+                    D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+                    uavDesc.Format              = DXGI_FORMAT_R32_TYPELESS;
+                    uavDesc.ViewDimension       = D3D12_UAV_DIMENSION_BUFFER;
+                    uavDesc.Buffer.FirstElement = bb.offset / 4;
+                    uavDesc.Buffer.NumElements  = static_cast<UINT>(size / 4);
+                    uavDesc.Buffer.Flags        = D3D12_BUFFER_UAV_FLAG_RAW;
+                    dev->CreateUnorderedAccessView(bh->resource, nullptr, &uavDesc, dst);
+                } else if (storage) {
+                    const uint64_t size = bb.size > 0 ? bb.size : (bh->size > bb.offset ? bh->size - bb.offset : 0);
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+                    srvDesc.Format                  = DXGI_FORMAT_R32_TYPELESS;
+                    srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
+                    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                    srvDesc.Buffer.FirstElement     = bb.offset / 4;
+                    srvDesc.Buffer.NumElements      = static_cast<UINT>(size / 4);
+                    srvDesc.Buffer.Flags            = D3D12_BUFFER_SRV_FLAG_RAW;
+                    dev->CreateShaderResourceView(bh->resource, &srvDesc, dst);
+                } else {
+                    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+                    cbvDesc.BufferLocation = bh->resource->GetGPUVirtualAddress() + bb.offset;
+                    cbvDesc.SizeInBytes    = static_cast<UINT>((bb.size + 255) & ~255ULL);
+                    dev->CreateConstantBufferView(&cbvDesc, dst);
+                }
             }
         } else if (auto* texPtr = std::get_if<std::shared_ptr<Texture>>(&entry.resource)) {
             auto& tex = *texPtr;
@@ -1573,18 +1726,12 @@ std::shared_ptr<BindGroup> Device::createBindGroup(
                 if (th->srvCpuHandle.ptr != 0)
                     dev->CopyDescriptorsSimple(1, dst, th->srvCpuHandle,
                                                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                // Only render targets ever leave a shader-readable state.
+                if (static_cast<int>(th->usage) & static_cast<int>(TextureUsage::renderTarget))
+                    h->textures.push_back(tex);
             }
-        } else if (auto* sampPtr = std::get_if<std::shared_ptr<Sampler>>(&entry.resource)) {
-            auto& samp = *sampPtr;
-            if (samp && samp->native) {
-                auto* sh = static_cast<SamplerHandle*>(samp->native);
-                UINT idx = nextSamplerIdx++;
-                h->samplerSlotIndices.push_back(idx);
-                D3D12_CPU_DESCRIPTOR_HANDLE dst = d->samplerCpuAt(idx);
-                if (sh->cpuHandle.ptr != 0)
-                    dev->CopyDescriptorsSimple(1, dst, sh->cpuHandle,
-                                               D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
-            }
+        } else if (std::get_if<std::shared_ptr<Sampler>>(&entry.resource)) {
+            // Written above, in the (shared) sampler table.
         } else if (auto* asPtr = std::get_if<std::shared_ptr<AccelerationStructure>>(&entry.resource)) {
             auto& as = *asPtr;
             if (as && as->native) {
@@ -1626,11 +1773,13 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(
         }
     }
 
-    auto* rs = createUniversalRootSignature(dev, layouts);
+    BindGroupRootParams groupParams;
+    auto* rs = createUniversalRootSignature(dev, layouts, &groupParams);
     if (!rs) return nullptr;
 
     auto* h         = new PipelineLayoutHandle();
     h->rootSignature = rs;
+    h->groupParams   = std::move(groupParams);
     d->pipelineLayoutCount++;
     return std::shared_ptr<PipelineLayout>(new PipelineLayout(h));
 }
@@ -1670,6 +1819,12 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor& descript
     sd.MaxAnisotropy = static_cast<UINT>(std::max(1.0, descriptor.maxAnisotropy));
     sd.ComparisonFunc = descriptor.compare
         ? toD3D12Compare(*descriptor.compare) : D3D12_COMPARISON_FUNC_NEVER;
+    // A comparison sampler (SampleCmp, shadow maps) needs a comparison filter:
+    // the same basic filter with the comparison reduction type.
+    if (descriptor.compare) {
+        sd.Filter = D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(sd.Filter), D3D12_DECODE_MAG_FILTER(sd.Filter),
+                                              D3D12_DECODE_MIP_FILTER(sd.Filter), D3D12_FILTER_REDUCTION_TYPE_COMPARISON);
+    }
     sd.MinLOD = static_cast<float>(descriptor.lodMinClamp);
     sd.MaxLOD = static_cast<float>(descriptor.lodMaxClamp);
 
@@ -1678,6 +1833,7 @@ std::shared_ptr<Sampler> Device::createSampler(const SamplerDescriptor& descript
 
     auto* h      = new SamplerHandle();
     h->cpuHandle = cpu;
+    h->id        = d->nextSamplerId.fetch_add(1);
     d->samplerCount++;
     return std::shared_ptr<Sampler>(new Sampler(h));
 }
@@ -2417,6 +2573,8 @@ std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
     }
 
     auto* h           = new RayTracingPipelineHandle();
+    if (descriptor.layout && descriptor.layout->native)
+        h->groupParams = static_cast<PipelineLayoutHandle*>(descriptor.layout->native)->groupParams;
     h->stateObject    = stateObject;
     h->soProps        = soProps;
     h->device         = d->device;

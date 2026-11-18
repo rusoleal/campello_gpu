@@ -63,6 +63,7 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
     bool hasDSV = false;
     std::vector<TextureHandle*> colorAttachmentTextures;
     std::vector<RenderPassEncoderHandle::ResolveTarget> resolveTargets;
+    TextureHandle* sampledDepthTexture = nullptr;
 
     for (const auto& ca : descriptor.colorAttachments) {
         if (!ca.view || !ca.view->native) {
@@ -142,6 +143,22 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
             dsvHandle = tvh->cpuHandle;
             hasDSV    = true;
 
+            // A sampled depth texture (it has an SRV) may have been left
+            // shader-readable by an earlier pass's end(): back to DEPTH_WRITE.
+            if (TextureHandle* th = tvh->sourceHandle) {
+                if (th->currentState != D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+                    D3D12_RESOURCE_BARRIER barrier = {};
+                    barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    barrier.Transition.pResource   = th->resource;
+                    barrier.Transition.StateBefore = th->currentState;
+                    barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    list->ResourceBarrier(1, &barrier);
+                    th->currentState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+                }
+                if (th->srvCpuHandle.ptr != 0) sampledDepthTexture = th;
+            }
+
             D3D12_CLEAR_FLAGS flags = {};
             if (dsa.depthLoadOp == LoadOp::clear)   flags |= D3D12_CLEAR_FLAG_DEPTH;
             if (dsa.stencilLoadOp == LoadOp::clear) flags |= D3D12_CLEAR_FLAG_STENCIL;
@@ -163,6 +180,7 @@ std::shared_ptr<RenderPassEncoder> CommandEncoder::beginRenderPass(
     ph->deviceData  = h->deviceData;
     ph->colorAttachmentTextures = std::move(colorAttachmentTextures);
     ph->resolveTargets          = std::move(resolveTargets);
+    ph->sampledDepthTexture     = sampledDepthTexture;
     if (descriptor.occlusionQuerySet && descriptor.occlusionQuerySet->native) {
         auto* qsh      = static_cast<QuerySetHandle*>(descriptor.occlusionQuerySet->native);
         ph->queryHeap  = qsh->queryHeap;
@@ -413,8 +431,11 @@ static bool initMipmapGenResources(DeviceData* d) {
     // error. Passing the known-correct destination size directly removes
     // the ambiguity instead of trying to prove which interpretation FXC
     // actually implements.
+    // The source is a one-slice Texture2DArray view of the layer being
+    // mipmapped (generateMipmaps() handles cube and array textures layer by
+    // layer; a plain 2D texture is its own single slice), so slice 0.
     const char* psCode = R"(
-        Texture2D srcTexture : register(t0);
+        Texture2DArray srcTexture : register(t0);
         SamplerState srcSampler : register(s0);
         cbuffer DstSize : register(b0) {
             float2 dstSize;
@@ -423,7 +444,7 @@ static bool initMipmapGenResources(DeviceData* d) {
 
         float4 PSMain(float4 pos : SV_Position) : SV_Target0 {
             float2 uv = pos.xy / dstSize;
-            return srcTexture.Sample(srcSampler, uv);
+            return srcTexture.SampleLevel(srcSampler, float3(uv, 0.0), 0.0);
         }
     )";
 
@@ -516,7 +537,15 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
     if (!d || !d->device) return false;
 
     if (tex->mipLevels <= 1) return false;
-    if (tex->dimension != TextureType::tt2d) return false;
+    // 2D textures and their arrays (cubes are 6 layers): each layer's chain
+    // in turn. Before, only tt2d was handled and cubes kept black mips.
+    if (tex->dimension != TextureType::tt2d && tex->dimension != TextureType::ttCube &&
+        tex->dimension != TextureType::ttCubeArray) return false;
+    const uint32_t layers = std::max(tex->depthOrLayers, 1u);
+    // generateMipmaps() renders each mip, so the resource must allow render
+    // targets (Device::createTexture() sets that for colour textures with
+    // mips whose format can be one).
+    if (!(tex->resource->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) return false;
 
     DXGI_FORMAT fmt = toDXGIFormat(tex->format);
     if (fmt == DXGI_FORMAT_UNKNOWN) return false;
@@ -583,22 +612,23 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
     // once). Every SUBSEQUENT transition of an already-touched subresource
     // correctly uses COMMON, since each iteration below restores both
     // subresources it touches back to COMMON before returning.
-    std::vector<bool> subresourceTouched(tex->mipLevels, false);
+    std::vector<bool> subresourceTouched(size_t(tex->mipLevels) * layers, false);
 
+    for (uint32_t layer = 0; layer < layers; ++layer)
     for (uint32_t mip = 1; mip < tex->mipLevels; mip++) {
         uint32_t srcMip = mip - 1;
         uint32_t dstW = std::max(1u, tex->width >> mip);
         uint32_t dstH = std::max(1u, tex->height >> mip);
 
-        UINT srcSubresource = CalcSubresource(srcMip, 0, 0, tex->mipLevels, tex->depthOrLayers);
-        UINT dstSubresource = CalcSubresource(mip, 0, 0, tex->mipLevels, tex->depthOrLayers);
+        UINT srcSubresource = CalcSubresource(srcMip, layer, 0, tex->mipLevels, layers);
+        UINT dstSubresource = CalcSubresource(mip, layer, 0, tex->mipLevels, layers);
 
         const D3D12_RESOURCE_STATES srcBeforeState =
-            subresourceTouched[srcMip] ? D3D12_RESOURCE_STATE_COMMON : tex->currentState;
+            subresourceTouched[srcSubresource] ? D3D12_RESOURCE_STATE_COMMON : tex->currentState;
         const D3D12_RESOURCE_STATES dstBeforeState =
-            subresourceTouched[mip] ? D3D12_RESOURCE_STATE_COMMON : tex->currentState;
-        subresourceTouched[srcMip] = true;
-        subresourceTouched[mip]    = true;
+            subresourceTouched[dstSubresource] ? D3D12_RESOURCE_STATE_COMMON : tex->currentState;
+        subresourceTouched[srcSubresource] = true;
+        subresourceTouched[dstSubresource] = true;
 
         // D3D12 forbids (flagged as invalid by the debug layer) a transition
         // barrier whose StateBefore equals StateAfter — a real case here: a
@@ -658,20 +688,24 @@ bool CommandEncoder::generateMipmaps(std::shared_ptr<Texture> texture) {
         }
         D3D12_CPU_DESCRIPTOR_HANDLE rtvCpu = d->rtvExtraCpuAt(rtvExtraIdx);
 
-        // Create SRV for source mip
+        // SRV of the source mip and RTV of the destination mip, this layer
+        // only (one-slice array views, which also cover plain 2D textures).
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Format = fmt;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MipLevels = 1;
-        srvDesc.Texture2D.MostDetailedMip = srcMip;
+        srvDesc.Texture2DArray.MostDetailedMip = srcMip;
+        srvDesc.Texture2DArray.MipLevels = 1;
+        srvDesc.Texture2DArray.FirstArraySlice = layer;
+        srvDesc.Texture2DArray.ArraySize = 1;
         d->device->CreateShaderResourceView(tex->resource, &srvDesc, srvCpu);
 
-        // Create RTV for destination mip
         D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
         rtvDesc.Format = fmt;
-        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-        rtvDesc.Texture2D.MipSlice = mip;
+        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+        rtvDesc.Texture2DArray.MipSlice = mip;
+        rtvDesc.Texture2DArray.FirstArraySlice = layer;
+        rtvDesc.Texture2DArray.ArraySize = 1;
         d->device->CreateRenderTargetView(tex->resource, &rtvDesc, rtvCpu);
 
         // Set pipeline and render state

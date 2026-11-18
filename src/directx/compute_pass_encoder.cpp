@@ -48,16 +48,19 @@ void ComputePassEncoder::setBindGroup(uint32_t index,
     auto* h   = static_cast<ComputePassEncoderHandle*>(native);
     auto* bgh = static_cast<BindGroupHandle*>(bindGroup->native);
 
-    if (bgh->gpuHandle.ptr != 0)
-        h->cmdList->SetComputeRootDescriptorTable(index, bgh->gpuHandle);
-    if (bgh->samplerHandle.ptr != 0)
-        h->cmdList->SetComputeRootDescriptorTable(index + 1, bgh->samplerHandle);
+    // Bind group `index`'s root parameters (see BindGroupRootParams).
+    const auto params = rootParamsFor(h->groupParams, index);
+    if (bgh->gpuHandle.ptr != 0 && params[0] >= 0)
+        h->cmdList->SetComputeRootDescriptorTable(static_cast<UINT>(params[0]), bgh->gpuHandle);
+    if (bgh->samplerHandle.ptr != 0 && params[1] >= 0)
+        h->cmdList->SetComputeRootDescriptorTable(static_cast<UINT>(params[1]), bgh->samplerHandle);
 }
 
 void ComputePassEncoder::setPipeline(std::shared_ptr<ComputePipeline> pipeline) {
     if (!native || !pipeline || !pipeline->native) return;
     auto* h   = static_cast<ComputePassEncoderHandle*>(native);
     auto* cph = static_cast<ComputePipelineHandle*>(pipeline->native);
+    h->groupParams = cph->groupParams;
     h->cmdList->SetPipelineState(cph->pso);
     h->cmdList->SetComputeRootSignature(cph->rootSignature);
 }

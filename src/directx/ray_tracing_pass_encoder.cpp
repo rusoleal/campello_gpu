@@ -23,6 +23,7 @@ void RayTracingPassEncoder::setPipeline(std::shared_ptr<RayTracingPipeline> pipe
     h->cmdList4->SetPipelineState1(ph->stateObject);
     h->cmdList4->SetComputeRootSignature(ph->rootSignature);
     h->dispatchDesc = ph->dispatchDesc;
+    h->groupParams  = ph->groupParams;
 }
 
 void RayTracingPassEncoder::setBindGroup(uint32_t index,
@@ -33,10 +34,12 @@ void RayTracingPassEncoder::setBindGroup(uint32_t index,
     if (!native || !bindGroup || !bindGroup->native) return;
     auto* h  = static_cast<RayTracingPassEncoderHandle*>(native);
     auto* bg = static_cast<BindGroupHandle*>(bindGroup->native);
-    if (bg->gpuHandle.ptr != 0)
-        h->cmdList4->SetComputeRootDescriptorTable(index, bg->gpuHandle);
-    if (bg->samplerHandle.ptr != 0)
-        h->cmdList4->SetComputeRootDescriptorTable(index + 1, bg->samplerHandle);
+    // Bind group `index`'s root parameters (see BindGroupRootParams).
+    const auto params = rootParamsFor(h->groupParams, index);
+    if (bg->gpuHandle.ptr != 0 && params[0] >= 0)
+        h->cmdList4->SetComputeRootDescriptorTable(static_cast<UINT>(params[0]), bg->gpuHandle);
+    if (bg->samplerHandle.ptr != 0 && params[1] >= 0)
+        h->cmdList4->SetComputeRootDescriptorTable(static_cast<UINT>(params[1]), bg->samplerHandle);
 }
 
 void RayTracingPassEncoder::traceRays(uint32_t width, uint32_t height, uint32_t depth) {
