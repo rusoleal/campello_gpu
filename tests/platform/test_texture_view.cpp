@@ -12,6 +12,11 @@
 #include <campello_gpu/constants/texture_type.hpp>
 #include <campello_gpu/constants/texture_usage.hpp>
 #include <campello_gpu/constants/aspect.hpp>
+#include <campello_gpu/command_encoder.hpp>
+#include <campello_gpu/command_buffer.hpp>
+#include <campello_gpu/render_pass_encoder.hpp>
+#include <campello_gpu/fence.hpp>
+#include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
 
 using namespace systems::leal::campello_gpu;
 
@@ -291,4 +296,49 @@ TEST(TextureView, FromNativeWithNullHandleReturnsNonNullWrapper) {
     // (the caller is responsible for not using it as a real attachment).
     auto view = TextureView::fromNative(nullptr);
     EXPECT_NE(view, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// A view keeps its texture alive: the texture is released only with its
+// last view, and a view of a texture the caller dropped still works as a
+// render target. (On Vulkan the view's image was destroyed with the texture;
+// a pass on it read freed memory and crashed vkCreateFramebuffer.)
+// ---------------------------------------------------------------------------
+
+TEST(TextureView, ViewKeepsItsTextureAlive) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    auto texture = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, 16, 16, 1, 1, 1,
+                                         TextureUsage::renderTarget);
+    ASSERT_NE(texture, nullptr);
+    std::weak_ptr<Texture> weak = texture;
+    auto view = texture->createView(PixelFormat::rgba8unorm, 1);
+    ASSERT_NE(view, nullptr);
+    texture.reset();
+    EXPECT_FALSE(weak.expired()) << "the texture went while its view was alive";
+
+    for (int i = 0; i < 3; ++i) {  // render passes on the view, the texture held only by it
+        auto encoder = device->createCommandEncoder();
+        ASSERT_NE(encoder, nullptr);
+        ColorAttachment ca{};
+        ca.view = view;
+        ca.loadOp = LoadOp::clear;
+        ca.storeOp = StoreOp::store;
+        ca.clearValue[0] = 1.0f;
+        ca.clearValue[3] = 1.0f;
+        BeginRenderPassDescriptor pass{};
+        pass.colorAttachments = {ca};
+        auto rpe = encoder->beginRenderPass(pass);
+        ASSERT_NE(rpe, nullptr);
+        rpe->end();
+        auto fence = device->createFence();
+        device->submit(encoder->finish(), fence);
+        fence->wait();
+        EXPECT_FALSE(fence->didFail());
+    }
+
+    view.reset();
+    device->waitForIdle();
+    EXPECT_TRUE(weak.expired()) << "the texture outlived its last view";
 }

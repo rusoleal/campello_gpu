@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include <stdint.h>
 #include <functional>
 #include <campello_gpu/constants/pixel_format.hpp>
@@ -31,7 +33,7 @@ namespace systems::leal::campello_gpu
      * auto view = tex->createView(PixelFormat::rgba8unorm);
      * @endcode
      */
-    class Texture
+    class Texture : public std::enable_shared_from_this<Texture>
     {
     private:
         friend class Device;

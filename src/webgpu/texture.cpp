@@ -66,7 +66,9 @@ std::shared_ptr<TextureView> Texture::createView(
     viewHandle->ownsView = true;
     viewHandle->format = (desc.format != WGPUTextureFormat_Undefined)
                          ? desc.format : toWGPUTextureFormat(handle->pixelFormat);
-    return std::shared_ptr<TextureView>(new TextureView(viewHandle));
+    auto result = std::shared_ptr<TextureView>(new TextureView(viewHandle));
+    result->owner = weak_from_this().lock();
+    return result;
 }
 
 bool Texture::upload(uint64_t offset, uint64_t length, void* data) {
