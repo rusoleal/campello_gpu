@@ -689,6 +689,26 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     WGPUVertexState vertexState{};
     vertexState.module = vertHandle->shaderModule;
     vertexState.entryPoint = toStringView(descriptor.vertex.entryPoint);
+    // Pipeline-overridable constants, keyed by their WGSL @id.
+    const auto toConstantEntries = [](const std::vector<ShaderConstant>& constants,
+                                      std::vector<std::string>& keys, std::vector<WGPUConstantEntry>& out) {
+        keys.clear();
+        out.clear();
+        keys.reserve(constants.size());
+        for (const auto& c : constants) keys.push_back(std::to_string(c.id));
+        for (size_t i = 0; i < constants.size(); ++i) {
+            WGPUConstantEntry entry{};
+            entry.key = toStringView(keys[i]);
+            entry.value = constants[i].type == ShaderConstantType::boolean ? (constants[i].value != 0.0 ? 1.0 : 0.0)
+                                                                            : constants[i].value;
+            out.push_back(entry);
+        }
+    };
+    std::vector<std::string> vertexConstantKeys, fragmentConstantKeys;
+    std::vector<WGPUConstantEntry> vertexConstants, fragmentConstants;
+    toConstantEntries(descriptor.vertex.constants, vertexConstantKeys, vertexConstants);
+    vertexState.constantCount = vertexConstants.size();
+    vertexState.constants = vertexConstants.empty() ? nullptr : vertexConstants.data();
 
     std::vector<WGPUVertexBufferLayout> vertexBuffers;
     std::vector<std::vector<WGPUVertexAttribute>> vertexAttributes;
@@ -770,6 +790,9 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         auto* fragHandle = static_cast<ShaderModuleHandle*>(descriptor.fragment->module->native);
         fragmentState->module = fragHandle->shaderModule;
         fragmentState->entryPoint = toStringView(descriptor.fragment->entryPoint);
+        toConstantEntries(descriptor.fragment->constants, fragmentConstantKeys, fragmentConstants);
+        fragmentState->constantCount = fragmentConstants.size();
+        fragmentState->constants = fragmentConstants.empty() ? nullptr : fragmentConstants.data();
 
         colorTargets.reserve(descriptor.fragment->targets.size());
         blendStates.reserve(descriptor.fragment->targets.size());

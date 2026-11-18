@@ -2315,6 +2315,46 @@ static VkSampleCountFlagBits toVkSampleCount(uint32_t count) {
     }
 }
 
+namespace {
+// VkSpecializationInfo for a stage's ShaderConstants (4 bytes each: bools as
+// VkBool32). Kept alive until the pipeline is created.
+struct Specialization {
+    std::vector<VkSpecializationMapEntry> entries;
+    std::vector<uint32_t> data;
+    VkSpecializationInfo info{};
+
+    const VkSpecializationInfo* fill(const std::vector<ShaderConstant>& constants) {
+        if (constants.empty()) return nullptr;
+        entries.clear();
+        data.clear();
+        for (const auto& c : constants) {
+            uint32_t word = 0;
+            switch (c.type) {
+                case ShaderConstantType::boolean: word = c.value != 0.0 ? VK_TRUE : VK_FALSE; break;
+                case ShaderConstantType::int32: {
+                    const int32_t v = static_cast<int32_t>(c.value);
+                    std::memcpy(&word, &v, 4);
+                    break;
+                }
+                case ShaderConstantType::uint32: word = static_cast<uint32_t>(c.value); break;
+                case ShaderConstantType::float32: {
+                    const float v = static_cast<float>(c.value);
+                    std::memcpy(&word, &v, 4);
+                    break;
+                }
+            }
+            entries.push_back({c.id, static_cast<uint32_t>(data.size() * 4), 4});
+            data.push_back(word);
+        }
+        info.mapEntryCount = static_cast<uint32_t>(entries.size());
+        info.pMapEntries = entries.data();
+        info.dataSize = data.size() * 4;
+        info.pData = data.data();
+        return &info;
+    }
+};
+}  // namespace
+
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
 
     auto deviceData = (DeviceData *)this->native;
@@ -2332,7 +2372,8 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     vertexShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
     vertexShaderStageInfo.module = ((ShaderModuleHandle *)descriptor.vertex.module->native)->shaderModule;
     vertexShaderStageInfo.pName = descriptor.vertex.entryPoint.c_str();
-    vertexShaderStageInfo.pSpecializationInfo = nullptr;
+    Specialization vertexSpecialization, fragmentSpecialization;
+    vertexShaderStageInfo.pSpecializationInfo = vertexSpecialization.fill(descriptor.vertex.constants);
     shaderStages.push_back(vertexShaderStageInfo);
 
     if (descriptor.fragment.has_value()) {
@@ -2343,7 +2384,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         fragmentShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         fragmentShaderStageInfo.module = ((ShaderModuleHandle *)descriptor.fragment.value().module->native)->shaderModule;
         fragmentShaderStageInfo.pName = descriptor.fragment.value().entryPoint.c_str();
-        fragmentShaderStageInfo.pSpecializationInfo = nullptr;
+        fragmentShaderStageInfo.pSpecializationInfo = fragmentSpecialization.fill(descriptor.fragment.value().constants);
         shaderStages.push_back(fragmentShaderStageInfo);
     }
 

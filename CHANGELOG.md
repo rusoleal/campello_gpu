@@ -2,6 +2,20 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.33.0] - 2026-11-18
+
+### Added
+- **Pipeline-time shader constants** (`ShaderConstant`, `VertexDescriptor::constants`, `FragmentDescriptor::constants`). One shader source gives a specialized pipeline per value set, and the shader compiler folds the values in, so branches on them cost nothing at run time (an über-shader's optional features, compiled out per material).
+  - Metal: function constants (`MTLFunctionConstantValues`); the id is the `[[function_constant(id)]]` index. A function that declares function constants is specialized even with none set (they're undefined, so `is_function_constant_defined()` picks the shader's default); before, such a function couldn't be used at all.
+  - Vulkan: specialization constants (`VkSpecializationInfo`, 4 bytes each, bools as `VkBool32`); the id is the `constant_id`.
+  - WebGPU: pipeline-overridable constants keyed by the WGSL `@id`.
+  - DirectX: not supported; the shader's defaults apply.
+  - Types: bool, int32, uint32, float32. A constant the shader doesn't declare is ignored.
+
+### Tests
+- `ShaderConstants.PipelinesSpecializeOneShader` (Metal on macOS, Vulkan): pipelines without constants, with all three set, and with some set plus an undeclared id.
+- macOS 337 passed; Android (Adreno 618) 226 passed.
+
 ## [0.32.1] - 2026-11-18
 
 ### Fixed
