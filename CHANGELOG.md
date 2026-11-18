@@ -12,6 +12,9 @@ All notable changes to campello_gpu are documented here.
   - DirectX: not supported; the shader's defaults apply.
   - Types: bool, int32, uint32, float32. A constant the shader doesn't declare is ignored.
 
+### Fixed
+- **Vulkan: failed queue submissions are reported.** `Device::submit()` dropped a failed `vkQueueSubmit()` silently. After a lost device (`VK_ERROR_DEVICE_LOST`, from a GPU fault or hang) every frame failed that way and rendered nothing, with no message. The first failure is now logged with its `VkResult` (logcat on Android, stderr elsewhere).
+
 ### Tests
 - `ShaderConstants.PipelinesSpecializeOneShader` (Metal on macOS, Vulkan): pipelines without constants, with all three set, and with some set plus an undeclared id.
 - macOS 337 passed; Android (Adreno 618) 226 passed.

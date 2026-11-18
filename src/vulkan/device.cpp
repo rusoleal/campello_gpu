@@ -1,3 +1,4 @@
+#include <atomic>
 #include <algorithm>
 #include <cstring>
 #include <functional>
@@ -2316,6 +2317,19 @@ static VkSampleCountFlagBits toVkSampleCount(uint32_t count) {
 }
 
 namespace {
+// A failed queue submission drops the frame's work. Most often the device is
+// lost (VK_ERROR_DEVICE_LOST: a GPU fault or hang earlier); every later
+// submission fails the same way, so it's reported once, not every frame.
+void reportSubmitFailure(VkResult result) {
+    static std::atomic<int> reported{0};
+    if (reported.exchange(1) == 0) {
+        LOG_ERROR("vkQueueSubmit failed (VkResult %d%s); this and later GPU work is dropped", (int)result,
+                  result == VK_ERROR_DEVICE_LOST ? ", device lost" : "");
+    }
+}
+}  // namespace
+
+namespace {
 // VkSpecializationInfo for a stage's ShaderConstants (4 bytes each: bools as
 // VkBool32). Kept alive until the pipeline is created.
 struct Specialization {
@@ -3507,6 +3521,7 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         VkResult submitResult = vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo,
                                                deviceData->inFlightFences[gen]);
         if (submitResult != VK_SUCCESS) {
+            reportSubmitFailure(submitResult);
             completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, false);
             // Don't keep other windows waiting until the caller drops the
             // command buffer (releasing never blocks, so fine under gpu_mutex).
@@ -3636,7 +3651,9 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     VkFence submitFence = fenceData ? fenceData->fence : VK_NULL_HANDLE;
     {
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
-        if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
+        if (const VkResult submitResult = vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence);
+            submitResult != VK_SUCCESS) {
+            reportSubmitFailure(submitResult);
             completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, false);
             // Don't keep other windows waiting until the caller drops the
             // command buffer (releasing never blocks, so fine under gpu_mutex).

@@ -5,6 +5,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <chrono>
+#include <cstdio>
 #include <thread>
 #include <memory>
 #include <unordered_map>
@@ -13,8 +14,10 @@
 #include <android/native_window.h>
 #include <android/log.h>
 #define LOG_DEBUG(fmt, ...) __android_log_print(ANDROID_LOG_DEBUG, "campello_gpu", fmt, ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...) __android_log_print(ANDROID_LOG_ERROR, "campello_gpu", fmt, ##__VA_ARGS__)
 #else
 #define LOG_DEBUG(fmt, ...) (void)0
+#define LOG_ERROR(fmt, ...) std::fprintf(stderr, "[campello_gpu] " fmt "\n", ##__VA_ARGS__)
 #endif
 #include <campello_gpu/metrics.hpp>
 #include <campello_gpu/command_buffer.hpp>
