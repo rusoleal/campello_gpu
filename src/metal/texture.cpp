@@ -195,7 +195,9 @@ std::shared_ptr<TextureView> Texture::createView(
     // there's no format/type reinterpretation to request here, so just hand
     // back the multisample texture itself as an identity "view".
     if (tex->sampleCount() > 1) {
-        return TextureView::fromNative(tex);
+        auto view = TextureView::fromNative(tex);
+        if (view) view->owner = weak_from_this().lock();
+        return view;
     }
 
     uint32_t resolvedMipCount = (mipLevelCount == static_cast<uint32_t>(-1))
@@ -225,5 +227,7 @@ std::shared_ptr<TextureView> Texture::createView(
     auto *view = tex->newTextureView(
         toMTLPixelFormat(tex->device(), format), mtlType, mipRange, sliceRange);
     if (!view) return nullptr;
-    return std::shared_ptr<TextureView>(new TextureView(view));
+    auto result = std::shared_ptr<TextureView>(new TextureView(view));
+    result->owner = weak_from_this().lock();
+    return result;
 }

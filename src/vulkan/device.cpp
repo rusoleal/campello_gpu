@@ -1,3 +1,4 @@
+#include <atomic>
 #include <algorithm>
 #include <cstring>
 #include <functional>
@@ -2315,6 +2316,59 @@ static VkSampleCountFlagBits toVkSampleCount(uint32_t count) {
     }
 }
 
+namespace {
+// A failed queue submission drops the frame's work. Most often the device is
+// lost (VK_ERROR_DEVICE_LOST: a GPU fault or hang earlier); every later
+// submission fails the same way, so it's reported once, not every frame.
+void reportSubmitFailure(VkResult result) {
+    static std::atomic<int> reported{0};
+    if (reported.exchange(1) == 0) {
+        LOG_ERROR("vkQueueSubmit failed (VkResult %d%s); this and later GPU work is dropped", (int)result,
+                  result == VK_ERROR_DEVICE_LOST ? ", device lost" : "");
+    }
+}
+}  // namespace
+
+namespace {
+// VkSpecializationInfo for a stage's ShaderConstants (4 bytes each: bools as
+// VkBool32). Kept alive until the pipeline is created.
+struct Specialization {
+    std::vector<VkSpecializationMapEntry> entries;
+    std::vector<uint32_t> data;
+    VkSpecializationInfo info{};
+
+    const VkSpecializationInfo* fill(const std::vector<ShaderConstant>& constants) {
+        if (constants.empty()) return nullptr;
+        entries.clear();
+        data.clear();
+        for (const auto& c : constants) {
+            uint32_t word = 0;
+            switch (c.type) {
+                case ShaderConstantType::boolean: word = c.value != 0.0 ? VK_TRUE : VK_FALSE; break;
+                case ShaderConstantType::int32: {
+                    const int32_t v = static_cast<int32_t>(c.value);
+                    std::memcpy(&word, &v, 4);
+                    break;
+                }
+                case ShaderConstantType::uint32: word = static_cast<uint32_t>(c.value); break;
+                case ShaderConstantType::float32: {
+                    const float v = static_cast<float>(c.value);
+                    std::memcpy(&word, &v, 4);
+                    break;
+                }
+            }
+            entries.push_back({c.id, static_cast<uint32_t>(data.size() * 4), 4});
+            data.push_back(word);
+        }
+        info.mapEntryCount = static_cast<uint32_t>(entries.size());
+        info.pMapEntries = entries.data();
+        info.dataSize = data.size() * 4;
+        info.pData = data.data();
+        return &info;
+    }
+};
+}  // namespace
+
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
 
     auto deviceData = (DeviceData *)this->native;
@@ -2332,7 +2386,8 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     vertexShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
     vertexShaderStageInfo.module = ((ShaderModuleHandle *)descriptor.vertex.module->native)->shaderModule;
     vertexShaderStageInfo.pName = descriptor.vertex.entryPoint.c_str();
-    vertexShaderStageInfo.pSpecializationInfo = nullptr;
+    Specialization vertexSpecialization, fragmentSpecialization;
+    vertexShaderStageInfo.pSpecializationInfo = vertexSpecialization.fill(descriptor.vertex.constants);
     shaderStages.push_back(vertexShaderStageInfo);
 
     if (descriptor.fragment.has_value()) {
@@ -2343,7 +2398,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
         fragmentShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         fragmentShaderStageInfo.module = ((ShaderModuleHandle *)descriptor.fragment.value().module->native)->shaderModule;
         fragmentShaderStageInfo.pName = descriptor.fragment.value().entryPoint.c_str();
-        fragmentShaderStageInfo.pSpecializationInfo = nullptr;
+        fragmentShaderStageInfo.pSpecializationInfo = fragmentSpecialization.fill(descriptor.fragment.value().constants);
         shaderStages.push_back(fragmentShaderStageInfo);
     }
 
@@ -3466,6 +3521,7 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer) {
         VkResult submitResult = vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo,
                                                deviceData->inFlightFences[gen]);
         if (submitResult != VK_SUCCESS) {
+            reportSubmitFailure(submitResult);
             completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, false);
             // Don't keep other windows waiting until the caller drops the
             // command buffer (releasing never blocks, so fine under gpu_mutex).
@@ -3595,7 +3651,9 @@ void Device::submit(std::shared_ptr<CommandBuffer> commandBuffer,
     VkFence submitFence = fenceData ? fenceData->fence : VK_NULL_HANDLE;
     {
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
-        if (vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence) != VK_SUCCESS) {
+        if (const VkResult submitResult = vkQueueSubmit(deviceData->graphicsQueue, 1, &submitInfo, submitFence);
+            submitResult != VK_SUCCESS) {
+            reportSubmitFailure(submitResult);
             completeSurfacePresents(deviceData->graphicsQueue, surfacePresents, false);
             // Don't keep other windows waiting until the caller drops the
             // command buffer (releasing never blocks, so fine under gpu_mutex).

@@ -261,7 +261,9 @@ std::shared_ptr<TextureView> Texture::createView(PixelFormat format,
     vh->baseMipLevel   = baseMipLevel;
     vh->ownerTexture = handle;
     vh->deviceData   = handle->deviceData;
-    return std::shared_ptr<TextureView>(new TextureView(vh));
+    auto result = std::shared_ptr<TextureView>(new TextureView(vh));
+    result->owner = weak_from_this().lock();
+    return result;
 }
 
 uint32_t Texture::getDepthOrarrayLayers() {

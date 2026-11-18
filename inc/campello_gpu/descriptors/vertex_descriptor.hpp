@@ -1,5 +1,7 @@
 #pragma once
 
+#include <campello_gpu/descriptors/shader_constant.hpp>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -121,6 +123,12 @@ namespace systems::leal::campello_gpu {
          * procedurally using the vertex ID (e.g. fullscreen-triangle trick).
          */
         std::vector<VertexLayout> buffers;
+
+        /**
+         * @brief Values for the shader's pipeline-time constants (see
+         * ShaderConstant). Empty: the shader's defaults.
+         */
+        std::vector<ShaderConstant> constants;
     };
 
 }

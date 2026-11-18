@@ -1,5 +1,7 @@
 #pragma once
 
+#include <campello_gpu/descriptors/shader_constant.hpp>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -136,6 +138,12 @@ namespace systems::leal::campello_gpu {
          * `BeginRenderPassDescriptor` used with this pipeline.
          */
         std::vector<ColorState> targets;
+
+        /**
+         * @brief Values for the shader's pipeline-time constants (see
+         * ShaderConstant). Empty: the shader's defaults.
+         */
+        std::vector<ShaderConstant> constants;
     };
 
 }

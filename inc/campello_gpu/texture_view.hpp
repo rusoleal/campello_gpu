@@ -33,6 +33,13 @@ namespace systems::leal::campello_gpu
         friend class CommandEncoder;
         friend class Surface;
         void *native;
+        // The texture this view was made from (Texture::createView()): kept
+        // alive while the view is, so a view never outlives its image (Metal
+        // views retain their parent, DirectX views its handle; on Vulkan and
+        // WebGPU the view was dangling once the texture was released). Released after the
+        // native view (members go after the destructor body). Null for
+        // TextureView::fromNative() views.
+        std::shared_ptr<class Texture> owner;
 
         TextureView(void *pd);
 

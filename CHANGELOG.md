@@ -2,6 +2,25 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.33.0] - 2026-11-18
+
+### Added
+- **Pipeline-time shader constants** (`ShaderConstant`, `VertexDescriptor::constants`, `FragmentDescriptor::constants`). One shader source gives a specialized pipeline per value set, and the shader compiler folds the values in, so branches on them cost nothing at run time (an über-shader's optional features, compiled out per material).
+  - Metal: function constants (`MTLFunctionConstantValues`); the id is the `[[function_constant(id)]]` index. A function that declares function constants is specialized even with none set (they're undefined, so `is_function_constant_defined()` picks the shader's default); before, such a function couldn't be used at all.
+  - Vulkan: specialization constants (`VkSpecializationInfo`, 4 bytes each, bools as `VkBool32`); the id is the `constant_id`.
+  - WebGPU: pipeline-overridable constants keyed by the WGSL `@id`.
+  - DirectX: not supported; the shader's defaults apply.
+  - Types: bool, int32, uint32, float32. A constant the shader doesn't declare is ignored.
+
+### Fixed
+- **Texture views keep their texture alive** (Vulkan, WebGPU). `Texture` is `enable_shared_from_this`, and `createView()` gives the view a reference to it, released after the native view. (DirectX views already hold their texture's handle since 0.32.0.) Before, on Vulkan a view of a texture the caller had dropped pointed at a destroyed image: a render pass on it read freed memory (a 0 sample count) and crashed `vkCreateFramebuffer()` on an Adreno 642L. Metal views already retained their parent.
+- **Vulkan: failed queue submissions are reported.** `Device::submit()` dropped a failed `vkQueueSubmit()` silently. After a lost device (`VK_ERROR_DEVICE_LOST`, from a GPU fault or hang) every frame failed that way and rendered nothing, with no message. The first failure is now logged with its `VkResult` (logcat on Android, stderr elsewhere).
+
+### Tests
+- `TextureView.ViewKeepsItsTextureAlive`: a view keeps its texture alive (and render passes on it work) after the caller drops the texture, and releases it with the view.
+- `ShaderConstants.PipelinesSpecializeOneShader` (Metal on macOS, Vulkan): pipelines without constants, with all three set, and with some set plus an undeclared id.
+- macOS 338 passed; Android: Adreno 642L (Galaxy Tab S7 FE) 227 passed, Adreno 618 226 passed (before the view fix).
+
 ## [0.32.1] - 2026-11-18
 
 ### Fixed

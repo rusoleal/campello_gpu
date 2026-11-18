@@ -1,4 +1,5 @@
 #include "Metal.hpp"
+#include <cstdio>
 #include "common.hpp"
 #include "render_pipeline_handle.hpp"
 #include "shader_module_handle.hpp"
@@ -708,6 +709,58 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const char *wgslSource)
     return nullptr; // WGSL not supported on Metal backend
 }
 
+namespace {
+// A library function, specialized with `constants` (function constants)
+// when there are any. The caller releases it.
+MTL::Function* newSpecializedFunction(MTL::Library* library, const std::string& entryPoint,
+                                      const std::vector<ShaderConstant>& constants) {
+    auto* name = NS::String::string(entryPoint.c_str(), NS::UTF8StringEncoding);
+    if (constants.empty()) {
+        // A function that declares function constants must be specialized
+        // even with none set (they're then undefined:
+        // is_function_constant_defined() picks the shader's default).
+        auto* plain = library->newFunction(name);
+        if (!plain || !plain->functionConstantsDictionary() || plain->functionConstantsDictionary()->count() == 0) {
+            return plain;
+        }
+        plain->release();
+    }
+    auto* values = MTL::FunctionConstantValues::alloc()->init();
+    for (const auto& c : constants) {
+        switch (c.type) {
+            case ShaderConstantType::boolean: {
+                const bool v = c.value != 0.0;
+                values->setConstantValue(&v, MTL::DataTypeBool, c.id);
+                break;
+            }
+            case ShaderConstantType::int32: {
+                const int32_t v = static_cast<int32_t>(c.value);
+                values->setConstantValue(&v, MTL::DataTypeInt, c.id);
+                break;
+            }
+            case ShaderConstantType::uint32: {
+                const uint32_t v = static_cast<uint32_t>(c.value);
+                values->setConstantValue(&v, MTL::DataTypeUInt, c.id);
+                break;
+            }
+            case ShaderConstantType::float32: {
+                const float v = static_cast<float>(c.value);
+                values->setConstantValue(&v, MTL::DataTypeFloat, c.id);
+                break;
+            }
+        }
+    }
+    NS::Error* error = nullptr;
+    auto* fn = library->newFunction(name, values, &error);
+    values->release();
+    if (!fn && error) {
+        std::fprintf(stderr, "[campello_gpu] specializing %s failed: %s\n", entryPoint.c_str(),
+                     error->localizedDescription()->utf8String());
+    }
+    return fn;
+}
+}  // namespace
+
 std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelineDescriptor &descriptor) {
     MetalAutoreleasePool pool;
     auto *dev = static_cast<MetalDeviceData *>(native)->device;
@@ -732,8 +785,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     if (descriptor.vertex.module) {
         auto *library = compileModule(descriptor.vertex.module.get());
         if (!library) { pipelineDesc->release(); return nullptr; }
-        auto *funcName = NS::String::string(descriptor.vertex.entryPoint.c_str(), NS::UTF8StringEncoding);
-        auto *fn       = library->newFunction(funcName);
+        auto *fn = newSpecializedFunction(library, descriptor.vertex.entryPoint, descriptor.vertex.constants);
         pipelineDesc->setVertexFunction(fn);
         if (fn) fn->release();
         library->release();
@@ -743,8 +795,7 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     if (descriptor.fragment && descriptor.fragment->module) {
         auto *library = compileModule(descriptor.fragment->module.get());
         if (!library) { pipelineDesc->release(); return nullptr; }
-        auto *funcName = NS::String::string(descriptor.fragment->entryPoint.c_str(), NS::UTF8StringEncoding);
-        auto *fn       = library->newFunction(funcName);
+        auto *fn = newSpecializedFunction(library, descriptor.fragment->entryPoint, descriptor.fragment->constants);
         pipelineDesc->setFragmentFunction(fn);
         if (fn) fn->release();
         library->release();
