@@ -304,6 +304,33 @@ TEST(Texture, UploadDownloadRoundtripRandomData) {
     EXPECT_EQ(uploadData, downloadData);
 }
 
+
+// Render targets and storage textures are GPU-only memory on some backends
+// (Metal: Private storage); upload() and download() still reach them.
+TEST(Texture, UploadDownloadRoundtripGpuWrittenTexture) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device on this platform";
+
+    constexpr uint32_t W = 32, H = 16;
+    constexpr uint64_t byteSize = W * H * 4; // RGBA8
+    std::vector<uint8_t> uploadData(byteSize);
+    for (size_t i = 0; i < uploadData.size(); ++i) uploadData[i] = static_cast<uint8_t>(i * 7 + 3);
+
+    auto tex = device->createTexture(
+        TextureType::tt2d, PixelFormat::rgba8unorm,
+        W, H, 1, 1, 1,
+        static_cast<TextureUsage>(
+            static_cast<int>(TextureUsage::renderTarget) |
+            static_cast<int>(TextureUsage::textureBinding) |
+            static_cast<int>(TextureUsage::copySrc) |
+            static_cast<int>(TextureUsage::copyDst)));
+    ASSERT_NE(tex, nullptr);
+    EXPECT_TRUE(tex->upload(0, byteSize, uploadData.data()));
+    std::vector<uint8_t> downloadData(byteSize);
+    EXPECT_TRUE(tex->download(0, 0, downloadData.data(), byteSize));
+    EXPECT_EQ(uploadData, downloadData);
+}
+
 // ---------------------------------------------------------------------------
 // Async download
 // ---------------------------------------------------------------------------

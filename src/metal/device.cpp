@@ -554,6 +554,15 @@ std::shared_ptr<Texture> Device::createTexture(
     // newTextureWithDescriptor: on Intel integrated GPUs). MSAA attachments are
     // GPU-only intermediates anyway (never read back directly), so Private is correct.
     bool isMultisampled = samples > 1;
+    // Textures the GPU writes (render targets, storage textures) live in
+    // GPU-only memory: Private is what lets Apple GPUs compress them
+    // losslessly (less bandwidth for every pass that writes or reads them),
+    // and a discrete GPU keeps them in VRAM without a CPU copy. The CPU
+    // still reaches them: download() and upload() go through a blit.
+    // Textures only sampled keep CPU-visible storage for replaceRegion uploads.
+    const int usageBits = static_cast<int>(usageMode);
+    const bool gpuWritten = (usageBits & (static_cast<int>(TextureUsage::renderTarget) |
+                                          static_cast<int>(TextureUsage::storageBinding))) != 0;
     MTL::StorageMode colorStorageMode;
 #if TARGET_OS_IOS || TARGET_OS_SIMULATOR
     // MTLStorageModeManaged is macOS-only; use Shared on iOS/Simulator.
@@ -561,8 +570,8 @@ std::shared_ptr<Texture> Device::createTexture(
 #else
     colorStorageMode = MTL::StorageModeManaged;
 #endif
-    pTextureDesc->setStorageMode((isDepthStencil || isMultisampled) ? MTL::StorageModePrivate
-                                                                    : colorStorageMode);
+    pTextureDesc->setStorageMode((isDepthStencil || isMultisampled || gpuWritten) ? MTL::StorageModePrivate
+                                                                                  : colorStorageMode);
 
     switch (type) {
         case TextureType::tt1d:

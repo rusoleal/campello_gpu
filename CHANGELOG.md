@@ -2,7 +2,17 @@
 
 All notable changes to campello_gpu are documented here.
 
-## [Unreleased]
+## [0.31.2] - 2026-11-18
+
+### Changed
+- **Metal: GPU-written textures use GPU-only memory.** Textures created with `renderTarget` or `storageBinding` usage are `MTLStorageModePrivate` now. Before, every color texture was `Managed` on macOS and `Shared` on iOS, render targets included.
+  - Only Private textures get Apple GPUs' lossless compression, so every pass that writes or samples a render target (scene color, G-buffers, history buffers, effect targets) used more memory bandwidth than it needed to. On a discrete GPU, Private also keeps them in VRAM with no CPU copy.
+  - Sampled-only textures keep CPU-visible storage, so their uploads still go through `replaceRegion`.
+  - `Texture::upload()` to a Private texture goes through a shared staging buffer and a blit, and returns once the copy is done, as before. `download()` already blitted.
+
+### Tests
+- `Texture.UploadDownloadRoundtripGpuWrittenTexture`: upload and download still round-trip on a render target.
+- campello_renderer's suite against this build: macOS 138 passed (also with Metal API validation); Android (Adreno 618) 104 passed, 34 skipped (ray tracing).
 
 ## [0.31.1] - 2026-11-16
 
