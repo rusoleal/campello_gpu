@@ -249,8 +249,15 @@ void CommandEncoder::copyTextureToBuffer(std::shared_ptr<Texture> source, uint32
     auto* srcHandle = static_cast<TextureHandle*>(source->native);
     auto* dstHandle = static_cast<BufferHandle*>(destination->native);
 
-    uint32_t mipW = std::max(1u, srcHandle->width >> mipLevel);
-    uint32_t mipH = std::max(1u, srcHandle->height >> mipLevel);
+    // Whole blocks for a compressed format (WebGPU rejects a copy of a mip
+    // smaller than a block at its own size); rowsPerImage in rows of blocks.
+    const bool compressed = isCompressedFormat(srcHandle->pixelFormat);
+    const auto blockDim = compressed ? getPixelFormatBlockDimensions(srcHandle->pixelFormat)
+                                     : PixelFormatBlockDimensions{1, 1};
+    const uint32_t blocksX = (std::max(1u, srcHandle->width >> mipLevel) + blockDim.width - 1) / blockDim.width;
+    const uint32_t blocksY = (std::max(1u, srcHandle->height >> mipLevel) + blockDim.height - 1) / blockDim.height;
+    const uint32_t mipW = blocksX * blockDim.width;
+    const uint32_t mipH = blocksY * blockDim.height;
 
     WGPUTexelCopyTextureInfo srcInfo{};
     srcInfo.texture = srcHandle->texture;
@@ -262,7 +269,7 @@ void CommandEncoder::copyTextureToBuffer(std::shared_ptr<Texture> source, uint32
     dstInfo.buffer = dstHandle->buffer;
     dstInfo.layout.offset = destinationOffset;
     dstInfo.layout.bytesPerRow = bytesPerRow;
-    dstInfo.layout.rowsPerImage = mipH;
+    dstInfo.layout.rowsPerImage = blocksY;
 
     WGPUExtent3D extent{};
     extent.width = mipW;

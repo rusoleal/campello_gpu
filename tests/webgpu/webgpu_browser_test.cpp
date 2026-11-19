@@ -179,7 +179,8 @@ static void testCompressedUploads(std::shared_ptr<Device> device) {
     }
     const uint32_t size = 16, mips = 5;  // 16, 8, 4, 2, 1
     const auto usage = static_cast<TextureUsage>(static_cast<int>(TextureUsage::textureBinding) |
-                                                 static_cast<int>(TextureUsage::copyDst));
+                                                 static_cast<int>(TextureUsage::copyDst) |
+                                                 static_cast<int>(TextureUsage::copySrc));
     const uint64_t before = validationErrorCount();
 
     std::vector<uint8_t> packed;  // tightly packed blocks, mip after mip
@@ -208,6 +209,27 @@ static void testCompressedUploads(std::shared_ptr<Device> device) {
     device->waitForIdle();
     for (int i = 0; i < 200 && validationErrorCount() == before; i++) emscripten_sleep(1);
     check(validationErrorCount() == before, "compressed: both upload paths without WebGPU errors");
+
+    // Read back the 1x1 mip (one block) both ways: download() and
+    // copyTextureToBuffer() copy it as a whole block too.
+    std::vector<uint8_t> block(16, 0);
+    check(uploaded && uploaded->download(mips - 1, 0, block.data(), block.size()) &&
+              block == std::vector<uint8_t>(16, uint8_t((mips - 1) * 40 + 1)),
+          "compressed: download() reads back the 1x1 mip");
+    auto readback = device->createBuffer(256, static_cast<BufferUsage>(static_cast<int>(BufferUsage::copyDst) |
+                                                                       static_cast<int>(BufferUsage::mapRead)));
+    auto reader = device->createCommandEncoder();
+    if (reader && copied && readback) {
+        reader->copyTextureToBuffer(copied, mips - 1, 0, readback, 0, 256);
+        device->submit(reader->finish());
+    }
+    std::fill(block.begin(), block.end(), 0);
+    check(readback && readback->download(0, block.size(), block.data()) &&
+              block == std::vector<uint8_t>(16, uint8_t((mips - 1) * 40 + 1)),
+          "compressed: copyTextureToBuffer() reads back the 1x1 mip");
+    device->waitForIdle();
+    for (int i = 0; i < 200 && validationErrorCount() == before; i++) emscripten_sleep(1);
+    check(validationErrorCount() == before, "compressed: readbacks without WebGPU errors");
 }
 
 static void testDepthPass(std::shared_ptr<Device> device) {
