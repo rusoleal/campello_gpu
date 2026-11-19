@@ -98,14 +98,19 @@ bool Texture::upload(uint64_t offset, uint64_t length, void* data) {
         dst.origin = { 0, 0, 0 };
         dst.aspect = WGPUTextureAspect_All;
 
+        // The data pointer below already starts at this mip: the layout's
+        // offset is relative to it (it used to repeat bufOffset, so every mip
+        // after the first was read past the end: "Data offset is too large").
         WGPUTexelCopyBufferLayout layout{};
-        layout.offset = bufOffset;
+        layout.offset = 0;
         layout.bytesPerRow = blocksX * blockBytes;
         layout.rowsPerImage = blocksY;
 
+        // Compressed: whole blocks (a 2x2 or 1x1 mip of a 4x4 format is one
+        // block); WebGPU rejects a copy size that isn't a multiple of the block.
         WGPUExtent3D extent{};
-        extent.width = w;
-        extent.height = h;
+        extent.width = blocksX * blockDim.width;
+        extent.height = blocksY * blockDim.height;
         extent.depthOrArrayLayers = d;
 
         wgpuQueueWriteTexture(handle->deviceData->queue, &dst,

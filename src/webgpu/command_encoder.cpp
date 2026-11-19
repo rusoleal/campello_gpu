@@ -207,12 +207,23 @@ void CommandEncoder::copyBufferToTexture(std::shared_ptr<Buffer> source, uint64_
 
     uint32_t mipW = std::max(1u, dstHandle->width >> mipLevel);
     uint32_t mipH = std::max(1u, dstHandle->height >> mipLevel);
+    uint32_t rows = mipH;
+    // Block-compressed formats copy whole blocks: the copy covers the mip's
+    // physical size (rounded up to the block, so a 2x2 or 1x1 mip of a 4x4
+    // format copies one block) and rowsPerImage counts block rows. WebGPU
+    // rejects a smaller copy size.
+    if (isCompressedFormat(dstHandle->pixelFormat)) {
+        const auto block = getPixelFormatBlockDimensions(dstHandle->pixelFormat);
+        rows = (mipH + block.height - 1) / block.height;
+        mipW = (mipW + block.width - 1) / block.width * block.width;
+        mipH = rows * block.height;
+    }
 
     WGPUTexelCopyBufferInfo srcInfo{};
     srcInfo.buffer = srcHandle->buffer;
     srcInfo.layout.offset = sourceOffset;
     srcInfo.layout.bytesPerRow = bytesPerRow;
-    srcInfo.layout.rowsPerImage = mipH;
+    srcInfo.layout.rowsPerImage = rows;
 
     WGPUTexelCopyTextureInfo dstInfo{};
     dstInfo.texture = dstHandle->texture;

@@ -2,6 +2,16 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **Block-compressed uploads failed on WebGPU** (`Texture::upload()`, `CommandEncoder::copyBufferToTexture()`). Three bugs, found by campello_renderer's compressed textures test in the browser (BC7, with a mip chain down to 1x1):
+  - The copy size was the mip's nominal size, so a mip smaller than a block (2x2 or 1x1 of a 4x4 format) was rejected: "copySize.width (2) is not a multiple of compressed texture format block width (4)". Compressed copies now cover whole blocks (the mip's physical size), and `copyBufferToTexture()`'s `rowsPerImage` counts block rows.
+  - `Texture::upload()` passed each mip's data already advanced to the mip *and* the same offset in the copy layout, so every mip after the first was read past the end: "Data offset is too large". The layout offset is now 0.
+  - Note: `copyBufferToTexture()` on WebGPU still needs `bytesPerRow` to be a multiple of 256, as WebGPU requires; callers pad rows (campello_renderer does for compressed mips).
+  - New check in `tests/webgpu/webgpu_browser_test.cpp` (`testCompressedUploads`): a BC7 mip chain through both paths without WebGPU errors; skipped without BC support. It fails without the fix.
+  - Test results (Edge, Intel UHD 630): `webgpu_browser_test` 36 passed, `webgpu_gtest_suite` 216 passed.
+
 ## [0.33.1] - 2026-11-19
 
 ### Fixed
