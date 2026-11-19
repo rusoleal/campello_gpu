@@ -254,19 +254,15 @@ std::set<Feature> Device::getFeatures() {
         toReturn.insert(Feature::bcTextureCompression);
     if (dev->supportsFamily(MTL::GPUFamilyApple6))
         toReturn.insert(Feature::cooperativeMatrix);
-#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
-    // ASTC and ETC2 are universally supported on Apple GPUs (iOS/tvOS).
-    toReturn.insert(Feature::astcTextureCompression);
-    toReturn.insert(Feature::etc2TextureCompression);
-#elif defined(TARGET_OS_MAC) && TARGET_OS_MAC
-    // macOS: ASTC is supported on Apple Silicon (which also reports BC support).
-    // Intel/AMD Macs only support BC.
-    if (dev->supportsBCTextureCompression()) {
-        // Apple Silicon Macs report BC support; Intel/AMD do not.
-        // On Apple Silicon, ASTC is also available.
+    // ASTC and ETC2: Apple GPUs (iOS and tvOS devices, Apple Silicon Macs),
+    // which are the Apple2 family and later. Intel and AMD Macs have BC only.
+    // (supportsBCTextureCompression() is true on every Mac, Apple Silicon or
+    // not, so it can't tell them apart: deciding on it reported ASTC on
+    // Intel Macs, whose textures then failed Metal validation.)
+    if (dev->supportsFamily(MTL::GPUFamilyApple2)) {
         toReturn.insert(Feature::astcTextureCompression);
+        toReturn.insert(Feature::etc2TextureCompression);
     }
-#endif
     if (__builtin_available(macOS 10.11, *)) {
         if (dev->depth24Stencil8PixelFormatSupported())
             toReturn.insert(Feature::depth24Stencil8PixelFormat);
