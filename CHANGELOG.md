@@ -2,6 +2,13 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [0.33.1] - 2026-11-19
+
+### Fixed
+- **Intel and AMD Macs reported ASTC support** (`Feature::astcTextureCompression`, Metal). The check assumed BC support meant Apple Silicon, but every Mac supports BC. ASTC textures then failed Metal validation ("invalid pixelFormat (186)"), for example when campello_renderer picked ASTC for a KTX2 texture.
+  - ASTC and ETC2 are now reported on the Apple2 GPU family and later (`supportsFamily(GPUFamilyApple2)`): iOS and tvOS devices and Apple Silicon Macs.
+  - New test `Device.ReportedCompressedFormatsCreateTextures`: every compressed family the device reports creates a texture. It aborted on an Intel Mac before the fix.
+
 ## [0.33.0] - 2026-11-18
 
 ### Added

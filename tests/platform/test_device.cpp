@@ -125,6 +125,31 @@ TEST(Device, GetFeaturesDoesNotThrow) {
     EXPECT_NO_THROW(device->getFeatures());
 }
 
+// Every compressed format family the device reports can be used: a small
+// texture of it is created. (On Metal, Intel Macs used to report ASTC, from
+// their BC support, and ASTC textures then failed validation.)
+TEST(Device, ReportedCompressedFormatsCreateTextures) {
+    auto device = tryCreateDevice();
+    if (!device) {
+        GTEST_SKIP() << "createDefaultDevice not available on this platform yet";
+    }
+    const auto features = device->getFeatures();
+    const auto usage = (TextureUsage)((uint32_t)TextureUsage::textureBinding | (uint32_t)TextureUsage::copyDst);
+    struct Family {
+        Feature feature;
+        PixelFormat format;
+    };
+    for (const Family family : {Family{Feature::bcTextureCompression, PixelFormat::bc7_rgba_unorm},
+                                Family{Feature::astcTextureCompression, PixelFormat::astc_4x4_unorm_srgb},
+                                Family{Feature::etc2TextureCompression, PixelFormat::etc2_rgb8unorm}}) {
+        if (!features.count(family.feature)) {
+            continue;
+        }
+        auto texture = device->createTexture(TextureType::tt2d, family.format, 16, 16, 1, 1, 1, usage);
+        EXPECT_NE(texture, nullptr) << featureName(family.feature);
+    }
+}
+
 // Prints every known Feature alongside whether the current GPU supports it.
 // Not an assertion — the point is to surface the full feature matrix of
 // whatever hardware the test suite happens to run on.
