@@ -843,13 +843,29 @@ void CommandEncoder::copyBufferToTexture(
 
     // bufferRowLength=0 / bufferImageHeight=0 → tightly packed. Rows longer
     // than the mip's (padded source rows, e.g. to WebGPU's 256-byte copy
-    // alignment) set bufferRowLength, in texels, for uncompressed formats.
+    // alignment) set bufferRowLength, in texels. Block-compressed formats
+    // count whole blocks: a row of blocks is bytesPerRow / blockBytes blocks
+    // of blockWidth texels. (Dividing by their average bits per texel, as for
+    // uncompressed formats, read a tightly packed 64-texel ASTC/BC7 row of
+    // 256 bytes as 256 texels and skewed every row.)
     uint32_t rowLength = 0;
-    const uint64_t texelBits = getPixelFormatSize(texH->pixelFormat);
-    if (bytesPerRow > 0 && texelBits >= 8 && texelBits % 8 == 0) {
-        const uint64_t texelBytes = texelBits / 8;
-        if (bytesPerRow % texelBytes == 0 && bytesPerRow / texelBytes > mipWidth) {
-            rowLength = static_cast<uint32_t>(bytesPerRow / texelBytes);
+    if (bytesPerRow > 0 && isCompressedFormat(texH->pixelFormat)) {
+        const auto block = getPixelFormatBlockDimensions(texH->pixelFormat);
+        const uint64_t blockBytes = getPixelFormatBlockBytes(texH->pixelFormat);
+        if (blockBytes > 0 && block.width > 0 && bytesPerRow % blockBytes == 0) {
+            const uint64_t rowTexels = bytesPerRow / blockBytes * block.width;
+            const uint64_t mipBlocksWide = (mipWidth + block.width - 1) / block.width * block.width;
+            if (rowTexels > mipBlocksWide) {
+                rowLength = static_cast<uint32_t>(rowTexels);
+            }
+        }
+    } else if (bytesPerRow > 0) {
+        const uint64_t texelBits = getPixelFormatSize(texH->pixelFormat);
+        if (texelBits >= 8 && texelBits % 8 == 0) {
+            const uint64_t texelBytes = texelBits / 8;
+            if (bytesPerRow % texelBytes == 0 && bytesPerRow / texelBytes > mipWidth) {
+                rowLength = static_cast<uint32_t>(bytesPerRow / texelBytes);
+            }
         }
     }
     VkBufferImageCopy region{};
