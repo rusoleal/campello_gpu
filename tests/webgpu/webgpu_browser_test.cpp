@@ -167,6 +167,49 @@ static void testTextures(std::shared_ptr<Device> device) {
     check(arr != nullptr, "texture: 2D array texture created");
 }
 
+// Block-compressed uploads cover whole blocks: the 2x2 and 1x1 mips of a 4x4
+// format are one block each, and WebGPU rejects a copy size that isn't a
+// multiple of the block. Both upload paths, with no WebGPU errors:
+// Texture::upload() (tightly packed mips) and copyBufferToTexture() (rows
+// padded to 256 bytes, WebGPU's bytesPerRow alignment).
+static void testCompressedUploads(std::shared_ptr<Device> device) {
+    if (device->getFeatures().count(Feature::bcTextureCompression) == 0) {
+        printf("INFO compressed uploads: no BC formats on this device, skipped\n");
+        return;
+    }
+    const uint32_t size = 16, mips = 5;  // 16, 8, 4, 2, 1
+    const auto usage = static_cast<TextureUsage>(static_cast<int>(TextureUsage::textureBinding) |
+                                                 static_cast<int>(TextureUsage::copyDst));
+    const uint64_t before = validationErrorCount();
+
+    std::vector<uint8_t> packed;  // tightly packed blocks, mip after mip
+    for (uint32_t m = 0, s = size; m < mips; m++, s = std::max(1u, s / 2)) {
+        const uint32_t blocks = (s + 3) / 4;
+        packed.resize(packed.size() + blocks * blocks * 16, uint8_t(m * 40 + 1));
+    }
+    auto uploaded = device->createTexture(TextureType::tt2d, PixelFormat::bc7_rgba_unorm, size, size, 1, mips, 1, usage);
+    check(uploaded && uploaded->upload(0, packed.size(), packed.data()),
+          "compressed: upload() of a mip chain down to 1x1 succeeds");
+
+    auto copied = device->createTexture(TextureType::tt2d, PixelFormat::bc7_rgba_unorm, size, size, 1, mips, 1, usage);
+    std::vector<uint64_t> offsets;
+    std::vector<uint8_t> padded;
+    for (uint32_t m = 0, s = size; m < mips; m++, s = std::max(1u, s / 2)) {
+        const uint32_t blocks = (s + 3) / 4;
+        offsets.push_back(padded.size());
+        padded.resize(padded.size() + blocks * 256, uint8_t(m * 40 + 1));
+    }
+    auto staging = device->createBuffer(padded.size(), BufferUsage::copySrc, padded.data());
+    auto encoder = device->createCommandEncoder();
+    for (uint32_t m = 0; m < mips && copied && staging && encoder; m++) {
+        encoder->copyBufferToTexture(staging, offsets[m], 256, copied, m, 0);
+    }
+    if (encoder) device->submit(encoder->finish());
+    device->waitForIdle();
+    for (int i = 0; i < 200 && validationErrorCount() == before; i++) emscripten_sleep(1);
+    check(validationErrorCount() == before, "compressed: both upload paths without WebGPU errors");
+}
+
 static void testDepthPass(std::shared_ptr<Device> device) {
     const uint32_t w = 32, h = 32;
     auto color = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, w, h, 1, 1, 1,
@@ -463,6 +506,7 @@ int main() {
     resetValidationErrorCount();
     testCompute(device);
     testTextures(device);
+    testCompressedUploads(device);
     testDepthPass(device);
     testMsaa(device);
     testPushConstants(device);
