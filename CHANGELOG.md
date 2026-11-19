@@ -2,6 +2,13 @@
 
 All notable changes to campello_gpu are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **WebGPU: compressed mips smaller than a block failed to upload.** A 2×2 or 1×1 mip of a 4×4-block format (BC, ASTC, ETC2) was copied with its own size, but WebGPU copies only whole blocks. The copy was rejected, and with it the whole command buffer. `copyBufferToTexture()`, `copyTextureToBuffer()`, `Texture::upload()` and `download()` now copy such mips as whole blocks (`copyExtentOf()`), with `rowsPerImage` in rows of blocks.
+- **WebGPU: `Texture::upload()` uploaded only the first mip.** Each later mip's offset was applied twice (to the data and to the layout), and WebGPU rejected it ("Data offset is too large").
+- New browser test `testCompressedMips`: an 8×8 compressed texture with all 4 mips, through `upload()` and through `copyBufferToTexture()` with padded rows, read back with no WebGPU errors.
+
 ## [0.33.1] - 2026-11-19
 
 ### Fixed

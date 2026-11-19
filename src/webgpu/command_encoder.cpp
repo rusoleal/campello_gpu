@@ -205,14 +205,16 @@ void CommandEncoder::copyBufferToTexture(std::shared_ptr<Buffer> source, uint64_
     auto* srcHandle = static_cast<BufferHandle*>(source->native);
     auto* dstHandle = static_cast<TextureHandle*>(destination->native);
 
-    uint32_t mipW = std::max(1u, dstHandle->width >> mipLevel);
-    uint32_t mipH = std::max(1u, dstHandle->height >> mipLevel);
+    const auto copy = copyExtentOf(dstHandle->pixelFormat, std::max(1u, dstHandle->width >> mipLevel),
+                                   std::max(1u, dstHandle->height >> mipLevel));
+    const uint32_t mipW = copy.width;
+    const uint32_t mipH = copy.height;
 
     WGPUTexelCopyBufferInfo srcInfo{};
     srcInfo.buffer = srcHandle->buffer;
     srcInfo.layout.offset = sourceOffset;
     srcInfo.layout.bytesPerRow = bytesPerRow;
-    srcInfo.layout.rowsPerImage = mipH;
+    srcInfo.layout.rowsPerImage = copy.blockRows;
 
     WGPUTexelCopyTextureInfo dstInfo{};
     dstInfo.texture = dstHandle->texture;
@@ -238,8 +240,10 @@ void CommandEncoder::copyTextureToBuffer(std::shared_ptr<Texture> source, uint32
     auto* srcHandle = static_cast<TextureHandle*>(source->native);
     auto* dstHandle = static_cast<BufferHandle*>(destination->native);
 
-    uint32_t mipW = std::max(1u, srcHandle->width >> mipLevel);
-    uint32_t mipH = std::max(1u, srcHandle->height >> mipLevel);
+    const auto copy = copyExtentOf(srcHandle->pixelFormat, std::max(1u, srcHandle->width >> mipLevel),
+                                   std::max(1u, srcHandle->height >> mipLevel));
+    const uint32_t mipW = copy.width;
+    const uint32_t mipH = copy.height;
 
     WGPUTexelCopyTextureInfo srcInfo{};
     srcInfo.texture = srcHandle->texture;
@@ -251,7 +255,7 @@ void CommandEncoder::copyTextureToBuffer(std::shared_ptr<Texture> source, uint32
     dstInfo.buffer = dstHandle->buffer;
     dstInfo.layout.offset = destinationOffset;
     dstInfo.layout.bytesPerRow = bytesPerRow;
-    dstInfo.layout.rowsPerImage = mipH;
+    dstInfo.layout.rowsPerImage = copy.blockRows;
 
     WGPUExtent3D extent{};
     extent.width = mipW;

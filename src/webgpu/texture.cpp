@@ -98,14 +98,16 @@ bool Texture::upload(uint64_t offset, uint64_t length, void* data) {
         dst.origin = { 0, 0, 0 };
         dst.aspect = WGPUTextureAspect_All;
 
+        // The data passed starts at this mip: no offset into it.
         WGPUTexelCopyBufferLayout layout{};
-        layout.offset = bufOffset;
+        layout.offset = 0;
         layout.bytesPerRow = blocksX * blockBytes;
         layout.rowsPerImage = blocksY;
 
+        const auto copy = copyExtentOf(handle->pixelFormat, w, h);
         WGPUExtent3D extent{};
-        extent.width = w;
-        extent.height = h;
+        extent.width = copy.width;
+        extent.height = copy.height;
         extent.depthOrArrayLayers = d;
 
         wgpuQueueWriteTexture(handle->deviceData->queue, &dst,
@@ -173,9 +175,10 @@ static bool submitTextureReadback(TextureHandle* handle, uint32_t mipLevel, uint
     dst.layout.bytesPerRow = rb.paddedBytesPerRow;
     dst.layout.rowsPerImage = blocksY;
 
+    const auto copy = copyExtentOf(handle->pixelFormat, mipW, mipH);
     WGPUExtent3D extent{};
-    extent.width = mipW;
-    extent.height = mipH;
+    extent.width = copy.width;
+    extent.height = copy.height;
     extent.depthOrArrayLayers = 1;
 
     wgpuCommandEncoderCopyTextureToBuffer(encoder, &src, &dst, &extent);

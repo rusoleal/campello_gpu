@@ -35,6 +35,22 @@
 
 namespace systems::leal::campello_gpu {
 
+// A mip's size as WebGPU copies it: whole blocks for a compressed format
+// (a 2x2 or 1x1 mip of a 4x4-block format is copied as 4x4; WebGPU rejects
+// a copy that isn't a multiple of the block size). Also its rows of blocks.
+struct CopyExtent {
+    uint32_t width;
+    uint32_t height;
+    uint32_t blockRows;
+};
+inline CopyExtent copyExtentOf(PixelFormat format, uint32_t width, uint32_t height) {
+    if (!isCompressedFormat(format)) return {width, height, height};
+    const auto block = getPixelFormatBlockDimensions(format);
+    const uint32_t blocksX = (width + block.width - 1) / block.width;
+    const uint32_t blocksY = (height + block.height - 1) / block.height;
+    return {blocksX * block.width, blocksY * block.height, blocksY};
+}
+
 // ---------------------------------------------------------------------------
 // Targets the upstream webgpu.h shipped by Dawn's `emdawnwebgpu` Emscripten
 // port (`--use-port=emdawnwebgpu`), not the legacy `-sUSE_WEBGPU` binding.

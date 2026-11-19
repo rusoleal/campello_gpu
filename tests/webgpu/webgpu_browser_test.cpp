@@ -167,6 +167,71 @@ static void testTextures(std::shared_ptr<Device> device) {
     check(arr != nullptr, "texture: 2D array texture created");
 }
 
+// A compressed texture's mips smaller than a block (2x2 and 1x1 of a 4x4
+// format) are copied as whole blocks: WebGPU rejects a copy that isn't, so
+// the whole upload was dropped. Through Texture::upload() (packed mips) and
+// copyBufferToTexture() (rows padded to 256 bytes), read back with download().
+static void testCompressedMips(std::shared_ptr<Device> device) {
+    const auto features = device->getFeatures();
+    PixelFormat format;
+    uint32_t blockBytes = 16;
+    if (features.count(Feature::bcTextureCompression)) {
+        format = PixelFormat::bc7_rgba_unorm;
+    } else if (features.count(Feature::astcTextureCompression)) {
+        format = PixelFormat::astc_4x4_unorm_srgb;
+    } else if (features.count(Feature::etc2TextureCompression)) {
+        format = PixelFormat::etc2_rgb8unorm;
+        blockBytes = 8;
+    } else {
+        printf("INFO compressed mips: no compressed format, skipped\n");
+        return;
+    }
+    // 8x8 with mips 8, 4, 2, 1: 4, 1, 1 and 1 blocks.
+    const uint32_t blocks[4] = {4, 1, 1, 1};
+    std::vector<uint8_t> packed;
+    for (uint32_t mip = 0; mip < 4; mip++) {
+        for (uint32_t i = 0; i < blocks[mip] * blockBytes; i++) packed.push_back(uint8_t(mip * 61 + i * 13));
+    }
+    const auto usage = static_cast<TextureUsage>(static_cast<int>(TextureUsage::textureBinding) |
+                                                 static_cast<int>(TextureUsage::copyDst) |
+                                                 static_cast<int>(TextureUsage::copySrc));
+    const uint32_t before = validationErrorCount();
+
+    auto uploaded = device->createTexture(TextureType::tt2d, format, 8, 8, 1, 4, 1, usage);
+    check(uploaded && uploaded->upload(0, packed.size(), packed.data()), "compressed mips: upload() succeeds");
+
+    // Each mip at its own 256-byte-aligned offset, rows padded to 256 bytes.
+    std::vector<uint8_t> padded(4 * 512, 0);
+    size_t at = 0;
+    for (uint32_t mip = 0; mip < 4; mip++) {
+        const uint32_t rowBytes = (mip == 0 ? 2 : 1) * blockBytes;
+        const uint32_t rows = mip == 0 ? 2 : 1;
+        for (uint32_t row = 0; row < rows; row++) {
+            memcpy(padded.data() + mip * 512 + row * 256, packed.data() + at + row * rowBytes, rowBytes);
+        }
+        at += rows * rowBytes;
+    }
+    auto staging = device->createBuffer(padded.size(), BufferUsage::copySrc, padded.data());
+    auto copied = device->createTexture(TextureType::tt2d, format, 8, 8, 1, 4, 1, usage);
+    auto encoder = device->createCommandEncoder();
+    for (uint32_t mip = 0; mip < 4; mip++) {
+        encoder->copyBufferToTexture(staging, mip * 512, 256, copied, mip, 0);
+    }
+    device->submit(encoder->finish());
+
+    std::vector<uint8_t> back(blockBytes, 0);
+    const size_t lastMip = packed.size() - blockBytes;
+    check(uploaded && uploaded->download(3, 0, back.data(), back.size()) &&
+              memcmp(back.data(), packed.data() + lastMip, blockBytes) == 0,
+          "compressed mips: upload()'s 1x1 mip reads back");
+    std::fill(back.begin(), back.end(), 0);
+    check(copied && copied->download(3, 0, back.data(), back.size()) &&
+              memcmp(back.data(), packed.data() + lastMip, blockBytes) == 0,
+          "compressed mips: copyBufferToTexture()'s 1x1 mip reads back");
+    device->waitForIdle();
+    check(validationErrorCount() == before, "compressed mips: no WebGPU errors");
+}
+
 static void testDepthPass(std::shared_ptr<Device> device) {
     const uint32_t w = 32, h = 32;
     auto color = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, w, h, 1, 1, 1,
@@ -467,6 +532,7 @@ int main() {
     testMsaa(device);
     testPushConstants(device);
     testMappedVertexBuffer(device);
+    testCompressedMips(device);
     testDownloadAsync(device);
     testJavaScriptInterop(device);
     testMemoryInfo(device);
