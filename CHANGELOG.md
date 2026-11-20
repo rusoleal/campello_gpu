@@ -4,7 +4,7 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
-## [Unreleased]
+## [0.33.3] - 2026-11-20
 
 ### Fixed
 - **WebGPU: reading back a compressed mip smaller than a block failed** (`Texture::download()`, `copyTextureToBuffer()`): it was copied at its own size (2×2, 1×1), which WebGPU rejects; it's now copied as a whole block, as uploads are since 0.33.2. `testCompressedUploads` reads the 1×1 mip back both ways.
