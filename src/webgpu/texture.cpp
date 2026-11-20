@@ -178,9 +178,11 @@ static bool submitTextureReadback(TextureHandle* handle, uint32_t mipLevel, uint
     dst.layout.bytesPerRow = rb.paddedBytesPerRow;
     dst.layout.rowsPerImage = blocksY;
 
+    // Whole blocks, as for uploads: WebGPU rejects a copy of a compressed mip
+    // smaller than a block (2x2, 1x1) at its own size.
     WGPUExtent3D extent{};
-    extent.width = mipW;
-    extent.height = mipH;
+    extent.width = blocksX * blockDim.width;
+    extent.height = blocksY * blockDim.height;
     extent.depthOrArrayLayers = 1;
 
     wgpuCommandEncoderCopyTextureToBuffer(encoder, &src, &dst, &extent);
