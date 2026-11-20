@@ -4,6 +4,9 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **WebAssembly builds use SIMD** (`-msimd128`), on by default: every browser with WebGPU supports it. The option `CAMPELLO_GPU_WASM_SIMD` turns it off. It applies to the library and is passed on to consumers (compile and link, so wasm-opt accepts the SIMD instructions).
+
 ## [0.33.3] - 2026-11-20
 
 ### Fixed

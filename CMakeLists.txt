@@ -8,6 +8,15 @@ message(STATUS "CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}")
 
 include(GNUInstallDirs)
 
+# WebAssembly SIMD (-msimd128), on by default: every browser with WebGPU has
+# it. Compiles this directory with it (the library and the third-party code it
+# builds); the target passes it on to its consumers below.
+option(CAMPELLO_GPU_WASM_SIMD "WebAssembly builds: use SIMD (-msimd128)" ON)
+if(EMSCRIPTEN AND CAMPELLO_GPU_WASM_SIMD)
+    add_compile_options(-msimd128)
+    add_link_options(-msimd128)
+endif()
+
 include_directories(inc)
 
 configure_file(src/campello_gpu_config.h.in campello_gpu_config.h)
@@ -141,6 +150,12 @@ endif()
 # whether they use FetchContent (add_subdirectory) or find_package.
 # ---------------------------------------------------------------------------
 add_library(campello_gpu::campello_gpu ALIAS ${PROJECT_NAME})
+
+# Consumers compile and link with SIMD too (the link tells wasm-opt to accept it).
+if(EMSCRIPTEN AND CAMPELLO_GPU_WASM_SIMD)
+    target_compile_options(${PROJECT_NAME} INTERFACE -msimd128)
+    target_link_options(${PROJECT_NAME} INTERFACE -msimd128)
+endif()
 
 # Expose the installed header path for consumers that use find_package.
 get_target_property(_campello_gpu_type ${PROJECT_NAME} TYPE)
