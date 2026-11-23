@@ -4,6 +4,7 @@
 #include <emscripten.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -199,6 +200,15 @@ void uploadPushConstants(WebGPUDeviceData* deviceData, const PushConstantStream&
 
 void releasePushConstantResources(WebGPUDeviceData* deviceData);
 
+// A render pipeline compiling (createRenderPipelineAsync): shared with the
+// completion callback, which may run after the RenderPipeline is gone.
+struct PendingRenderPipeline {
+    bool done = false;
+    bool abandoned = false;               // the RenderPipeline was destroyed first
+    WGPURenderPipeline pipeline = nullptr;  // null when creation failed
+    std::string error;
+};
+
 struct WebGPUDeviceData {
     WGPUInstance instance = nullptr;
     WGPUAdapter adapter = nullptr;
@@ -214,6 +224,14 @@ struct WebGPUDeviceData {
     MipmapGenResources mipmapGen;
     WGPUBindGroupLayout pushConstantLayout = nullptr;
     std::vector<PushConstantChunk> pushConstantChunks;
+
+    // Render pipelines still compiling (createRenderPipelineAsync), waited
+    // for before a canvas texture is taken (waitForPendingPipelines()).
+    std::vector<std::shared_ptr<PendingRenderPipeline>> pendingPipelines;
+    // A canvas texture was taken in the current browser task: until the task
+    // ends (the browser presents it) nothing may yield to the event loop, or
+    // the texture is presented and destroyed under the frame being encoded.
+    bool canvasTextureHeld = false;
 
     // Cleared in ~Device(); async callbacks that may outlive the device
     // (timestamp readback) check it before touching this struct.
@@ -315,11 +333,67 @@ struct ShaderModuleHandle {
 };
 
 struct RenderPipelineHandle {
+    // Null while `pending` compiles (resolveRenderPipeline() waits for it),
+    // and when creation failed.
     WGPURenderPipeline pipeline = nullptr;
+    std::shared_ptr<PendingRenderPipeline> pending;
     WGPUPipelineLayout layout = nullptr;
     int32_t pushConstantGroup = -1;  // bind group index of emulated push constants
     WebGPUDeviceData* deviceData = nullptr;
 };
+
+/**
+ * The compiled pipeline of `h`, waiting (yielding through ASYNCIFY) while it
+ * still compiles; null when its creation failed (reported once on stderr).
+ */
+inline WGPURenderPipeline resolveRenderPipeline(RenderPipelineHandle* h) {
+    if (h->pending) {
+        auto pending = h->pending;
+        if (!pending->done && h->deviceData && h->deviceData->canvasTextureHeld) {
+            return nullptr;  // can't wait now (see canvasTextureHeld): this frame skips its draws
+        }
+        while (!pending->done) {
+            emscripten_sleep(1);
+        }
+        h->pipeline = pending->pipeline;
+        pending->pipeline = nullptr;  // owned by the handle now
+        if (!h->pipeline) fprintf(stderr, "[WebGPU] createRenderPipeline failed: %s\n", pending->error.c_str());
+        h->pending.reset();
+    }
+    return h->pipeline;
+}
+
+/**
+ * Marks that a canvas texture is held until the current browser task ends
+ * (cleared by a zero-delay callback, which runs in a later task).
+ */
+inline void holdCanvasTexture(WebGPUDeviceData* d) {
+    if (d->canvasTextureHeld) return;
+    d->canvasTextureHeld = true;
+    // `alive` guards against the device being destroyed before it runs.
+    using Arg = std::pair<std::shared_ptr<std::atomic<bool>>, WebGPUDeviceData*>;
+    emscripten_async_call(
+        [](void* arg) {
+            auto* pair = static_cast<Arg*>(arg);
+            if (pair->first->load()) pair->second->canvasTextureHeld = false;
+            delete pair;
+        },
+        new Arg(d->alive, d), 0);
+}
+
+/**
+ * Waits (yielding through ASYNCIFY) for the render pipelines still
+ * compiling: called before a canvas texture is taken, so a frame never has
+ * to wait for one while it holds that texture.
+ */
+inline void waitForPendingPipelines(WebGPUDeviceData* d) {
+    for (auto& pending : d->pendingPipelines) {
+        while (!pending->done && !pending->abandoned) {
+            emscripten_sleep(1);
+        }
+    }
+    d->pendingPipelines.clear();
+}
 
 struct ComputePipelineHandle {
     WGPUComputePipeline pipeline = nullptr;
@@ -409,6 +483,7 @@ struct CommandBufferHandle {
 struct RenderPassEncoderHandle {
     WGPURenderPassEncoder encoder = nullptr;
     WGPURenderPipeline currentPipeline = nullptr;
+    bool pipelineFailed = false;  // the bound pipeline failed to compile: draws are skipped
     WebGPUDeviceData* deviceData = nullptr;
     std::shared_ptr<PushConstantStream> pushConstants;
     int32_t pushConstantGroup = -1;       // of the current pipeline

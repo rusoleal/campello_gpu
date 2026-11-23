@@ -15,5 +15,12 @@ RenderPipeline::~RenderPipeline() {
     if (handle->pipeline) {
         wgpuRenderPipelineRelease(handle->pipeline);
     }
+    if (handle->pending) {
+        if (!handle->pending->done) {
+            handle->pending->abandoned = true;  // the callback releases it
+        } else if (handle->pending->pipeline) {
+            wgpuRenderPipelineRelease(handle->pending->pipeline);
+        }
+    }
     delete handle;
 }

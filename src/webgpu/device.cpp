@@ -683,6 +683,12 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
 
     if (!descriptor.vertex.module) return nullptr;
+    // Empty shader modules can't make a pipeline: nullptr now, as the other
+    // backends, rather than a pipeline that fails when compiled (below).
+    if (static_cast<ShaderModuleHandle*>(descriptor.vertex.module->native)->size == 0) return nullptr;
+    if (descriptor.fragment && descriptor.fragment->module &&
+        static_cast<ShaderModuleHandle*>(descriptor.fragment->module->native)->size == 0)
+        return nullptr;
 
     // Vertex state
     auto* vertHandle = static_cast<ShaderModuleHandle*>(descriptor.vertex.module->native);
@@ -836,22 +842,62 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
     }
     desc.layout = layout;
 
-    pushValidationScope(deviceData->device);
     int32_t pushConstantGroup = -1;
     if (descriptor.layout && descriptor.layout->native) {
         pushConstantGroup =
             static_cast<PipelineLayoutHandle*>(descriptor.layout->native)->pushConstantGroup;
     }
-    WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(deviceData->device, &desc);
-    bool valid = popValidationScope(deviceData->device, "createRenderPipeline");
-    if (!pipeline) return nullptr;
-    if (!valid) {
-        wgpuRenderPipelineRelease(pipeline);
-        return nullptr;
+    // Compiled asynchronously: the browser compiles pipelines created this
+    // way concurrently, off its GPU process's main thread, and nothing waits
+    // here. The handle is returned at once; RenderPassEncoder::setPipeline()
+    // waits for the pipeline if it isn't ready yet (resolveRenderPipeline()).
+    // Creating one synchronously and awaiting its validation error scope
+    // made every creation a round trip, compiled one at a time, with the
+    // page blocked: campello_web_viewer's 121 startup pipelines took ~4 s.
+    // A pipeline that fails to compile is reported (stderr) when first used,
+    // and draws with it are skipped, instead of a null return.
+    if (deviceData->canvasTextureHeld) {
+        // Mid-frame (a canvas texture is held, nothing may yield): created
+        // synchronously, which doesn't wait; an error is reported when the
+        // browser has checked it.
+        wgpuDevicePushErrorScope(deviceData->device, WGPUErrorFilter_Validation);
+        WGPURenderPipeline pipeline = wgpuDeviceCreateRenderPipeline(deviceData->device, &desc);
+        auto* check = newAsyncResult([](WGPUAsyncResult& r) {
+            if (r.status == static_cast<int>(WGPUPopErrorScopeStatus_Success) &&
+                r.value != static_cast<int>(WGPUErrorType_NoError))
+                fprintf(stderr, "[WebGPU] createRenderPipeline failed: %s\n", r.message.c_str());
+        });
+        wgpuDevicePopErrorScope(deviceData->device, makeCallbackInfo<WGPUPopErrorScopeCallbackInfo>(check));
+        if (!pipeline) return nullptr;
+        auto* handle = new RenderPipelineHandle();
+        handle->pipeline = pipeline;
+        handle->layout = layout;
+        handle->pushConstantGroup = pushConstantGroup;
+        handle->deviceData = deviceData;
+        deviceData->renderPipelineCount++;
+        return std::shared_ptr<RenderPipeline>(new RenderPipeline(handle));
     }
 
+    auto pending = std::make_shared<PendingRenderPipeline>();
+    deviceData->pendingPipelines.push_back(pending);
+    auto* result = newAsyncResult([pending](WGPUAsyncResult& r) {
+        if (pending->abandoned) {
+            if (r.handle) wgpuRenderPipelineRelease(static_cast<WGPURenderPipeline>(r.handle));
+            return;
+        }
+        pending->done = true;
+        if (r.status == static_cast<int>(WGPUCreatePipelineAsyncStatus_Success) && r.handle) {
+            pending->pipeline = static_cast<WGPURenderPipeline>(r.handle);
+        } else {
+            if (r.handle) wgpuRenderPipelineRelease(static_cast<WGPURenderPipeline>(r.handle));
+            pending->error = r.message.empty() ? "creation failed" : r.message;
+        }
+    });
+    wgpuDeviceCreateRenderPipelineAsync(deviceData->device, &desc,
+                                        makeCallbackInfo<WGPUCreateRenderPipelineAsyncCallbackInfo>(result));
+
     auto* handle = new RenderPipelineHandle();
-    handle->pipeline = pipeline;
+    handle->pending = std::move(pending);
     handle->layout = layout;
     handle->pushConstantGroup = pushConstantGroup;
     handle->deviceData = deviceData;
@@ -1339,9 +1385,11 @@ std::shared_ptr<TextureView> Device::getSwapchainTextureView() {
         configureSurface(deviceData, width, height);
     }
 
+    waitForPendingPipelines(deviceData);  // the last chance to yield in this frame
     WGPUSurfaceTexture surfaceTexture{};
     wgpuSurfaceGetCurrentTexture(deviceData->surface, &surfaceTexture);
     if (!surfaceTexture.texture) return nullptr;
+    holdCanvasTexture(deviceData);
 
     WGPUTextureView view = wgpuTextureCreateView(surfaceTexture.texture, nullptr);
     wgpuTextureRelease(surfaceTexture.texture);  // the view keeps it alive
