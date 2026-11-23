@@ -403,6 +403,77 @@ static void testMsaa(std::shared_ptr<Device> device) {
     check(centerIsRed(resolve, w, h), "msaa: resolved image is red");
 }
 
+// Render pipelines compile asynchronously (createRenderPipelineAsync):
+// creating them returns at once, setPipeline() waits for one that isn't
+// ready, a pipeline that fails to compile skips its draws without breaking
+// the pass, and destroying one still compiling is safe.
+static void testAsyncPipelines(std::shared_ptr<Device> device) {
+    const uint32_t w = 16, h = 16;
+    std::vector<std::shared_ptr<RenderPipeline>> pipelines;
+    for (int i = 0; i < 8; ++i) pipelines.push_back(fullscreenPipeline(device, PixelFormat::rgba8unorm, 1, false));
+    bool allRed = true;
+    for (auto& pipeline : pipelines) {
+        auto target = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, w, h, 1, 1, 1,
+                                            TextureUsage::renderTarget);
+        ColorAttachment ca{};
+        ca.view = target->createView(PixelFormat::rgba8unorm);
+        ca.loadOp = LoadOp::clear;
+        ca.storeOp = StoreOp::store;
+        BeginRenderPassDescriptor rp{};
+        rp.colorAttachments = { ca };
+        auto encoder = device->createCommandEncoder();
+        auto pass = encoder->beginRenderPass(rp);
+        pass->setPipeline(pipeline);
+        pass->draw(3, 1, 0, 0);
+        pass->end();
+        device->submit(encoder->finish());
+        allRed = allRed && centerIsRed(target, w, h);
+    }
+    check(allRed, "async pipelines: 8 created up front all draw");
+
+    // Destroyed while compiling: the completion callback releases it.
+    fullscreenPipeline(device, PixelFormat::rgba8unorm, 1, false).reset();
+
+    // A fragment entry point the module lacks: the pipeline fails to compile.
+    uint64_t errorsBefore = validationErrorCount();
+    auto module = device->createShaderModule(kFullscreenWGSL);
+    RenderPipelineDescriptor desc{};
+    desc.vertex.module = module;
+    desc.vertex.entryPoint = "vs";
+    desc.fragment = FragmentDescriptor{};
+    desc.fragment->module = module;
+    desc.fragment->entryPoint = "missing";
+    desc.fragment->targets = { ColorState{ PixelFormat::rgba8unorm, ColorWrite::all, std::nullopt } };
+    desc.topology = PrimitiveTopology::triangleList;
+    desc.cullMode = CullMode::none;
+    desc.frontFace = FrontFace::ccw;
+    printf("INFO the next createRenderPipeline failure is expected\n");
+    auto broken = device->createRenderPipeline(desc);
+    check(broken != nullptr, "async pipelines: a failing pipeline is still returned");
+    auto target = device->createTexture(TextureType::tt2d, PixelFormat::rgba8unorm, w, h, 1, 1, 1,
+                                        TextureUsage::renderTarget);
+    ColorAttachment ca{};
+    ca.view = target->createView(PixelFormat::rgba8unorm);
+    ca.loadOp = LoadOp::clear;
+    ca.storeOp = StoreOp::store;
+    ca.clearValue[0] = 0.0f; ca.clearValue[1] = 0.0f; ca.clearValue[2] = 1.0f; ca.clearValue[3] = 1.0f;
+    BeginRenderPassDescriptor rp{};
+    rp.colorAttachments = { ca };
+    auto encoder = device->createCommandEncoder();
+    auto pass = encoder->beginRenderPass(rp);
+    if (broken) pass->setPipeline(broken);
+    pass->draw(3, 1, 0, 0);
+    pass->end();
+    device->submit(encoder->finish());
+    std::vector<uint8_t> px(w * h * 4);
+    const bool read = target->download(0, 0, px.data(), px.size());
+    const uint8_t* c = &px[((h / 2) * w + w / 2) * 4];
+    check(read && c[0] == 0 && c[2] == 255, "async pipelines: draws with a failed pipeline are skipped");
+    device->waitForIdle();
+    for (int i = 0; i < 50; i++) emscripten_sleep(1);
+    check(validationErrorCount() == errorsBefore, "async pipelines: a failed pipeline raises no WebGPU error");
+}
+
 static void testDownloadAsync(std::shared_ptr<Device> device) {
     static float src[4] = { 1, 2, 3, 4 };
     static float dst[4] = { 0, 0, 0, 0 };
@@ -533,6 +604,7 @@ int main() {
     testMsaa(device);
     testPushConstants(device);
     testMappedVertexBuffer(device);
+    testAsyncPipelines(device);
     testDownloadAsync(device);
     testJavaScriptInterop(device);
     testMemoryInfo(device);

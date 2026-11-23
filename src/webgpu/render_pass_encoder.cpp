@@ -50,6 +50,7 @@ void RenderPassEncoder::beginOcclusionQuery(uint32_t queryIndex) {
 void RenderPassEncoder::draw(uint32_t vertexCount, uint32_t instanceCount,
                               uint32_t firstVertex, uint32_t firstInstance) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
+    if (handle->pipelineFailed) return;
     flushPushConstants(handle);
     wgpuRenderPassEncoderDraw(handle->encoder, vertexCount, instanceCount, firstVertex, firstInstance);
     if (handle->deviceData) {
@@ -61,6 +62,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
                                      uint32_t firstVertex, uint32_t baseVertex,
                                      uint32_t firstInstance) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
+    if (handle->pipelineFailed) return;
     flushPushConstants(handle);
     wgpuRenderPassEncoderDrawIndexed(handle->encoder, indexCount, instanceCount,
                                      firstVertex, static_cast<int32_t>(baseVertex), firstInstance);
@@ -72,6 +74,7 @@ void RenderPassEncoder::drawIndexed(uint32_t indexCount, uint32_t instanceCount,
 void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer, uint64_t indirectOffset) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
     auto* bufHandle = static_cast<BufferHandle*>(indirectBuffer->native);
+    if (handle->pipelineFailed) return;
     flushPushConstants(handle);
     wgpuRenderPassEncoderDrawIndirect(handle->encoder, bufHandle->buffer, indirectOffset);
     if (handle->deviceData) {
@@ -82,6 +85,7 @@ void RenderPassEncoder::drawIndirect(std::shared_ptr<Buffer> indirectBuffer, uin
 void RenderPassEncoder::drawIndexedIndirect(std::shared_ptr<Buffer> indirectBuffer, uint64_t indirectOffset) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
     auto* bufHandle = static_cast<BufferHandle*>(indirectBuffer->native);
+    if (handle->pipelineFailed) return;
     flushPushConstants(handle);
     wgpuRenderPassEncoderDrawIndexedIndirect(handle->encoder, bufHandle->buffer, indirectOffset);
     if (handle->deviceData) {
@@ -139,9 +143,11 @@ void RenderPassEncoder::setPushConstants(ShaderStage, uint32_t offset, uint32_t 
 void RenderPassEncoder::setPipeline(std::shared_ptr<RenderPipeline> pipeline) {
     auto* handle = static_cast<RenderPassEncoderHandle*>(native);
     auto* rpHandle = static_cast<RenderPipelineHandle*>(pipeline->native);
-    handle->currentPipeline = rpHandle->pipeline;
+    WGPURenderPipeline native = resolveRenderPipeline(rpHandle);
+    handle->currentPipeline = native;
     handle->pushConstantGroup = rpHandle->pushConstantGroup;
-    wgpuRenderPassEncoderSetPipeline(handle->encoder, rpHandle->pipeline);
+    handle->pipelineFailed = native == nullptr;
+    if (native) wgpuRenderPassEncoderSetPipeline(handle->encoder, native);
 }
 
 void RenderPassEncoder::setScissorRect(float x, float y, float width, float height) {

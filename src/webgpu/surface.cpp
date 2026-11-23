@@ -138,9 +138,11 @@ std::shared_ptr<TextureView> Surface::acquireNextTexture() {
 
     // Within one task this returns the same texture again, so an abandoned
     // acquisition is naturally reused; in a later task it's a fresh one.
+    if (s->deviceData) waitForPendingPipelines(s->deviceData);  // the last chance to yield in this frame
     WGPUSurfaceTexture st{};
     wgpuSurfaceGetCurrentTexture(s->surface, &st);
     if (!st.texture) return nullptr;
+    if (s->deviceData) holdCanvasTexture(s->deviceData);
     WGPUTextureView view = wgpuTextureCreateView(st.texture, nullptr);
     wgpuTextureRelease(st.texture);  // the view keeps it alive
     if (!view) return nullptr;

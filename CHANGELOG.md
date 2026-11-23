@@ -4,6 +4,9 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Changed
+- **WebGPU: render pipelines compile asynchronously.** `createRenderPipeline()` starts `createRenderPipelineAsync` and returns at once; the browser compiles pipelines created this way concurrently, off its GPU process's main thread. Before, each creation was synchronous and its validation error scope awaited: a round trip per pipeline, compiled one at a time, with the page blocked (campello_web_viewer's 121 startup pipelines: about 4 s; its toolbar now shows at about 3 s after navigation instead of 6). Pipelines still compiling are waited for before a canvas texture is taken (`Surface::getCurrentTextureView()`, `Device::getSwapchainTextureView()`), never while a frame holds one: yielding then lets the browser present and destroy the texture mid-frame. A pipeline created mid-frame is created synchronously instead, without waiting. A pipeline that fails to compile is still returned; the failure is printed when it's first used, and draws with it are skipped. Empty shader modules and a missing vertex module still return nullptr, as on the other backends. Browser test `async pipelines` (8 created up front all draw; one destroyed while compiling; a failing one is skipped without a WebGPU error).
+
 ## [0.34.0] - 2026-11-20
 
 ### Changed
