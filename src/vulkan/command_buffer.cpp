@@ -22,7 +22,12 @@ CommandBuffer::~CommandBuffer() {
         vkDestroyFramebuffer(data->device, fb, nullptr);
     for (auto rp : data->transientRenderPasses)
         vkDestroyRenderPass(data->device, rp, nullptr);
-    {
+    if (data->deviceData && data->commandPool == data->deviceData->commandPool) {
+        // Freed later by createCommandEncoder(), which owns the pool then:
+        // see DeviceData::deferredCommandBufferFrees.
+        std::lock_guard<std::mutex> lock(data->deviceData->gpu_mutex);
+        data->deviceData->deferredCommandBufferFrees.push_back(data->commandBuffer);
+    } else {
         std::unique_lock<std::mutex> lock;
         if (data->deviceData) lock = std::unique_lock<std::mutex>(data->deviceData->gpu_mutex);
         vkFreeCommandBuffers(data->device, data->commandPool, 1, &data->commandBuffer);

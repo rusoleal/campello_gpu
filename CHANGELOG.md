@@ -4,6 +4,9 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **Vulkan: crash when a command buffer was destroyed on one thread while another was recording.** A `CommandBuffer` freed its `VkCommandBuffer` in its destructor under `gpu_mutex`, but recording into command buffers of the same `VkCommandPool` is serialized by the frame lock instead. `VkCommandPool` needs external synchronization for both, so a compute thread dropping its fence (and the command buffer it kept alive) while the UI thread recorded a frame corrupted the pool. It crashed in `vkFreeCommandBuffers` on Adreno 618 after minutes of campello_scanner's live fusion. Destroyed command buffers are now queued, and `createCommandEncoder()` frees them while it holds both the frame lock and `gpu_mutex`. campello_scanner's `GpuThreads` device test reproduced the crash within 60 s and passes with the fix.
+
 ## [0.35.0] - 2026-11-23
 
 ### Changed

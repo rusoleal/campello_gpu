@@ -552,6 +552,8 @@ Device::~Device()
             vkDestroyDescriptorPool(deviceData->device,
                                     deviceData->persistentDescriptorPool, nullptr);
 
+        // Destroying the pool frees its command buffers, deferred ones included.
+        deviceData->deferredCommandBufferFrees.clear();
         vkDestroyCommandPool(deviceData->device, deviceData->commandPool, nullptr);
         vkDestroyCommandPool(deviceData->device, deviceData->uploadCommandPool, nullptr);
         vkDestroyDevice(deviceData->device, nullptr);
@@ -2870,6 +2872,15 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     {
         std::lock_guard<std::mutex> lock(deviceData->gpu_mutex);
+        // This thread holds the frame lock (no one is recording) and
+        // gpu_mutex: free the command buffers destroyed meanwhile (see
+        // DeviceData::deferredCommandBufferFrees).
+        auto& deferred = deviceData->deferredCommandBufferFrees;
+        if (!deferred.empty()) {
+            vkFreeCommandBuffers(deviceData->device, deviceData->commandPool, uint32_t(deferred.size()),
+                                 deferred.data());
+            deferred.clear();
+        }
         VkResult allocResult = vkAllocateCommandBuffers(deviceData->device, &info, &commandBuffer);
         if (allocResult != VK_SUCCESS) {
             deviceData->releaseFrameLock();
