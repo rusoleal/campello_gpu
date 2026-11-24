@@ -488,6 +488,17 @@ namespace systems::leal::campello_gpu {
         // touch the pool.
         std::vector<VkCommandBuffer> deferredCommandBufferFrees;
 
+#ifdef __ANDROID__
+        // AHardwareBuffer import (Device::copyAHardwareBufferToTexture(),
+        // android_hardware_buffer.cpp): enabled at device creation when the
+        // extension and samplerYcbcrConversion are available. The converter
+        // (own command / descriptor pools, pipelines per external format,
+        // imported buffers) is created on first use.
+        bool ahbImportEnabled = false;
+        bool queueFamilyForeignEnabled = false;
+        struct AhbConverter *ahbConverter = nullptr;
+#endif
+
         // ── Frame lock: one command buffer *recording* at a time ──────────
         //
         // The frames-in-flight ring below (currentFrameGen, descriptorPools,
@@ -641,6 +652,11 @@ namespace systems::leal::campello_gpu {
 
     // Swapchain recreation helper (defined in device.cpp, used by command_encoder.cpp).
     void recreateSwapchain(DeviceData *deviceData);
+
+#ifdef __ANDROID__
+    // Releases DeviceData::ahbConverter (android_hardware_buffer.cpp).
+    void destroyAhbConverter(DeviceData *deviceData);
+#endif
 
 } // namespace systems::leal::campello_gpu
 
