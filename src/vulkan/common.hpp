@@ -474,6 +474,20 @@ namespace systems::leal::campello_gpu {
         // calls must be guarded by this mutex.
         std::mutex gpu_mutex;
 
+        // Command buffers of commandPool waiting to be freed (guarded by
+        // gpu_mutex). A CommandBuffer can be destroyed on any thread (e.g.
+        // when the Fence holding it goes away on a compute thread) while
+        // another thread holds the frame lock and is *recording* into a
+        // command buffer of the same pool -- without gpu_mutex, since
+        // recording is serialized by the frame lock instead. VkCommandPool
+        // requires external synchronization for both, so freeing right
+        // there raced that recording (Adreno: SIGSEGV in
+        // vkFreeCommandBuffers). ~CommandBuffer queues the handle here and
+        // createCommandEncoder() frees the queue while it holds both the
+        // frame lock and gpu_mutex, the only point where no one else can
+        // touch the pool.
+        std::vector<VkCommandBuffer> deferredCommandBufferFrees;
+
         // ── Frame lock: one command buffer *recording* at a time ──────────
         //
         // The frames-in-flight ring below (currentFrameGen, descriptorPools,
