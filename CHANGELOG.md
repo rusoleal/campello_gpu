@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-11-24
+
 ### Added
 - **Android: `Device::copyAHardwareBufferToTexture()`, camera frames without a CPU copy.** It draws an `AHardwareBuffer` (ARCore's `ArFrame_getHardwareBuffer()`, `AImageReader`; usually vendor YUV "external formats") into an RGBA render-target texture.
   - The buffer is imported and cached while in use, and sampled through a `VkSamplerYcbcrConversion` with the driver's suggested color model, range and chroma siting.
