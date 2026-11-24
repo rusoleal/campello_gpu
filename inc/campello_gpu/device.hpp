@@ -40,6 +40,9 @@
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <campello_gpu/platform/linux_dmabuf.hpp>
 #endif
+#if defined(__ANDROID__)
+struct AHardwareBuffer;
+#endif
 
 namespace systems::leal::campello_gpu
 {
@@ -363,6 +366,48 @@ namespace systems::leal::campello_gpu
          *         `VK_EXT_physical_device_drm` isn't supported.
          */
         DrmDeviceNode getDrmDeviceNode();
+#endif
+
+#if defined(__ANDROID__)
+        /**
+         * @brief Android/Vulkan only: whether this device can import
+         * `AHardwareBuffer`s (`copyAHardwareBufferToTexture()`), i.e. it has
+         * `VK_ANDROID_external_memory_android_hardware_buffer` and sampler
+         * YCbCr conversion.
+         */
+        bool supportsAHardwareBufferImport() const;
+
+        /**
+         * @brief Android/Vulkan only: draws an `AHardwareBuffer` into `target`,
+         * without a CPU copy — for camera frames (ARCore's
+         * `ArFrame_getHardwareBuffer()`, `AImageReader`), whose formats are
+         * usually vendor-specific YUV ("external formats").
+         *
+         * The buffer is imported (and cached while it stays in use: camera
+         * pipelines cycle a few buffers) and sampled through a Vulkan sampler
+         * YCbCr conversion with the color model, range and chroma siting the
+         * driver suggests for it, so the result is RGB. `target` receives the
+         * whole image: a full-screen pass where target pixel uv (in [0, 1]²,
+         * origin at the top-left) samples the buffer at
+         * `(u', v') = (t[0]·u + t[1]·v + t[2], t[3]·u + t[4]·v + t[5])`
+         * — an affine map, enough for crop, scale, rotation and mirroring.
+         * Points outside the buffer clamp to its edge.
+         *
+         * Synchronous: returns after the GPU finished, so the buffer may be
+         * released (or reused by its producer) right after. Uses its own
+         * command pool and descriptor pool, not the frame ring, so it can be
+         * called from any thread, also while another thread records a frame;
+         * calls are serialized internally. `target` is left in the layout for
+         * sampling. It must not be drawn by another thread while this writes it.
+         *
+         * @param source      The buffer; it must have been allocated with
+         *                    `AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE`.
+         * @param target      A 2D texture with `TextureUsage::renderTarget`.
+         * @param uvTransform The affine map above, row-major 2×3 (nullptr: identity).
+         * @return false when unsupported or on failure (logged).
+         */
+        bool copyAHardwareBufferToTexture(AHardwareBuffer *source, std::shared_ptr<Texture> target,
+                                          const float uvTransform[6] = nullptr);
 #endif
 
 #if defined(__EMSCRIPTEN__)

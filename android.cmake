@@ -30,12 +30,14 @@ add_library(${PROJECT_NAME} SHARED
     src/vulkan/acceleration_structure.cpp
     src/vulkan/ray_tracing_pipeline.cpp
     src/vulkan/ray_tracing_pass_encoder.cpp
+    src/vulkan/android_hardware_buffer.cpp
 )
 
 target_link_libraries(${PROJECT_NAME}
         Vulkan::Vulkan
         log
-        android)
+        android
+        nativewindow)  # AHardwareBuffer_describe / acquire / release
 
 target_include_directories (${PROJECT_NAME} PUBLIC 
                             "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/inc>"

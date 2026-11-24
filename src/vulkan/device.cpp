@@ -552,6 +552,9 @@ Device::~Device()
             vkDestroyDescriptorPool(deviceData->device,
                                     deviceData->persistentDescriptorPool, nullptr);
 
+#ifdef __ANDROID__
+        destroyAhbConverter(deviceData);  // its pools, pipelines and imported buffers
+#endif
         // Destroying the pool frees its command buffers, deferred ones included.
         deviceData->deferredCommandBufferFrees.clear();
         vkDestroyCommandPool(deviceData->device, deviceData->commandPool, nullptr);
@@ -736,6 +739,9 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     bool hasExternalMemoryFd = false, hasExternalMemoryDmaBuf = false, hasDrmFormatModifier = false;
     bool hasPhysicalDeviceDrm = false;
 #endif
+#ifdef __ANDROID__
+    bool hasAhbImport = false, hasQueueFamilyForeign = false;
+#endif
     for (const auto &e : availableExtensions) {
         if (strcmp(e.extensionName, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)   == 0) hasAS       = true;
         if (strcmp(e.extensionName, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)     == 0) hasRTP      = true;
@@ -748,6 +754,10 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         if (strcmp(e.extensionName, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME)  == 0) hasExternalMemoryDmaBuf = true;
         if (strcmp(e.extensionName, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) == 0) hasDrmFormatModifier   = true;
         if (strcmp(e.extensionName, VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME)      == 0) hasPhysicalDeviceDrm   = true;
+#endif
+#ifdef __ANDROID__
+        if (strcmp(e.extensionName, VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME) == 0) hasAhbImport = true;
+        if (strcmp(e.extensionName, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME) == 0) hasQueueFamilyForeign = true;
 #endif
     }
     const bool rtSupported = hasAS && hasRTP && hasDHO;
@@ -779,6 +789,21 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
         drmDeviceNode.hasRender   = drmProps.hasRender;
         drmDeviceNode.renderMajor = drmProps.renderMajor;
         drmDeviceNode.renderMinor = drmProps.renderMinor;
+    }
+#endif
+#ifdef __ANDROID__
+    // AHardwareBuffer import (Device::copyAHardwareBufferToTexture()): the
+    // extension plus sampler YCbCr conversion (core in Vulkan 1.1, but its
+    // feature must be enabled) -- camera buffers are in external YUV formats.
+    bool ahbImportSupported = false;
+    if (hasAhbImport && deviceProps.apiVersion >= VK_API_VERSION_1_1) {
+        VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrQuery{};
+        ycbcrQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
+        VkPhysicalDeviceFeatures2 featuresQuery{};
+        featuresQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        featuresQuery.pNext = &ycbcrQuery;
+        vkGetPhysicalDeviceFeatures2(gpu, &featuresQuery);
+        ahbImportSupported = ycbcrQuery.samplerYcbcrConversion == VK_TRUE;
     }
 #endif
     // VK_KHR_cooperative_matrix depends on VK_KHR_shader_float16_int8, which is core
@@ -875,6 +900,12 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     if (coopMatSupported) {
         deviceExtensions.push_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     }
+#ifdef __ANDROID__
+    if (ahbImportSupported) {
+        deviceExtensions.push_back(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME);
+        if (hasQueueFamilyForeign) deviceExtensions.push_back(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
+    }
+#endif
     // Only needed as an explicit extension pre-1.2; core afterwards. Shared between
     // cooperative matrix and fp16 since both depend on the same feature struct.
     if ((coopMatSupported || fp16Supported) && !isVulkan12Plus)
@@ -926,6 +957,15 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     // any) points to it, RT features (if any) point to whatever resulted, and
     // dynamic rendering (if any) points to whatever RT/coopMat/fp16 chain resulted.
     void *chainTail = fp16Supported ? (void *)&float16Int8Features : nullptr;
+#ifdef __ANDROID__
+    VkPhysicalDeviceSamplerYcbcrConversionFeatures ycbcrFeatures{};
+    ycbcrFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES;
+    ycbcrFeatures.samplerYcbcrConversion = VK_TRUE;
+    if (ahbImportSupported) {
+        ycbcrFeatures.pNext = chainTail;
+        chainTail = &ycbcrFeatures;
+    }
+#endif
     coopMatFeatures.pNext = chainTail;
     if (coopMatSupported) chainTail = &coopMatFeatures;
     bdaFeatures.pNext = chainTail;
@@ -1259,6 +1299,8 @@ std::shared_ptr<Device> Device::createDevice(std::shared_ptr<Adapter> deviceDef,
     deviceData->currentImageIndex        = 0;
 #ifdef __ANDROID__
     deviceData->window                   = pd ? (ANativeWindow *)pd : nullptr;
+    deviceData->ahbImportEnabled         = ahbImportSupported;
+    deviceData->queueFamilyForeignEnabled = ahbImportSupported && hasQueueFamilyForeign;
 #endif
     deviceData->hasDynamicRendering      = hasDynRenderSupport;
     deviceData->swapchainRenderPassClear = swapchainRenderPassClear;
