@@ -1,5 +1,6 @@
 #include "Metal.hpp"
 #include <campello_gpu/adapter.hpp>
+#include "ray_tracing_pipeline_handle.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -9,6 +10,17 @@ Adapter::~Adapter() {
     if (native != nullptr) {
         static_cast<MTL::Device *>(native)->release();
     }
+}
+
+RayTracingCapabilities Adapter::getRayTracingCapabilities() {
+    RayTracingCapabilities caps;
+    if (native == nullptr) return caps;
+    if (static_cast<MTL::Device *>(native)->supportsRaytracing()) {
+        caps.tier              = RayTracingTier::hardware;
+        caps.pipelines         = true;
+        caps.maxRecursionDepth = kMetalRayTracingMaxRecursionDepth;
+    }
+    return caps;
 }
 
 std::set<Feature> Adapter::getFeatures() {

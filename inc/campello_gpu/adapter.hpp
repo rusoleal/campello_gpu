@@ -2,6 +2,7 @@
 
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/constants/feature.hpp>
+#include <campello_gpu/ray_tracing_capabilities.hpp>
 
 namespace systems::leal::campello_gpu
 {
@@ -41,6 +42,17 @@ namespace systems::leal::campello_gpu
          * @return A set of `Feature` values indicating supported optional features.
          */
         std::set<Feature> getFeatures();
+
+        /**
+         * @brief Reports how this adapter implements ray tracing.
+         *
+         * Same meaning as `Device::getRayTracingCapabilities()`; query it
+         * before creating a device to choose an adapter.
+         *
+         * @return The adapter's ray tracing capabilities; all-default
+         *         (`RayTracingTier::none`) when ray tracing is unavailable.
+         */
+        RayTracingCapabilities getRayTracingCapabilities();
     };
 
 }

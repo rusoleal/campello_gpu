@@ -966,6 +966,31 @@ std::shared_ptr<RayTracingPassEncoder> CommandEncoder::beginRayTracingPass() {
     return std::shared_ptr<RayTracingPassEncoder>(new RayTracingPassEncoder(ph));
 }
 
+// After a build of `ash` (built with allowCompaction): emits its compacted
+// size and copies it to the mapped readback buffer that
+// AccelerationStructure::getCompactedSize() reads.
+static void recordCompactedSize(ID3D12GraphicsCommandList4* list4, AccelerationStructureHandle* ash) {
+    if (!ash->postbuildInfo || !ash->postbuildReadback || !ash->postbuildMapped) return;
+    *ash->postbuildMapped = 0;
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC info = {};
+    info.DestBuffer = ash->postbuildInfo->GetGPUVirtualAddress();
+    info.InfoType   = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
+    list4->EmitRaytracingAccelerationStructurePostbuildInfo(&info, 1, &ash->gpuVA);
+
+    D3D12_RESOURCE_BARRIER toCopy = {};
+    toCopy.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toCopy.Transition.pResource   = ash->postbuildInfo;
+    toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    toCopy.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    list4->ResourceBarrier(1, &toCopy);
+    list4->CopyResource(ash->postbuildReadback, ash->postbuildInfo);
+    D3D12_RESOURCE_BARRIER back = toCopy;
+    back.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    back.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    list4->ResourceBarrier(1, &back);
+}
+
 void CommandEncoder::buildAccelerationStructure(
     std::shared_ptr<AccelerationStructure> dst,
     const BottomLevelAccelerationStructureDescriptor& descriptor,
@@ -999,6 +1024,7 @@ void CommandEncoder::buildAccelerationStructure(
     barrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     barrier.UAV.pResource = ash->resource;
     list4->ResourceBarrier(1, &barrier);
+    recordCompactedSize(list4, ash);
 
     list4->Release();
 }
@@ -1078,6 +1104,7 @@ void CommandEncoder::buildAccelerationStructure(
     barrier.Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     barrier.UAV.pResource = ash->resource;
     list4->ResourceBarrier(1, &barrier);
+    recordCompactedSize(list4, ash);
 
     list4->Release();
 }
@@ -1129,9 +1156,12 @@ void CommandEncoder::copyAccelerationStructure(
     ID3D12GraphicsCommandList4* list4 = nullptr;
     if (FAILED(h->cmdList->QueryInterface(IID_PPV_ARGS(&list4)))) return;
 
+    // Compact only into a structure made for it: a compacting copy needs a
+    // source built with ALLOW_COMPACTION.
     list4->CopyRaytracingAccelerationStructure(
         dsth->gpuVA, srch->gpuVA,
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+        dsth->compacted ? D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT
+                        : D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_CLONE);
 
     list4->Release();
 }

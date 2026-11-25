@@ -312,6 +312,7 @@ PFN_vkGetAccelerationStructureDeviceAddressKHR pfnGetAccelerationStructureDevice
 PFN_vkCreateRayTracingPipelinesKHR             pfnCreateRayTracingPipelinesKHR            = nullptr;
 PFN_vkGetRayTracingShaderGroupHandlesKHR       pfnGetRayTracingShaderGroupHandlesKHR      = nullptr;
 PFN_vkCmdTraceRaysKHR                          pfnCmdTraceRaysKHR                         = nullptr;
+PFN_vkCmdWriteAccelerationStructuresPropertiesKHR pfnCmdWriteAccelerationStructuresPropertiesKHR = nullptr;
 
 static void loadRayTracingFunctions(VkDevice device) {
     pfnGetBufferDeviceAddress           = (PFN_vkGetBufferDeviceAddress)           vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress");
@@ -324,6 +325,8 @@ static void loadRayTracingFunctions(VkDevice device) {
     pfnCreateRayTracingPipelinesKHR            = (PFN_vkCreateRayTracingPipelinesKHR)           vkGetDeviceProcAddr(device, "vkCreateRayTracingPipelinesKHR");
     pfnGetRayTracingShaderGroupHandlesKHR      = (PFN_vkGetRayTracingShaderGroupHandlesKHR)     vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesKHR");
     pfnCmdTraceRaysKHR                         = (PFN_vkCmdTraceRaysKHR)                        vkGetDeviceProcAddr(device, "vkCmdTraceRaysKHR");
+    pfnCmdWriteAccelerationStructuresPropertiesKHR = (PFN_vkCmdWriteAccelerationStructuresPropertiesKHR)
+        vkGetDeviceProcAddr(device, "vkCmdWriteAccelerationStructuresPropertiesKHR");
 }
 
 VkFormat pixelFormatToNative(PixelFormat format);
@@ -2022,6 +2025,29 @@ static CooperativeMatrixComponentType toPublicCooperativeMatrixComponentType(VkC
         case VK_COMPONENT_TYPE_UINT64_KHR:  return CooperativeMatrixComponentType::uint64;
         default:                            return CooperativeMatrixComponentType::float16;
     }
+}
+
+void Device::setAccelerationStructureHeapHint(uint64_t bytes) {
+    (void)bytes;  // hardware ray tracing: acceleration structures have their own storage
+}
+
+RayTracingCapabilities Device::getRayTracingCapabilities()
+{
+    auto deviceData = (DeviceData *)this->native;
+    RayTracingCapabilities caps;
+    if (!deviceData->rayTracingEnabled) return caps;
+
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
+    rtProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+    VkPhysicalDeviceProperties2 props2{};
+    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props2.pNext = &rtProps;
+    vkGetPhysicalDeviceProperties2(deviceData->physicalDevice, &props2);
+
+    caps.tier              = RayTracingTier::hardware;
+    caps.pipelines         = true;
+    caps.maxRecursionDepth = rtProps.maxRayRecursionDepth;
+    return caps;
 }
 
 std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties()
@@ -4278,6 +4304,17 @@ PixelFormat nativeToPixelFormat(VkFormat format)
 
 // Allocate a device-local GPU buffer suitable for AS storage or SBT use.
 // Returns false and leaves out/memOut as VK_NULL_HANDLE on failure.
+// One-query pool receiving an acceleration structure's compacted size.
+static VkQueryPool createCompactedSizeQuery(VkDevice device) {
+    VkQueryPoolCreateInfo info{};
+    info.sType      = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+    info.queryType  = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+    info.queryCount = 1;
+    VkQueryPool pool = VK_NULL_HANDLE;
+    if (vkCreateQueryPool(device, &info, nullptr, &pool) != VK_SUCCESS) return VK_NULL_HANDLE;
+    return pool;
+}
+
 static bool allocDeviceLocalBuffer(
     VkDevice device, VkPhysicalDevice physicalDevice,
     VkDeviceSize size, VkBufferUsageFlags usage,
@@ -4480,6 +4517,9 @@ Device::createBottomLevelAccelerationStructure(
     handle->buildScratchSize        = sizeInfo.buildScratchSize;
     handle->updateScratchSize       = sizeInfo.updateScratchSize;
     handle->deviceAddress           = deviceAddr;
+    handle->type                    = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    if (bf & (int)AccelerationStructureBuildFlag::allowCompaction)
+        handle->compactedSizeQuery = createCompactedSizeQuery(d->device);
 
     return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
 }
@@ -4560,7 +4600,59 @@ Device::createTopLevelAccelerationStructure(
     handle->buildScratchSize      = sizeInfo.buildScratchSize;
     handle->updateScratchSize     = sizeInfo.updateScratchSize;
     handle->deviceAddress         = deviceAddr;
+    handle->type                  = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    if (bf & (int)AccelerationStructureBuildFlag::allowCompaction)
+        handle->compactedSizeQuery = createCompactedSizeQuery(d->device);
 
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
+}
+
+std::shared_ptr<AccelerationStructure>
+Device::createCompactedAccelerationStructure(std::shared_ptr<AccelerationStructure> source)
+{
+    auto *d = (DeviceData *)native;
+    if (!d->rayTracingEnabled || !source || !source->native) return nullptr;
+    const uint64_t size = source->getCompactedSize();
+    if (size == 0) return nullptr;
+    auto *src = (AccelerationStructureHandle *)source->native;
+
+    VkBuffer       buf = VK_NULL_HANDLE;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (!allocDeviceLocalBuffer(d->device, d->physicalDevice, size,
+                                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR
+                                | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                buf, mem)) {
+        LOG_DEBUG("createCompactedAccelerationStructure: backing buffer allocation failed");
+        return nullptr;
+    }
+
+    VkAccelerationStructureCreateInfoKHR asCI{};
+    asCI.sType  = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    asCI.buffer = buf;
+    asCI.size   = size;
+    asCI.type   = src->type;
+
+    VkAccelerationStructureKHR as = VK_NULL_HANDLE;
+    if (pfnCreateAccelerationStructureKHR(d->device, &asCI, nullptr, &as) != VK_SUCCESS) {
+        vkFreeMemory(d->device, mem, nullptr);
+        vkDestroyBuffer(d->device, buf, nullptr);
+        return nullptr;
+    }
+
+    VkAccelerationStructureDeviceAddressInfoKHR addrInfo{};
+    addrInfo.sType                 = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    addrInfo.accelerationStructure = as;
+
+    auto *handle                  = new AccelerationStructureHandle();
+    handle->device                = d->device;
+    handle->accelerationStructure = as;
+    handle->buffer                = buf;
+    handle->memory                = mem;
+    handle->buildScratchSize      = src->buildScratchSize;
+    handle->updateScratchSize     = src->updateScratchSize;
+    handle->deviceAddress         = pfnGetAccelerationStructureDeviceAddressKHR(d->device, &addrInfo);
+    handle->type                  = src->type;
+    handle->compacted             = true;
     return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
 }
 

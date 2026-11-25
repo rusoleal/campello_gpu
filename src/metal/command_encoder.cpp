@@ -316,11 +316,9 @@ void CommandEncoder::buildAccelerationStructure(
     };
     auto *primDesc = makePrimASDescriptor(descriptor, bufToMTL);
     auto *scratchHandle = static_cast<MetalBufferHandle *>(scratchBuffer->native);
-    asEncoder->buildAccelerationStructure(
-        static_cast<MetalAccelerationStructureData *>(dst->native)->accelerationStructure,
-        primDesc,
-        scratchHandle->buffer,
-        0);
+    auto *dstData = static_cast<MetalAccelerationStructureData *>(dst->native);
+    asEncoder->buildAccelerationStructure(dstData->accelerationStructure, primDesc, scratchHandle->buffer, 0);
+    dstData->recordCompactedSize(asEncoder);
     primDesc->release();
     asEncoder->endEncoding();
 }
@@ -356,6 +354,7 @@ void CommandEncoder::buildAccelerationStructure(
         instanceDesc,
         scratchHandle->buffer,
         0);
+    static_cast<MetalAccelerationStructureData *>(dst->native)->recordCompactedSize(asEncoder);
     instanceDesc->release();
     instanceBuf->release();
     asEncoder->endEncoding();
@@ -393,8 +392,12 @@ void CommandEncoder::copyAccelerationStructure(
     auto *asEncoder = cmdBuffer->accelerationStructureCommandEncoder();
     if (!asEncoder) return;
 
-    asEncoder->copyAccelerationStructure(
-        static_cast<MetalAccelerationStructureData *>(src->native)->accelerationStructure,
-        static_cast<MetalAccelerationStructureData *>(dst->native)->accelerationStructure);
+    auto *from = static_cast<MetalAccelerationStructureData *>(src->native);
+    auto *to   = static_cast<MetalAccelerationStructureData *>(dst->native);
+    if (to->compacted)
+        asEncoder->copyAndCompactAccelerationStructure(from->accelerationStructure, to->accelerationStructure);
+    else
+        asEncoder->copyAccelerationStructure(from->accelerationStructure, to->accelerationStructure);
+    to->setInstanced(from->instanced);
     asEncoder->endEncoding();
 }

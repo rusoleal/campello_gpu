@@ -12,6 +12,7 @@ AccelerationStructure::~AccelerationStructure() {
         if (d->accelerationStructure)
             d->accelerationStructure->release();
         d->setInstanced({});
+        if (d->compactedSize) d->compactedSize->release();
         delete d;
     }
 }
@@ -22,4 +23,10 @@ uint64_t AccelerationStructure::getBuildScratchSize() const {
 
 uint64_t AccelerationStructure::getUpdateScratchSize() const {
     return static_cast<MetalAccelerationStructureData *>(native)->updateScratchSize;
+}
+
+uint64_t AccelerationStructure::getCompactedSize() const {
+    auto *d = static_cast<MetalAccelerationStructureData *>(native);
+    if (!d || !d->compactedSize) return 0;
+    return *static_cast<const uint32_t *>(d->compactedSize->contents());
 }

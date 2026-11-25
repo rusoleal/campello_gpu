@@ -14,6 +14,15 @@ Adapter::~Adapter() {
     if (native) static_cast<IDXGIAdapter1*>(native)->Release();
 }
 
+RayTracingCapabilities Adapter::getRayTracingCapabilities() {
+    RayTracingCapabilities caps;
+    if (getFeatures().count(Feature::raytracing) == 0) return caps;
+    caps.tier              = RayTracingTier::hardware;
+    caps.pipelines         = true;
+    caps.maxRecursionDepth = D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH;
+    return caps;
+}
+
 std::set<Feature> Adapter::getFeatures() {
     std::set<Feature> features;
     if (!native) return features;

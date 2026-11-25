@@ -11,7 +11,9 @@ namespace systems::leal::campello_gpu
      */
     enum class Feature
     {
-        raytracing,             ///< Hardware-accelerated ray tracing (DXR / Metal RT / Vulkan KHR RT).
+        raytracing,             ///< Ray tracing through the platform's native API (DXR / Metal RT /
+                                ///< Vulkan KHR RT): present exactly when
+                                ///< `getRayTracingCapabilities().tier == RayTracingTier::hardware`.
         msaa32bit,              ///< 32-bit MSAA resolve support.
         bcTextureCompression,   ///< BC1–BC7 block-compressed texture formats.
         etc2TextureCompression, ///< ETC2/EAC block-compressed texture formats.

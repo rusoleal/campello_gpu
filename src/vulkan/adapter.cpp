@@ -19,6 +19,24 @@ Adapter::~Adapter() {
     // the shared inc/campello_gpu/adapter.hpp declaration.
 }
 
+RayTracingCapabilities Adapter::getRayTracingCapabilities() {
+    RayTracingCapabilities caps;
+    auto gpu = (VkPhysicalDevice)native;
+    if (!gpu || getFeatures().count(Feature::raytracing) == 0) return caps;
+
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtProps{};
+    rtProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+    VkPhysicalDeviceProperties2 props2{};
+    props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    props2.pNext = &rtProps;
+    vkGetPhysicalDeviceProperties2(gpu, &props2);
+
+    caps.tier              = RayTracingTier::hardware;
+    caps.pipelines         = true;
+    caps.maxRecursionDepth = rtProps.maxRayRecursionDepth;
+    return caps;
+}
+
 std::set<Feature> Adapter::getFeatures() {
     std::set<Feature> features;
     auto gpu = (VkPhysicalDevice)native;
