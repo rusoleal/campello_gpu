@@ -709,34 +709,54 @@
 - [x] Add a minimal raytracing example in `examples/android/` — `RaytracingDemo.h/.cpp` (single-triangle BLAS→TLAS→RT pipeline, SPIR-V shaders, writes to storage texture via traceRays)
 - [x] Add a minimal raytracing example in `examples/apple/` — `RaytracingDemo.h/.mm` + `RaytracingShaders.metal` (same flow using Metal raytracing kernel)
 
-### Future — emulated ray tracing on WebGPU (compute)
-> WebGPU has no ray tracing today, so the web backend reports no `Feature::raytracing`
-> (see the WebGPU section). Metal already shows it can be done without RT hardware:
+### In progress — software ray tracing on WebGPU (compute)
+> Decided 2026-11-24. Design doc: "Software Ray Tracing for the WebGPU Backend — Design"
+> (claude.ai artifact). Metal already shows it can be done without RT hardware:
 > `supportsRaytracing()` is true on Intel UHD 630 / AMD Macs, where Metal runs BVH traversal
 > and intersection in ordinary compute code. The same works on WebGPU in WGSL compute.
-> Not scheduled. Decide first whether to do it.
-- [ ] Emulate **ray queries** (inline `traceRay(as, ray) -> Hit`, like Metal's intersector /
-      Vulkan `rayQuery`), not the RT pipeline. The pipeline model (ray generation, miss and
-      hit shaders + shader binding table) would need all shaders merged into one compute
-      shader, since WGSL can't call another shader; not worth it
-- [ ] Acceleration structures as storage buffers: BLAS = BVH (wide nodes, compact layout), built on
-      the CPU first (GPU compute build later); TLAS = instances with transforms over BLASes.
-      Map the existing `createBottom/TopLevelAccelerationStructure()` API onto it
-- [ ] WGSL traversal library: iterative stack (no recursion), ray–box and ray–triangle tests,
-      instance transform into object space
-- [ ] Detection: inside the browser there's no access to the native API (`supportsRaytracing`,
+> Phase 1 = inline ray queries (compute + fragment); phase 2 = RT pipeline emulation by
+> stitching raygen/miss/hit groups into one compute shader; phase 3 = recursion up to 4,
+> multi-module stitching, treelet reordering, compaction. No Vulkan software fallback for now.
+- [x] `RayTracingTier { none, software, hardware }` + `RayTracingCapabilities` (`pipelines`,
+      `maxRecursionDepth`) via `Adapter/Device::getRayTracingCapabilities()`. `Feature::raytracing`
+      stays = `hardware` (the platform's native API, not "has RT cores": see the Metal note above).
+      WebGPU reports `software`
+- [x] Phase 1: AS heap pages (storage buffers, 256-byte aligned records; a TLAS shares its BLASes'
+      page; `Device::setAccelerationStructureHeapHint()` sets the page size). Pages instead of one
+      growable heap: reallocating a heap can't be ordered with builds already recorded in
+      unsubmitted encoders. GPU LBVH build inside `buildAccelerationStructure` (gather → Morton →
+      radix sort → Karras hierarchy → atomic bottom-up bounds), refit, copy, real scratch sizes
+      (`src/webgpu/rt/`)
+- [x] Phase 1: WGSL prelude + rewriter for `campello_acceleration_structure` / `campello_traceRay` /
+      `campello_traceRayAny`, roots uniform at binding 999 (indexed by binding number), compute +
+      fragment visibility; watertight triangles (with a tiny edge tolerance: WGSL has no f64 for
+      the paper's fallback), ray flags, instance masks. Tests: `tests/platform/test_ray_queries.cpp`
+- [x] Benchmarks (Intel UHD 630, Chrome vs native Metal on the same GPU, 1M primary rays): builds
+      5–7x faster than Metal's, traces at 45–75% of Metal's speed; numbers in CHANGELOG. Worth
+      repeating on a GPU with RT hardware (Apple M3+, RTX), where Metal / DXR should pull ahead
+- [x] Phase 2: pipeline emulation (one `alias CampelloPayload`, launch-size group at
+      `layout.groupCount`, any-hit / intersection / closest-hit / miss `switch` dispatchers,
+      recursion rejected through the module's call graph). Closest-hit and any-hit also take the
+      ray (`fn(payload, ray, hit)`), which the design doc's table didn't have
+- [x] Phase 3: recursion depth ≤ 4 by cloning, multi-module stitching, treelet restructuring for
+      `preferFastTrace` (1 pass, subtrees ≥ 16 primitives: chosen by measurement), GPU timestamps
+      for ray tracing passes and builds
+- [x] Compaction: `AccelerationStructure::getCompactedSize()` + `Device::createCompactedAccelerationStructure(src)`
+      + a compacting `copyAccelerationStructure()`, on all backends (Vulkan/DX12 copies no longer
+      compact unconditionally). WebGPU: quantized BVH2 nodes (48 B instead of 64) and no parents
+      (~20% smaller). DX12 part written without a Windows build: compile and run it there
+- [ ] Possible next step for WebGPU memory: quantized BVH4 (wider nodes, ~40% smaller trees)
+- [x] Detection: inside the browser there's no access to the native API (`supportsRaytracing`,
       DXR tier, Vulkan extensions), and `GPUAdapterInfo` is coarsened for privacy, so whether the
-      GPU has RT hardware can't be known. The emulation runs on any WebGPU device. Report it as
-      "RT API available (emulated)", and leave the use/don't-use decision to the app, based on
+      GPU has RT hardware can't be known. The emulation runs on any WebGPU device and is reported
+      as `RayTracingTier::software`; the use/don't-use decision stays with the app, based on
       measured timing (calibration samples via `timestamp-query` / wall clock)
-- [ ] Consider splitting the feature: `raytracing` = API available (possibly emulated, which
-      Metal on Intel/AMD already is) vs `hardwareRaytracing` = real RT hardware (DXR, Vulkan KHR,
-      Metal `GPUFamilyApple9`+, a future native WebGPU feature). Fix the `Feature::raytracing`
-      doc comment ("Hardware-accelerated") to match either way
+- [x] Split the feature: done as `RayTracingTier` (see above) instead of a second `Feature`;
+      `Feature::raytracing` doc comment fixed
 - [ ] Robustness: split work into small dispatches (tiles, few bounces) so slow GPUs don't hit the
       browser/OS GPU watchdog (device lost); check BVH size against the storage buffer limits;
       keep everything in compute (compatibility mode limits storage buffers in other stages)
-- [ ] Track the official spec: gpuweb#11054 (acceleration structures, open since 2026-10),
+- [ ] Track the official spec (re-check at each release): gpuweb#11054 (acceleration structures, open since 2026-10),
       gpuweb#11055 / #11056 (WGSL ray query), gpuweb#535 (full ray tracing). If they ship in
       Dawn/browsers, use the native feature where present and keep the compute path as the fallback
       behind the same interface

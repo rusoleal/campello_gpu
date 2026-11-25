@@ -191,8 +191,10 @@ Notes for the web backend:
 - Device creation, `Buffer::download()`, `Texture::download()`, `waitForIdle()` and
   `getGPUExecutionTime()` block by yielding to the browser (ASYNCIFY). The `...Async()` variants
   don't block.
-- Not available on WebGPU: ray tracing (`Feature::raytracing` is never reported and the
-  ray-tracing calls return `nullptr`), cooperative matrix, push constants (`setPushConstants()` is
+- Ray tracing is emulated in compute shaders (`RayTracingTier::software`): acceleration
+  structures, WGSL inline ray queries and ray tracing pipelines (recursion depth up to 4); see
+  Ray Tracing below.
+- Not available on WebGPU: cooperative matrix, push constants (`setPushConstants()` is
   a no-op), and `CommandEncoder::writeTimestamp()` (removed from the WebGPU spec — use
   `BeginRenderPassDescriptor::timestampWrites`).
 - GPU timing (`getGPUExecutionTime()`, `getPassPerformanceStats()`) needs the browser to expose
@@ -282,7 +284,15 @@ device->submit(commandBuffer);
 
 ### Ray Tracing
 
-Hardware ray tracing is available when `Feature::raytracing` is reported by the device (Vulkan KHR on Android, Metal on macOS/iOS, DXR on Windows).
+`Device::getRayTracingCapabilities()` reports how ray tracing is implemented:
+
+| `tier` | Meaning |
+|---|---|
+| `RayTracingTier::hardware` | The platform's native API: Vulkan KHR on Android/Linux, Metal on macOS/iOS, DXR on Windows. `Feature::raytracing` is reported exactly in this case. |
+| `RayTracingTier::software` | Emulated in compute shaders (WebGPU): acceleration structures, inline ray queries from compute and fragment shaders, and ray tracing pipelines with `maxRecursionDepth` up to 4, at compute-shader speed. |
+| `RayTracingTier::none` | No ray tracing; the ray tracing calls return `nullptr`. |
+
+`pipelines` says whether `createRayTracingPipeline()` works, and `maxRecursionDepth` is the largest `RayTracingPipelineDescriptor::maxRecursionDepth` it accepts. `hardware` names the API, not the GPU: Metal also reports it on Macs without ray tracing units, where Metal runs traversal in shader code.
 
 ```cpp
 #include <campello_gpu/acceleration_structure.hpp>
@@ -294,9 +304,9 @@ Hardware ray tracing is available when `Feature::raytracing` is reported by the 
 #include <campello_gpu/constants/acceleration_structure_build_flag.hpp>
 #include <campello_gpu/constants/acceleration_structure_geometry_type.hpp>
 
-// Feature check
-auto features = device->getFeatures();
-if (!features.count(Feature::raytracing)) return; // not supported
+// Capability check
+auto rt = device->getRayTracingCapabilities();
+if (rt.tier == RayTracingTier::none || !rt.pipelines) return; // not supported
 
 // 1. Vertex buffer for triangle geometry
 auto vertexBuffer = device->createBuffer(sizeof(vertices),
@@ -353,6 +363,80 @@ rtPass->traceRays(width, height, 1);
 rtPass->end();
 device->submit(encoder->finish());
 ```
+
+#### Compaction
+
+Build with `AccelerationStructureBuildFlag::allowCompaction`, wait for the build, then copy into a structure sized by `getCompactedSize()`:
+
+```cpp
+desc.buildFlags = AccelerationStructureBuildFlag::allowCompaction;
+auto blas = device->createBottomLevelAccelerationStructure(desc);
+encoder->buildAccelerationStructure(blas, desc, scratch);
+device->submit(encoder->finish());
+device->waitForIdle();                       // getCompactedSize() is 0 until the build has run
+
+auto compact = device->createCompactedAccelerationStructure(blas);
+encoder = device->createCommandEncoder();
+encoder->copyAccelerationStructure(blas, compact);   // compacts: `compact` came from createCompacted...()
+device->submit(encoder->finish());
+blas.reset();                                // use `compact` from now on
+```
+
+A copy into any other structure is a plain clone. On WebGPU, compaction quantizes the BVH nodes and drops the refit data (about 20% smaller), unless the structure was built with `allowUpdate`, which keeps it updatable at full size.
+
+#### Software ray tracing (WebGPU)
+
+On the web, acceleration structures are built on the GPU in compute shaders (an LBVH), and WGSL traces through them with an inline ray query. Declare the acceleration structure with the pseudo-type `campello_acceleration_structure`, bind a TLAS or a BLAS to it like on the other backends (an `EntryObjectType::accelerationStructure` layout entry), and call `campello_traceRay` (closest hit) or `campello_traceRayAny` (any hit, for shadow rays) from a compute or fragment shader:
+
+```wgsl
+@group(0) @binding(0) var scene: campello_acceleration_structure;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  var ray: CampelloRay;
+  ray.origin = vec3f(0.0, 0.0, -5.0);
+  ray.direction = normalize(vec3f(vec2f(id.xy) / 256.0 - 0.5, 1.0));
+  ray.tMin = 0.001;
+  ray.tMax = 1e30;
+  let hit = campello_traceRay(scene, ray, CAMPELLO_RAY_FLAG_NONE, 0xFFu);
+  if (hit.kind == CAMPELLO_HIT_TRIANGLE) {
+    // hit.t, hit.barycentrics, hit.frontFace, hit.primitiveIndex, hit.geometryIndex,
+    // hit.instanceIndex, hit.instanceId, hit.hitGroupOffset, hit.objectToWorld, hit.worldToObject
+  }
+}
+```
+
+- Ray flags mirror DXR / Vulkan (`CAMPELLO_RAY_FLAG_OPAQUE`, `_TERMINATE_ON_FIRST_HIT`, `_CULL_BACK_FACING_TRIANGLES`, `_SKIP_AABBS`, …); front facing is clockwise as seen from the ray origin, as on DXR and Metal. Non-opaque geometry is accepted like opaque geometry (there are no any-hit shaders for inline queries), and procedural boxes are hit at their entry distance.
+- Geometry buffers need `BufferUsage::accelerationStructureInput` (a storage buffer here), 4-byte aligned offsets and strides, and float positions.
+- Acceleration structures live in heap pages of 256 MiB by default, and a TLAS must be in the same page as all its BLASes. For a larger scene, call `Device::setAccelerationStructureHeapHint(bytes)` before creating its acceleration structures (up to the device's largest storage buffer binding).
+- On WebGPU, binding 999 of a bind group with acceleration structures is reserved (it holds their roots).
+- `updateAccelerationStructure()` refits from the inputs of the structure's latest build: same topology, new positions or transforms.
+- `AccelerationStructureBuildFlag::preferFastTrace` adds a treelet-restructuring pass (Karras & Aila 2013): about 10% faster traces for a ~10x slower build. Use it for geometry built once; the default LBVH build suits per-frame rebuilds.
+- Measured on an Intel UHD 630 in Chrome (1M primary rays): 20–46 Mrays/s and 7 ms to build 128k triangles (27 ms for 512k), against Metal's 26–88 Mrays/s and 47 ms (199 ms) on the same GPU and scenes.
+
+Ray tracing pipelines are emulated too: every stage is a plain WGSL function, in one or several shader modules, and `createRayTracingPipeline()` stitches them into a compute shader. Declarations that several modules share (bindings, the payload, structs) must be identical; same-named declarations that differ are kept apart per module. The module declares its payload type, and stages have these signatures:
+
+```wgsl
+alias CampelloPayload = MyPayload;
+
+fn rayGen() {
+  let id = campello_launchId();      // and campello_launchSize()
+  var payload: MyPayload;
+  campello_traceRayPipeline(scene, ray, CAMPELLO_RAY_FLAG_NONE, 0xFFu,
+                            0u /* sbtOffset */, 1u /* sbtStride */, 0u /* missIndex */, &payload);
+}
+fn miss(payload: ptr<function, CampelloPayload>, ray: CampelloRay) { ... }
+fn closestHit(payload: ptr<function, CampelloPayload>, ray: CampelloRay, hit: CampelloHit) { ... }
+fn anyHit(payload: ptr<function, CampelloPayload>, ray: CampelloRay, hit: CampelloHit) -> u32 {
+  return CAMPELLO_ACCEPT;            // or CAMPELLO_IGNORE, CAMPELLO_ACCEPT_AND_END
+}
+fn intersect(ray: CampelloRay, prim: CampelloProcedural) -> CampelloIntersection { ... }
+```
+
+- The hit group is `instance.hitGroupOffset + sbtStride * geometryIndex + sbtOffset`, as on DXR; an index without a closest-hit (or past the end) leaves the payload untouched, without an any-hit accepts, and without an intersection function hits the box at its entry distance. Any-hit runs only for non-opaque geometry; intersection functions get the ray in object space.
+- Closest-hit and miss functions may trace when the pipeline's `maxRecursionDepth` allows (up to 4): recursion is unrolled by cloning the tracing functions per level, and a trace past the depth returns at once, leaving the payload as it is. Any-hit and intersection functions may not trace, and a pipeline of depth 1 whose closest-hit or miss traces fails to create. Looping in ray generation is still the cheapest way to bounce.
+- `traceRays(w, h, d)` runs ray generation once per launch index. The pipeline uses one bind group after the layout's groups for the launch size, so it can use at most `maxBindGroups − 1` groups.
+- Shader modules that use `campello_traceRayPipeline`, `CampelloPayload` or the launch builtins are compiled only when a ray tracing pipeline is created from them.
 
 ### GPU → CPU Readback
 
