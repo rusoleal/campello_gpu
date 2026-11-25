@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-11-25
+
 ### Added
 - **`copyExternalImageToTexture()`: video and camera frames into textures without a CPU copy.** On `CommandEncoder` (recorded) and `Device` (synchronous, any thread), with `Device::supportsExternalImage()`, `ExternalImage` and `ExternalImageCopyOptions` (new header `external_image.hpp`). It draws a platform image into a 2D render-target texture (`rgba8unorm`, `bgra8unorm` or their `_srgb` variants, which receive the same bytes), converting YUV to RGB on the GPU, with an affine uv transform for crop, rotation and mirroring. The caller may release the image as soon as the call returns: the backend keeps its own reference until the command buffer completes.
   - Metal: IOSurface-backed `CVPixelBuffer`s (NV12 video and full range, 3-plane, BGRA) through a `CVMetalTextureCache`, BT.601 / BT.709 from the buffer's `kCVImageBufferYCbCrMatrixKey`.
