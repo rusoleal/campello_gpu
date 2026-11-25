@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 #include <vulkan/vulkan.h>
 #include "surface_handle.hpp"
@@ -30,6 +31,8 @@ namespace systems::leal::campello_gpu {
         // Transient render passes / framebuffers for the traditional-render-pass fallback.
         std::vector<VkRenderPass>   transientRenderPasses;
         std::vector<VkFramebuffer>  transientFramebuffers;
+        // See CommandEncoderHandle::retainedUntilComplete.
+        std::vector<std::shared_ptr<void>> retainedUntilComplete;
         
         // GPU timing data
         uint64_t gpuStartTimestamp = 0;

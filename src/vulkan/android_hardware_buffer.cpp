@@ -1,14 +1,18 @@
-// Device::copyAHardwareBufferToTexture(): AHardwareBuffer import with sampler
-// YCbCr conversion (Android). See the method's doc comment in device.hpp.
+// AHardwareBuffer import with sampler YCbCr conversion (Android), behind
+// copyExternalImageToTexture() (Device: synchronous; CommandEncoder: recorded)
+// and Device::copyAHardwareBufferToTexture(). See their doc comments.
 //
-// Everything here uses its own command pool, descriptor pool and fence, never
-// the frame ring, so it can run on any thread while another records a frame;
-// only the queue submission takes gpu_mutex. One call at a time (converter
-// mutex).
+// The synchronous path uses its own command pool, descriptor pool and fence,
+// never the frame ring, so it can run on any thread while another records a
+// frame; only the queue submission takes gpu_mutex. One call at a time
+// (converter mutex). Imports are cached (camera pipelines cycle a few
+// buffers) and reference-counted: a recorded command buffer holds its import
+// until the GPU is done, even after the cache evicted it.
 
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/texture.hpp>
 
+#include "command_encoder_handle.hpp"
 #include "common.hpp"
 #include "shaders/ahb_copy_spirv.hpp"
 #include "texture_handle.hpp"
@@ -16,8 +20,13 @@
 #include <android/hardware_buffer.h>
 #include <vulkan/vulkan_android.h>
 
+#include <poll.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -26,8 +35,15 @@ VkFormat pixelFormatToNative(systems::leal::campello_gpu::PixelFormat format);
 namespace systems::leal::campello_gpu {
 
     namespace {
-        constexpr size_t kMaxImports = 8;  // camera pipelines cycle a few buffers
-        constexpr uint32_t kMaxSets = 16;
+        // Decoders cycle their whole output pool (21 buffers for H.264 on an
+        // Adreno 618 through an AImageReader), so the cache must hold all of
+        // them or an LRU of round-robin buffers misses every frame.
+        constexpr size_t kMaxImports = 32;
+        // Imports unused for this many copies are dropped, so a finished
+        // source's buffers (kept alive by their import) are freed soon.
+        constexpr uint64_t kStaleAfter = 2 * kMaxImports;
+        // A descriptor set per import, plus evicted ones still in flight.
+        constexpr uint32_t kMaxSets = 2 * kMaxImports;
     }
 
     // A YCbCr conversion and the pipeline that samples through it: one per
@@ -50,7 +66,12 @@ namespace systems::leal::campello_gpu {
         VkPipeline pipeline = VK_NULL_HANDLE;
     };
 
+    struct AhbConverter;
+
+    // An imported buffer. Destroyed when the cache and every command buffer
+    // that recorded it have let go.
     struct AhbImport {
+        AhbConverter *owner = nullptr;
         AHardwareBuffer *buffer = nullptr;  // acquired while imported
         VkImage image = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -58,12 +79,16 @@ namespace systems::leal::campello_gpu {
         VkDescriptorSet set = VK_NULL_HANDLE;
         AhbPipeline *pipeline = nullptr;
         VkFormat targetFormat = VK_FORMAT_UNDEFINED;
+        YCbCrMatrix matrix = YCbCrMatrix::fromSource;  // caller overrides
+        YCbCrRange range = YCbCrRange::fromSource;
         uint32_t width = 0, height = 0;
         uint64_t lastUse = 0;
+        ~AhbImport();
     };
 
     struct AhbConverter {
-        std::mutex mutex;
+        std::mutex mutex;      // one copy at a time; guards pipelines and imports
+        std::mutex poolMutex;  // descriptorPool (imports die on other threads)
         VkDevice device = VK_NULL_HANDLE;
         PFN_vkGetAndroidHardwareBufferPropertiesANDROID getProperties = nullptr;
         VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -73,20 +98,24 @@ namespace systems::leal::campello_gpu {
         VkShaderModule vertex = VK_NULL_HANDLE;
         VkShaderModule fragment = VK_NULL_HANDLE;
         std::vector<std::unique_ptr<AhbPipeline>> pipelines;
-        std::vector<AhbImport> imports;
+        std::vector<std::shared_ptr<AhbImport>> imports;
         uint64_t clock = 0;
     };
 
-    namespace {
-
-        void destroyImport(AhbConverter &c, AhbImport &import) {
-            if (import.set) vkFreeDescriptorSets(c.device, c.descriptorPool, 1, &import.set);
-            if (import.view) vkDestroyImageView(c.device, import.view, nullptr);
-            if (import.image) vkDestroyImage(c.device, import.image, nullptr);
-            if (import.memory) vkFreeMemory(c.device, import.memory, nullptr);
-            if (import.buffer) AHardwareBuffer_release(import.buffer);
-            import = {};
+    AhbImport::~AhbImport() {
+        if (!owner) return;
+        VkDevice device = owner->device;
+        if (set) {
+            std::lock_guard<std::mutex> lock(owner->poolMutex);
+            vkFreeDescriptorSets(device, owner->descriptorPool, 1, &set);
         }
+        if (view) vkDestroyImageView(device, view, nullptr);
+        if (image) vkDestroyImage(device, image, nullptr);
+        if (memory) vkFreeMemory(device, memory, nullptr);
+        if (buffer) AHardwareBuffer_release(buffer);
+    }
+
+    namespace {
 
         void destroyPipeline(VkDevice device, AhbPipeline &p) {
             if (p.pipeline) vkDestroyPipeline(device, p.pipeline, nullptr);
@@ -152,8 +181,13 @@ namespace systems::leal::campello_gpu {
             return d->ahbConverter;
         }
 
-        AhbPipeline *pipelineFor(AhbConverter &c, const VkAndroidHardwareBufferFormatPropertiesANDROID &f,
-                                 VkFormat targetFormat) {
+        AhbPipeline *pipelineFor(AhbConverter &c, VkAndroidHardwareBufferFormatPropertiesANDROID f,
+                                 VkFormat targetFormat, YCbCrMatrix matrix, YCbCrRange range) {
+            // The caller's color settings win over the driver's suggestion.
+            if (matrix == YCbCrMatrix::bt601) f.suggestedYcbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+            if (matrix == YCbCrMatrix::bt709) f.suggestedYcbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709;
+            if (range == YCbCrRange::full) f.suggestedYcbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_FULL;
+            if (range == YCbCrRange::limited) f.suggestedYcbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
             const VkFilter filter =
                 (f.formatFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT)
                     ? VK_FILTER_LINEAR
@@ -331,17 +365,20 @@ namespace systems::leal::campello_gpu {
             return c.pipelines.back().get();
         }
 
-        AhbImport *importFor(AhbConverter &c, DeviceData *d, AHardwareBuffer *buffer, VkFormat targetFormat) {
+        std::shared_ptr<AhbImport> importFor(AhbConverter &c, AHardwareBuffer *buffer, VkFormat targetFormat,
+                                             YCbCrMatrix matrix, YCbCrRange range) {
+            ++c.clock;
+            std::erase_if(c.imports, [&](const auto &i) { return c.clock - i->lastUse > kStaleAfter; });
             for (auto &i : c.imports) {
-                if (i.buffer == buffer && i.targetFormat == targetFormat) {
-                    i.lastUse = ++c.clock;
-                    return &i;
+                if (i->buffer == buffer && i->targetFormat == targetFormat && i->matrix == matrix &&
+                    i->range == range) {
+                    i->lastUse = c.clock;
+                    return i;
                 }
             }
-            if (c.imports.size() >= kMaxImports) {  // least recently used
+            if (c.imports.size() >= kMaxImports) {  // least recently used; in-flight users keep theirs
                 auto oldest = std::min_element(c.imports.begin(), c.imports.end(),
-                                               [](const AhbImport &a, const AhbImport &b) { return a.lastUse < b.lastUse; });
-                destroyImport(c, *oldest);
+                                               [](const auto &a, const auto &b) { return a->lastUse < b->lastUse; });
                 c.imports.erase(oldest);
             }
 
@@ -356,14 +393,17 @@ namespace systems::leal::campello_gpu {
                 LOG_ERROR("AHardwareBuffer import: vkGetAndroidHardwareBufferPropertiesANDROID failed");
                 return nullptr;
             }
-            AhbPipeline *pipeline = pipelineFor(c, format, targetFormat);
+            AhbPipeline *pipeline = pipelineFor(c, format, targetFormat, matrix, range);
             if (!pipeline) return nullptr;
 
-            AhbImport i;
-            i.pipeline = pipeline;
-            i.targetFormat = targetFormat;
-            i.width = desc.width;
-            i.height = desc.height;
+            auto i = std::make_shared<AhbImport>();
+            i->owner = &c;
+            i->pipeline = pipeline;
+            i->targetFormat = targetFormat;
+            i->matrix = matrix;
+            i->range = range;
+            i->width = desc.width;
+            i->height = desc.height;
 
             VkExternalFormatANDROID externalInfo{};
             externalInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_FORMAT_ANDROID;
@@ -385,7 +425,7 @@ namespace systems::leal::campello_gpu {
             imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            bool ok = vkCreateImage(c.device, &imageInfo, nullptr, &i.image) == VK_SUCCESS;
+            bool ok = vkCreateImage(c.device, &imageInfo, nullptr, &i->image) == VK_SUCCESS;
 
             VkImportAndroidHardwareBufferInfoANDROID importInfo{};
             importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID;
@@ -393,7 +433,7 @@ namespace systems::leal::campello_gpu {
             VkMemoryDedicatedAllocateInfo dedicated{};
             dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
             dedicated.pNext = &importInfo;
-            dedicated.image = i.image;
+            dedicated.image = i->image;
             VkMemoryAllocateInfo alloc{};
             alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
             alloc.pNext = &dedicated;
@@ -403,8 +443,8 @@ namespace systems::leal::campello_gpu {
                 ++alloc.memoryTypeIndex;
             }
             ok = ok && alloc.memoryTypeIndex < 32 &&
-                 vkAllocateMemory(c.device, &alloc, nullptr, &i.memory) == VK_SUCCESS &&
-                 vkBindImageMemory(c.device, i.image, i.memory, 0) == VK_SUCCESS;
+                 vkAllocateMemory(c.device, &alloc, nullptr, &i->memory) == VK_SUCCESS &&
+                 vkBindImageMemory(c.device, i->image, i->memory, 0) == VK_SUCCESS;
 
             VkSamplerYcbcrConversionInfo convInfo{};
             convInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO;
@@ -412,23 +452,26 @@ namespace systems::leal::campello_gpu {
             VkImageViewCreateInfo viewInfo{};
             viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
             viewInfo.pNext = &convInfo;
-            viewInfo.image = i.image;
+            viewInfo.image = i->image;
             viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
             viewInfo.format = format.format;
             viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            ok = ok && vkCreateImageView(c.device, &viewInfo, nullptr, &i.view) == VK_SUCCESS;
+            ok = ok && vkCreateImageView(c.device, &viewInfo, nullptr, &i->view) == VK_SUCCESS;
 
-            VkDescriptorSetAllocateInfo setAlloc{};
-            setAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            setAlloc.descriptorPool = c.descriptorPool;
-            setAlloc.descriptorSetCount = 1;
-            setAlloc.pSetLayouts = &pipeline->setLayout;
-            ok = ok && vkAllocateDescriptorSets(c.device, &setAlloc, &i.set) == VK_SUCCESS;
             if (ok) {
-                VkDescriptorImageInfo imageDesc{pipeline->sampler, i.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+                VkDescriptorSetAllocateInfo setAlloc{};
+                setAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+                setAlloc.descriptorPool = c.descriptorPool;
+                setAlloc.descriptorSetCount = 1;
+                setAlloc.pSetLayouts = &pipeline->setLayout;
+                std::lock_guard<std::mutex> lock(c.poolMutex);
+                ok = vkAllocateDescriptorSets(c.device, &setAlloc, &i->set) == VK_SUCCESS;
+            }
+            if (ok) {
+                VkDescriptorImageInfo imageDesc{pipeline->sampler, i->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
                 VkWriteDescriptorSet write{};
                 write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet = i.set;
+                write.dstSet = i->set;
                 write.dstBinding = 0;
                 write.descriptorCount = 1;
                 write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -436,16 +479,148 @@ namespace systems::leal::campello_gpu {
                 vkUpdateDescriptorSets(c.device, 1, &write, 0, nullptr);
             }
             if (!ok) {
-                destroyImport(c, i);
                 LOG_ERROR("AHardwareBuffer import failed (%ux%u, format %u)", desc.width, desc.height, desc.format);
-                return nullptr;
+                return nullptr;  // the destructor frees what was created
             }
             AHardwareBuffer_acquire(buffer);  // kept alive while imported
-            i.buffer = buffer;
-            i.lastUse = ++c.clock;
+            i->buffer = buffer;
+            i->lastUse = c.clock;
             c.imports.push_back(i);
-            (void)d;
-            return &c.imports.back();
+            return i;
+        }
+
+        // Validates the target; returns its native format, or VK_FORMAT_UNDEFINED.
+        // copyAHardwareBufferToTexture() predates the 8-bit RGBA rule and
+        // keeps accepting any render-target format (anyFormat).
+        VkFormat targetFormatOf(TextureHandle *t, bool anyFormat = false) {
+            if (!t || !t->image || !t->defaultView || t->textureType != TextureType::tt2d ||
+                !((int)t->usage & (int)TextureUsage::renderTarget)) {
+                LOG_ERROR("copyExternalImageToTexture: the target must be a 2D render-target texture");
+                return VK_FORMAT_UNDEFINED;
+            }
+            if (anyFormat) return pixelFormatToNative(t->pixelFormat);
+            switch (t->pixelFormat) {
+                case PixelFormat::rgba8unorm: case PixelFormat::rgba8unorm_srgb:
+                case PixelFormat::bgra8unorm: case PixelFormat::bgra8unorm_srgb:
+                    return pixelFormatToNative(t->pixelFormat);
+                default:
+                    LOG_ERROR("copyExternalImageToTexture: the target must be rgba8unorm, bgra8unorm or their "
+                              "_srgb variants");
+                    return VK_FORMAT_UNDEFINED;
+            }
+        }
+
+        // The producer's fence (sync_file): waited on the CPU, then closed.
+        void waitAcquireFence(int fd) {
+            if (fd < 0) return;
+            pollfd p{fd, POLLIN, 0};
+            while (poll(&p, 1, -1) < 0 && errno == EINTR) {}
+            close(fd);
+        }
+
+        AhbConverter *readyConverter(DeviceData *d) {
+            AhbConverter *c;
+            {
+                std::lock_guard<std::mutex> lock(d->gpu_mutex);
+                c = converterFor(d);
+            }
+            return (c && c->commandBuffer && c->vertex) ? c : nullptr;
+        }
+
+        // Records the draw of `import` into `target` on `cmd` (outside any
+        // render pass). Returns the framebuffer it created, which must live
+        // until `cmd` completes.
+        VkFramebuffer recordCopy(DeviceData *d, VkCommandBuffer cmd, AhbImport &import, TextureHandle *t,
+                                 const float *uvTransform) {
+            VkFramebufferCreateInfo fbInfo{};
+            fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            fbInfo.renderPass = import.pipeline->renderPass;
+            fbInfo.attachmentCount = 1;
+            fbInfo.pAttachments = &t->defaultView;
+            fbInfo.width = t->width;
+            fbInfo.height = t->height;
+            fbInfo.layers = 1;
+            VkFramebuffer framebuffer = VK_NULL_HANDLE;
+            if (vkCreateFramebuffer(d->device, &fbInfo, nullptr, &framebuffer) != VK_SUCCESS) return VK_NULL_HANDLE;
+
+            // The buffer's producer (camera, decoder) wrote it outside Vulkan:
+            // acquire it from the foreign queue family (contents preserved).
+            VkImageMemoryBarrier acquire{};
+            acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            acquire.srcAccessMask = 0;
+            acquire.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            acquire.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            acquire.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            acquire.srcQueueFamilyIndex = d->queueFamilyForeignEnabled ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED;
+            acquire.dstQueueFamilyIndex = d->queueFamilyForeignEnabled ? d->queueFamilyIndex : VK_QUEUE_FAMILY_IGNORED;
+            acquire.image = import.image;
+            acquire.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                                 nullptr, 0, nullptr, 1, &acquire);
+
+            VkRenderPassBeginInfo rpBegin{};
+            rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            rpBegin.renderPass = import.pipeline->renderPass;
+            rpBegin.framebuffer = framebuffer;
+            rpBegin.renderArea = {{0, 0}, {t->width, t->height}};
+            vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, import.pipeline->pipeline);
+            VkViewport viewport{0.0f, 0.0f, float(t->width), float(t->height), 0.0f, 1.0f};
+            VkRect2D scissor{{0, 0}, {t->width, t->height}};
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, import.pipeline->layout, 0, 1, &import.set,
+                                    0, nullptr);
+            static const float kIdentity[6] = {1, 0, 0, 0, 1, 0};
+            const float *m = uvTransform ? uvTransform : kIdentity;
+            const float push[8] = {m[0], m[1], m[2], 0.0f, m[3], m[4], m[5], 0.0f};
+            vkCmdPushConstants(cmd, import.pipeline->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+            vkCmdEndRenderPass(cmd);
+            t->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            return framebuffer;
+        }
+
+        // Device::copyAHardwareBufferToTexture() and the synchronous
+        // Device::copyExternalImageToTexture().
+        bool copySync(DeviceData *d, AHardwareBuffer *source, TextureHandle *t, const float *uvTransform,
+                      YCbCrMatrix matrix, YCbCrRange range, bool anyFormat = false) {
+            const VkFormat targetFormat = targetFormatOf(t, anyFormat);
+            if (targetFormat == VK_FORMAT_UNDEFINED) return false;
+            AhbConverter *c = readyConverter(d);
+            if (!c) return false;
+            std::lock_guard<std::mutex> lock(c->mutex);
+
+            std::shared_ptr<AhbImport> import = importFor(*c, source, targetFormat, matrix, range);
+            if (!import) return false;
+
+            VkCommandBuffer cmd = c->commandBuffer;
+            vkResetCommandBuffer(cmd, 0);
+            VkCommandBufferBeginInfo begin{};
+            begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(cmd, &begin);
+            VkFramebuffer framebuffer = recordCopy(d, cmd, *import, t, uvTransform);
+            vkEndCommandBuffer(cmd);
+            if (!framebuffer) return false;
+
+            VkSubmitInfo submit{};
+            submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submit.commandBufferCount = 1;
+            submit.pCommandBuffers = &cmd;
+            vkResetFences(c->device, 1, &c->fence);
+            VkResult result;
+            {
+                std::lock_guard<std::mutex> queueLock(d->gpu_mutex);  // the queue is shared
+                result = vkQueueSubmit(d->graphicsQueue, 1, &submit, c->fence);
+            }
+            if (result == VK_SUCCESS) result = vkWaitForFences(c->device, 1, &c->fence, VK_TRUE, UINT64_MAX);
+            vkDestroyFramebuffer(c->device, framebuffer, nullptr);
+            if (result != VK_SUCCESS) {
+                LOG_ERROR("copyExternalImageToTexture: submit failed (%d)", int(result));
+                return false;
+            }
+            return true;
         }
 
     }
@@ -454,7 +629,7 @@ namespace systems::leal::campello_gpu {
         AhbConverter *c = d->ahbConverter;
         if (!c) return;
         vkDeviceWaitIdle(d->device);
-        for (auto &i : c->imports) destroyImport(*c, i);
+        c->imports.clear();  // command buffers still holding imports must be released before the device
         for (auto &p : c->pipelines) destroyPipeline(c->device, *p);
         if (c->vertex) vkDestroyShaderModule(c->device, c->vertex, nullptr);
         if (c->fragment) vkDestroyShaderModule(c->device, c->fragment, nullptr);
@@ -465,6 +640,38 @@ namespace systems::leal::campello_gpu {
         d->ahbConverter = nullptr;
     }
 
+    bool copyAhbSync(DeviceData *d, const ExternalImage &source, TextureHandle *t, const float *uvTransform) {
+        if (!d->ahbImportEnabled || !source.handle || !t) {
+            if (source.acquireFenceFd >= 0) close(source.acquireFenceFd);
+            return false;
+        }
+        waitAcquireFence(source.acquireFenceFd);
+        return copySync(d, static_cast<AHardwareBuffer *>(source.handle), t, uvTransform, source.matrix, source.range);
+    }
+
+    bool recordAhbCopy(CommandEncoderHandle *e, const ExternalImage &source, TextureHandle *t,
+                       const float *uvTransform) {
+        DeviceData *d = e ? e->deviceData : nullptr;
+        if (!d || !d->ahbImportEnabled || !source.handle || !t) {
+            if (source.acquireFenceFd >= 0) close(source.acquireFenceFd);
+            return false;
+        }
+        waitAcquireFence(source.acquireFenceFd);
+        const VkFormat targetFormat = targetFormatOf(t);
+        if (targetFormat == VK_FORMAT_UNDEFINED) return false;
+        AhbConverter *c = readyConverter(d);
+        if (!c) return false;
+        std::lock_guard<std::mutex> lock(c->mutex);
+        std::shared_ptr<AhbImport> import = importFor(*c, static_cast<AHardwareBuffer *>(source.handle), targetFormat,
+                                                      source.matrix, source.range);
+        if (!import) return false;
+        VkFramebuffer framebuffer = recordCopy(d, e->commandBuffer, *import, t, uvTransform);
+        if (!framebuffer) return false;
+        e->transientFramebuffers.push_back(framebuffer);
+        e->retainedUntilComplete.push_back(import);
+        return true;
+    }
+
     bool Device::supportsAHardwareBufferImport() const {
         return ((DeviceData *)native)->ahbImportEnabled;
     }
@@ -473,98 +680,8 @@ namespace systems::leal::campello_gpu {
                                               const float uvTransform[6]) {
         auto *d = (DeviceData *)native;
         if (!d->ahbImportEnabled || !source || !target) return false;
-        auto *t = (TextureHandle *)target->native;
-        if (!t || !t->image || !t->defaultView || t->textureType != TextureType::tt2d ||
-            !((int)t->usage & (int)TextureUsage::renderTarget)) {
-            LOG_ERROR("copyAHardwareBufferToTexture: target must be a 2D render-target texture");
-            return false;
-        }
-        const VkFormat targetFormat = pixelFormatToNative(t->pixelFormat);
-
-        // The converter is created once; its mutex serializes calls.
-        AhbConverter *c;
-        {
-            std::lock_guard<std::mutex> lock(d->gpu_mutex);
-            c = converterFor(d);
-        }
-        if (!c || !c->commandBuffer || !c->vertex) return false;
-        std::lock_guard<std::mutex> lock(c->mutex);
-
-        AhbImport *import = importFor(*c, d, source, targetFormat);
-        if (!import) return false;
-
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = import->pipeline->renderPass;
-        fbInfo.attachmentCount = 1;
-        fbInfo.pAttachments = &t->defaultView;
-        fbInfo.width = t->width;
-        fbInfo.height = t->height;
-        fbInfo.layers = 1;
-        VkFramebuffer framebuffer = VK_NULL_HANDLE;
-        if (vkCreateFramebuffer(c->device, &fbInfo, nullptr, &framebuffer) != VK_SUCCESS) return false;
-
-        VkCommandBuffer cmd = c->commandBuffer;
-        vkResetCommandBuffer(cmd, 0);
-        VkCommandBufferBeginInfo begin{};
-        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(cmd, &begin);
-
-        // The buffer's producer (camera) wrote it outside Vulkan: acquire it
-        // from the foreign queue family (contents preserved).
-        VkImageMemoryBarrier acquire{};
-        acquire.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        acquire.srcAccessMask = 0;
-        acquire.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        acquire.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        acquire.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        acquire.srcQueueFamilyIndex = d->queueFamilyForeignEnabled ? VK_QUEUE_FAMILY_FOREIGN_EXT : VK_QUEUE_FAMILY_IGNORED;
-        acquire.dstQueueFamilyIndex = d->queueFamilyForeignEnabled ? d->queueFamilyIndex : VK_QUEUE_FAMILY_IGNORED;
-        acquire.image = import->image;
-        acquire.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
-                             nullptr, 0, nullptr, 1, &acquire);
-
-        VkRenderPassBeginInfo rpBegin{};
-        rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rpBegin.renderPass = import->pipeline->renderPass;
-        rpBegin.framebuffer = framebuffer;
-        rpBegin.renderArea = {{0, 0}, {t->width, t->height}};
-        vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, import->pipeline->pipeline);
-        VkViewport viewport{0.0f, 0.0f, float(t->width), float(t->height), 0.0f, 1.0f};
-        VkRect2D scissor{{0, 0}, {t->width, t->height}};
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, import->pipeline->layout, 0, 1, &import->set,
-                                0, nullptr);
-        static const float kIdentity[6] = {1, 0, 0, 0, 1, 0};
-        const float *m = uvTransform ? uvTransform : kIdentity;
-        const float push[8] = {m[0], m[1], m[2], 0.0f, m[3], m[4], m[5], 0.0f};
-        vkCmdPushConstants(cmd, import->pipeline->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
-        vkCmdEndRenderPass(cmd);
-        vkEndCommandBuffer(cmd);
-
-        VkSubmitInfo submit{};
-        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &cmd;
-        vkResetFences(c->device, 1, &c->fence);
-        VkResult result;
-        {
-            std::lock_guard<std::mutex> queueLock(d->gpu_mutex);  // the queue is shared
-            result = vkQueueSubmit(d->graphicsQueue, 1, &submit, c->fence);
-        }
-        if (result == VK_SUCCESS) result = vkWaitForFences(c->device, 1, &c->fence, VK_TRUE, UINT64_MAX);
-        vkDestroyFramebuffer(c->device, framebuffer, nullptr);
-        if (result != VK_SUCCESS) {
-            LOG_ERROR("copyAHardwareBufferToTexture: submit failed (%d)", int(result));
-            return false;
-        }
-        t->currentLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        return true;
+        return copySync(d, source, (TextureHandle *)target->native, uvTransform, YCbCrMatrix::fromSource,
+                        YCbCrRange::fromSource, true);
     }
 
 }

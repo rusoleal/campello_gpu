@@ -22,6 +22,7 @@ add_library(${PROJECT_NAME} SHARED
     src/pi/utils.cpp
     src/pi/temporal_upscaler_unsupported.cpp
     src/vulkan/device.cpp
+    src/vulkan/external_image.cpp
     src/vulkan/surface.cpp
     src/vulkan/adapter.cpp
     src/vulkan/buffer.cpp

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -31,6 +32,9 @@ namespace systems::leal::campello_gpu
         // Transferred to CommandBufferHandle in finish() for deferred destruction.
         std::vector<VkRenderPass>   transientRenderPasses;
         std::vector<VkFramebuffer>  transientFramebuffers;
+        // Objects the recorded commands use (e.g. imported external images),
+        // released with the CommandBuffer once the GPU is done with it.
+        std::vector<std::shared_ptr<void>> retainedUntilComplete;
         
         // GPU timing support
         VkPhysicalDevice         physicalDevice;

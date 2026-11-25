@@ -1214,6 +1214,7 @@ std::shared_ptr<CommandBuffer> CommandEncoder::finish() {
     cbHandle->stagingMemories         = std::move(data->stagingMemories);
     cbHandle->transientRenderPasses   = std::move(data->transientRenderPasses);
     cbHandle->transientFramebuffers   = std::move(data->transientFramebuffers);
+    cbHandle->retainedUntilComplete   = std::move(data->retainedUntilComplete);
     
     // Transfer timing data
     if (data->timestampQueryPool != VK_NULL_HANDLE) {
