@@ -172,7 +172,9 @@ std::shared_ptr<TextureView> Texture::createView(
         retainTextureHandle(h);
         vh->holdsSourceRef = true;
     }
-    return std::shared_ptr<TextureView>(new TextureView(vh));
+    auto result = std::shared_ptr<TextureView>(new TextureView(vh));
+    result->owner = weak_from_this().lock();
+    return result;
 }
 
 bool Texture::upload(uint64_t /*offset*/, uint64_t length, void* data) {
