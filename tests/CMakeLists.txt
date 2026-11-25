@@ -70,6 +70,7 @@ if(BUILD_INTEGRATION_TESTS AND NOT EMSCRIPTEN)
         platform/test_compute_dispatch.cpp
         platform/test_raytracing.cpp
         platform/test_ray_queries.cpp
+        platform/test_external_image.cpp
         platform/test_frame_ring.cpp
         platform/test_sampler.cpp
         platform/test_bind_group.cpp
