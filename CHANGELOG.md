@@ -4,6 +4,8 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-11-25
+
 ### Added
 - **`Adapter/Device::getRayTracingCapabilities()` and `RayTracingTier`.** They report how ray tracing is implemented (`none`, `software`, `hardware`), whether ray tracing pipelines work (`pipelines`), and the largest `maxRecursionDepth` a pipeline may ask for (Vulkan: `maxRayRecursionDepth`; DirectX 12: 31; Metal: 31, not enforced, since a Metal pipeline is one compute kernel). WebGPU reports `software` (below). `hardware` means the platform's native API, so `Feature::raytracing` keeps its meaning: it's present exactly when the tier is `hardware`. Tests: `Raytracing.*CapabilitiesAreConsistentWithFeatures` (device and adapters) and `RayTracingCapabilities.*` (universal).
 
@@ -26,6 +28,7 @@ All notable changes to campello_gpu are documented here.
 - **Acceleration-structure compaction, on every backend.** New `AccelerationStructure::getCompactedSize()` and `Device::createCompactedAccelerationStructure(source)`: a build with `AccelerationStructureBuildFlag::allowCompaction` records the compacted-size query itself (Metal `writeCompactedAccelerationStructureSize`, Vulkan `vkCmdWriteAccelerationStructuresPropertiesKHR` into a per-structure query pool, DXR `EmitRaytracingAccelerationStructurePostbuildInfo` copied to a mapped readback buffer); `getCompactedSize()` returns it once the GPU has finished, without blocking (0 before); `copyAccelerationStructure(source, compacted)` then compacts. WebGPU compacts to quantized nodes (the child boxes as 8-bit offsets from the node's origin, per-axis power-of-two scales, rounded outward) without the refit data: 20% smaller for 3,000 triangles; structures built with `allowUpdate` keep their full, updatable format. The traversal reads the format per record, so compacted and plain BLASes and TLASes mix freely. Verified on Metal (a compacted 131k-triangle BLAS traces the same 1M rays identically) and WebGPU (compacted BLAS with triangles and boxes, and a compacted TLAS over it, against the CPU tracer). Tests: `Raytracing.CompactedSizeIsZeroWithoutAllowCompaction`, `Raytracing.CompactionOfBlasAndTlas` (all backends), `RayQueries.CompactedStructuresTraceTheSame` (WebGPU), whose checks now also fail on any WebGPU validation error.
 
 ### Fixed
+- **DirectX 12: a texture view didn't keep its `Texture` alive.** The v0.33.0 fix ("texture views keep their texture alive") was applied to Vulkan only; DX12 kept the native resource through its handle refcount but never set the view's `owner`, so the public `Texture` was released while its view was still in use. `Texture::createView()` now sets it, as on the other backends. `TextureView.ViewKeepsItsTextureAlive` now passes on DirectX 12.
 - **Vulkan, DirectX 12: `copyAccelerationStructure()` always used the compacting copy mode**, which is only valid from a source built with `allowCompaction` into a structure sized for it; plain copies (clones) were invalid. It now compacts only into a structure from `createCompactedAccelerationStructure()` and clones otherwise, as Metal and WebGPU do.
 
 ### Changed
