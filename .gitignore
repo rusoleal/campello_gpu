@@ -1,14 +1,7 @@
 **.DS_Store
-build
-build_test
-build_test_macos
-build_macos
-build-android
-build_android
-build_windows
-build_dx
-build_linux
-build_wasm
+# Any CMake build folder (build, build-win, build_android, cmake-build-debug, ...)
+build*/
+cmake-build-*/
 examples/android/app/src/main/jniLibs/arm64-v8a/libVkLayer_khronos_validation.so
 examples/android/app/src/main/jniLibs/armeabi-v7a/libVkLayer_khronos_validation.so
 examples/android/app/src/main/jniLibs/x86/libVkLayer_khronos_validation.so
