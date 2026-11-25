@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <campello_gpu/ray_tracing_capabilities.hpp>
 #include <campello_gpu/descriptors/depth_stencil_descriptor.hpp>
 #include <campello_gpu/descriptors/vertex_descriptor.hpp>
 #include <campello_gpu/descriptors/fragment_descriptor.hpp>
@@ -261,4 +262,21 @@ TEST(ComputePipelineDescriptor, EntryPointPropagates) {
     desc.compute.entryPoint = "myKernel";
     EXPECT_EQ(desc.compute.entryPoint, "myKernel");
     EXPECT_EQ(desc.layout, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// RayTracingCapabilities
+// ---------------------------------------------------------------------------
+
+TEST(RayTracingCapabilities, DefaultsMeanNoRayTracing) {
+    RayTracingCapabilities caps;
+    EXPECT_EQ(caps.tier, RayTracingTier::none);
+    EXPECT_FALSE(caps.pipelines);
+    EXPECT_EQ(caps.maxRecursionDepth, 0u);
+}
+
+TEST(RayTracingCapabilities, TiersAreDistinct) {
+    EXPECT_NE(RayTracingTier::none, RayTracingTier::software);
+    EXPECT_NE(RayTracingTier::software, RayTracingTier::hardware);
+    EXPECT_NE(RayTracingTier::none, RayTracingTier::hardware);
 }
