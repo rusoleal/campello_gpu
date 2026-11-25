@@ -31,6 +31,7 @@ add_library(${PROJECT_NAME} STATIC
     src/webgpu/ray_tracing_pipeline.cpp
     src/webgpu/ray_tracing_pass_encoder.cpp
     src/webgpu/fence.cpp
+    src/webgpu/external_image.cpp
     src/webgpu/push_constants.cpp
     src/webgpu/rt/as_heap.cpp
     src/webgpu/rt/bvh_builder.cpp

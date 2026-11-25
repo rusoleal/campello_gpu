@@ -296,6 +296,7 @@ Device::~Device() {
         deviceData->alive->store(false);
         releasePushConstantResources(deviceData);
         releaseRayTracingState(deviceData);
+        releaseExternalImageState(deviceData);
         if (deviceData->mipmapGen.pipelineLayout) {
             wgpuPipelineLayoutRelease(deviceData->mipmapGen.pipelineLayout);
         }
