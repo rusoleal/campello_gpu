@@ -184,6 +184,7 @@ struct PushConstantStream {
 };
 
 struct WebGPUDeviceData;
+struct RayTracingState;  // src/webgpu/rt/rt_internal.hpp
 
 /** The device-wide bind group layout of the push-constant group (lazily created). */
 WGPUBindGroupLayout pushConstantBindGroupLayout(WebGPUDeviceData* deviceData);
@@ -224,6 +225,9 @@ struct WebGPUDeviceData {
     MipmapGenResources mipmapGen;
     WGPUBindGroupLayout pushConstantLayout = nullptr;
     std::vector<PushConstantChunk> pushConstantChunks;
+    // Software ray tracing (acceleration-structure heap, BVH builder), created
+    // on first use; see src/webgpu/rt/.
+    RayTracingState* rayTracing = nullptr;
 
     // Render pipelines still compiling (createRenderPipelineAsync), waited
     // for before a canvas texture is taken (waitForPendingPipelines()).
@@ -327,9 +331,12 @@ struct TextureViewHandle {
 };
 
 struct ShaderModuleHandle {
+    // Null for ray tracing pipeline modules, which compile only once
+    // createRayTracingPipeline() stitches them (src/webgpu/rt/rt_shader.cpp).
     WGPUShaderModule shaderModule = nullptr;
     uint64_t size = 0;
     WebGPUDeviceData* deviceData = nullptr;
+    std::string source;  // the WGSL as given
 };
 
 struct RenderPipelineHandle {
@@ -404,10 +411,16 @@ struct ComputePipelineHandle {
 struct BindGroupLayoutHandle {
     WGPUBindGroupLayout layout = nullptr;
     WebGPUDeviceData* deviceData = nullptr;
+    // Acceleration-structure bindings: their roots uniform (kAsRootsBinding)
+    // holds one vec4 per binding number up to the largest.
+    uint32_t maxAccelerationStructureBinding = 0;
+    bool hasAccelerationStructures = false;
 };
 
 struct PipelineLayoutHandle {
     WGPUPipelineLayout layout = nullptr;
+    // The groups' layouts (referenced), so ray tracing pipelines can extend them.
+    std::vector<WGPUBindGroupLayout> groupLayouts;
     int32_t pushConstantGroup = -1;  // bind group index of emulated push constants
     WebGPUDeviceData* deviceData = nullptr;
 };
@@ -427,11 +440,13 @@ struct QuerySetHandle {
 struct BindGroupHandle {
     WGPUBindGroup bindGroup = nullptr;
     WebGPUDeviceData* deviceData = nullptr;
+    WGPUBuffer accelerationStructureRoots = nullptr;  // see BindGroupLayoutHandle
 };
 
 /** One pass timed by the backend: indices into the encoder's timestamp query set. */
 struct PassTimestampSlot {
     bool isCompute = false;
+    bool isRayTracing = false;  // a ray tracing pass (a compute pass on this backend)
     uint32_t beginIndex = 0;
     uint32_t endIndex = 0;
 };
@@ -473,6 +488,13 @@ struct CommandEncoderHandle {
     std::shared_ptr<PushConstantStream> pushConstants = std::make_shared<PushConstantStream>();
 };
 
+/**
+ * Begins a compute pass on `handle`'s encoder with backend timestamps when
+ * available (see GpuTimingState); `rayTracing` counts its time as ray tracing
+ * in getPassPerformanceStats(). Defined in command_encoder.cpp.
+ */
+WGPUComputePassEncoder beginTimedComputePass(CommandEncoderHandle* handle, const char* label, bool rayTracing);
+
 struct CommandBufferHandle {
     WGPUCommandBuffer commandBuffer = nullptr;
     WebGPUDeviceData* deviceData = nullptr;
@@ -502,16 +524,19 @@ struct FenceHandle {
     std::atomic<bool> signaled{false};
 };
 
-struct AccelerationStructureHandle {
-    void* placeholder = nullptr;
-};
-
+// Ray tracing pipelines are compute pipelines (src/webgpu/rt/rt_shader.cpp):
+// traceRays() binds the launch size at `launchGroup` and dispatches 8x8x1 groups.
 struct RayTracingPipelineHandle {
-    void* placeholder = nullptr;
+    WGPUComputePipeline pipeline = nullptr;
+    uint32_t launchGroup = 0;
+    WebGPUDeviceData* deviceData = nullptr;
 };
 
 struct RayTracingPassEncoderHandle {
-    void* placeholder = nullptr;
+    WGPUComputePassEncoder encoder = nullptr;
+    RayTracingPipelineHandle* pipeline = nullptr;
+    WebGPUDeviceData* deviceData = nullptr;
+    bool ended = false;
 };
 
 // Format conversion helpers

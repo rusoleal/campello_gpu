@@ -404,6 +404,10 @@ WGPUBufferUsage systems::leal::campello_gpu::toWGPUBufferUsage(BufferUsage usage
     if (u & static_cast<uint32_t>(BufferUsage::storage)) flags |= WGPUBufferUsage_Storage;
     if (u & static_cast<uint32_t>(BufferUsage::indirect)) flags |= WGPUBufferUsage_Indirect;
     if (u & static_cast<uint32_t>(BufferUsage::queryResolve)) flags |= WGPUBufferUsage_QueryResolve;
+    // Software ray tracing reads geometry and instances in compute shaders.
+    if (u & (static_cast<uint32_t>(BufferUsage::accelerationStructureInput) |
+             static_cast<uint32_t>(BufferUsage::accelerationStructureStorage)))
+        flags |= WGPUBufferUsage_Storage;
     return flags;
 }
 

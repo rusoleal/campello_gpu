@@ -56,6 +56,16 @@ Adapter::~Adapter() {
     }
 }
 
+RayTracingCapabilities Adapter::getRayTracingCapabilities() {
+    // Ray tracing is emulated in compute shaders (src/webgpu/rt/), which any
+    // WebGPU device runs; pipeline recursion is unrolled up to depth 4.
+    RayTracingCapabilities caps;
+    caps.tier = RayTracingTier::software;
+    caps.pipelines = true;
+    caps.maxRecursionDepth = 4;  // kSoftwareMaxRecursionDepth (src/webgpu/rt/rt_internal.hpp)
+    return caps;
+}
+
 std::set<Feature> Adapter::getFeatures() {
     auto* handle = static_cast<AdapterHandle*>(native);
     WGPUAdapter adapter = handle ? handle->adapter : nullptr;

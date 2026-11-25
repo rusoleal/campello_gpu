@@ -1127,6 +1127,15 @@ struct AccelerationStructureHandle {
     UINT64          gpuVA             = 0;
     UINT64          buildScratchSize  = 0;
     UINT64          updateScratchSize = 0;
+    // Built with allowCompaction: each build emits the compacted size into
+    // `postbuildInfo` (UAV, default heap) and copies it to `postbuildReadback`
+    // (readback heap, mapped at `postbuildMapped`; zeroed when the build is
+    // recorded, so 0 means "not known yet").
+    ID3D12Resource* postbuildInfo     = nullptr;
+    ID3D12Resource* postbuildReadback = nullptr;
+    UINT64*         postbuildMapped   = nullptr;
+    // Created by Device::createCompactedAccelerationStructure(): copies into it compact.
+    bool            compacted         = false;
 };
 
 struct RayTracingPipelineHandle {

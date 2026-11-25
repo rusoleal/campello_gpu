@@ -44,6 +44,7 @@ set(WEBGPU_PLATFORM_TEST_SOURCES
     ../platform/test_render_pass_encoder.cpp
     ../platform/test_compute_pass_encoder.cpp
     ../platform/test_raytracing.cpp
+    ../platform/test_ray_queries.cpp
     ../platform/test_frame_ring.cpp
     ../platform/test_sampler.cpp
     ../platform/test_bind_group.cpp

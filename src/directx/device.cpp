@@ -669,6 +669,19 @@ std::set<Feature> Device::getFeatures() {
     return features;
 }
 
+void Device::setAccelerationStructureHeapHint(uint64_t bytes) {
+    (void)bytes;  // hardware ray tracing: acceleration structures have their own storage
+}
+
+RayTracingCapabilities Device::getRayTracingCapabilities() {
+    RayTracingCapabilities caps;
+    if (getFeatures().count(Feature::raytracing) == 0) return caps;
+    caps.tier              = RayTracingTier::hardware;
+    caps.pipelines         = true;
+    caps.maxRecursionDepth = D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH;
+    return caps;
+}
+
 std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties() {
     // Not implemented -- this backend does not detect or enable any
     // cooperative-matrix-equivalent (WaveMMA / Cooperative Vectors / LinAlg
@@ -2295,6 +2308,42 @@ static bool deviceSupportsRaytracing(ID3D12Device* device) {
            && opts5.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
 }
 
+// A buffer resource of `width` bytes on `heap`, in `state`.
+static ID3D12Resource* createAsBufferResource(ID3D12Device* device, D3D12_HEAP_TYPE heap, UINT64 width,
+                                              D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state) {
+    D3D12_HEAP_PROPERTIES hp = { heap };
+    D3D12_RESOURCE_DESC   rd = {};
+    rd.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width            = width;
+    rd.Height           = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels        = 1;
+    rd.Format           = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    rd.Flags            = flags;
+    ID3D12Resource* res = nullptr;
+    if (FAILED(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, state, nullptr, IID_PPV_ARGS(&res))))
+        return nullptr;
+    return res;
+}
+
+// For allowCompaction: the post-build info buffer and its mapped readback copy.
+static void createCompactedSizeBuffers(ID3D12Device* device, AccelerationStructureHandle* h) {
+    const UINT64 size = sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE_DESC);
+    h->postbuildInfo = createAsBufferResource(device, D3D12_HEAP_TYPE_DEFAULT, size,
+                                              D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    h->postbuildReadback = createAsBufferResource(device, D3D12_HEAP_TYPE_READBACK, size,
+                                                  D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+    if (!h->postbuildInfo || !h->postbuildReadback) return;
+    void* mapped = nullptr;
+    if (SUCCEEDED(h->postbuildReadback->Map(0, nullptr, &mapped))) {
+        h->postbuildMapped = static_cast<UINT64*>(mapped);
+        *h->postbuildMapped = 0;
+    }
+}
+
 std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStructure(
     const BottomLevelAccelerationStructureDescriptor& descriptor)
 {
@@ -2345,6 +2394,8 @@ std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStru
     h->gpuVA              = resource->GetGPUVirtualAddress();
     h->buildScratchSize   = info.ScratchDataSizeInBytes;
     h->updateScratchSize  = info.UpdateScratchDataSizeInBytes;
+    if (static_cast<int>(descriptor.buildFlags) & static_cast<int>(AccelerationStructureBuildFlag::allowCompaction))
+        createCompactedSizeBuffers(d->device, h);
 
     dev5->Release();
     return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(h));
@@ -2394,8 +2445,32 @@ std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructu
     h->gpuVA              = resource->GetGPUVirtualAddress();
     h->buildScratchSize   = info.ScratchDataSizeInBytes;
     h->updateScratchSize  = info.UpdateScratchDataSizeInBytes;
+    if (static_cast<int>(descriptor.buildFlags) & static_cast<int>(AccelerationStructureBuildFlag::allowCompaction))
+        createCompactedSizeBuffers(d->device, h);
 
     dev5->Release();
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(h));
+}
+
+std::shared_ptr<AccelerationStructure> Device::createCompactedAccelerationStructure(
+    std::shared_ptr<AccelerationStructure> source)
+{
+    auto* d = static_cast<DeviceData*>(native);
+    if (!source || !source->native) return nullptr;
+    const uint64_t size = source->getCompactedSize();
+    if (size == 0) return nullptr;
+    auto* src = static_cast<AccelerationStructureHandle*>(source->native);
+    ID3D12Resource* resource = createAsBufferResource(d->device, D3D12_HEAP_TYPE_DEFAULT, size,
+                                                      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                                      D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE);
+    if (!resource) return nullptr;
+    auto* h              = new AccelerationStructureHandle();
+    h->resource          = resource;
+    h->device            = d->device;
+    h->gpuVA             = resource->GetGPUVirtualAddress();
+    h->buildScratchSize  = src->buildScratchSize;
+    h->updateScratchSize = src->updateScratchSize;
+    h->compacted         = true;
     return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(h));
 }
 

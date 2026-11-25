@@ -68,6 +68,34 @@ namespace systems::leal::campello_gpu {
          * @return Required update-scratch size in bytes.
          */
         uint64_t getUpdateScratchSize() const;
+
+        /**
+         * @brief Returns the size this acceleration structure compacts to.
+         *
+         * Available once the GPU has finished a build of this structure with
+         * `AccelerationStructureBuildFlag::allowCompaction` (the build records
+         * the size query itself). Until then, and for structures built without
+         * that flag, it returns 0. It never blocks: wait for the build's
+         * command buffer (e.g. `Device::waitForIdle()` or a fence) first.
+         *
+         * **Compaction workflow:**
+         * @code
+         * desc.buildFlags = AccelerationStructureBuildFlag::allowCompaction;
+         * auto blas = device->createBottomLevelAccelerationStructure(desc);
+         * encoder->buildAccelerationStructure(blas, desc, scratch);
+         * device->submit(encoder->finish());
+         * device->waitForIdle();
+         *
+         * auto compact = device->createCompactedAccelerationStructure(blas);  // getCompactedSize() bytes
+         * encoder = device->createCommandEncoder();
+         * encoder->copyAccelerationStructure(blas, compact);  // a compacting copy
+         * device->submit(encoder->finish());
+         * // Use `compact` from now on; `blas` can be released.
+         * @endcode
+         *
+         * @return The compacted size in bytes, or 0 when not (yet) known.
+         */
+        uint64_t getCompactedSize() const;
     };
 
 }

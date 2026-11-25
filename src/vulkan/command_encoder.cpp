@@ -31,6 +31,26 @@ extern PFN_vkCmdBeginRenderingKHR pfnCmdBeginRenderingKHR;
 extern PFN_vkGetBufferDeviceAddress                pfnGetBufferDeviceAddress;
 extern PFN_vkCmdBuildAccelerationStructuresKHR     pfnCmdBuildAccelerationStructuresKHR;
 extern PFN_vkCmdCopyAccelerationStructureKHR       pfnCmdCopyAccelerationStructureKHR;
+extern PFN_vkCmdWriteAccelerationStructuresPropertiesKHR pfnCmdWriteAccelerationStructuresPropertiesKHR;
+
+// After a build of `as` (built with allowCompaction): writes its compacted
+// size into its query, read by AccelerationStructure::getCompactedSize().
+static void recordCompactedSize(VkCommandBuffer cmd, AccelerationStructureHandle *as) {
+    if (as->compactedSizeQuery == VK_NULL_HANDLE || !pfnCmdWriteAccelerationStructuresPropertiesKHR) return;
+    vkCmdResetQueryPool(cmd, as->compactedSizeQuery, 0, 1);
+    VkMemoryBarrier barrier{};
+    barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    vkCmdPipelineBarrier(cmd,
+                         VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                         VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                         0, 1, &barrier, 0, nullptr, 0, nullptr);
+    pfnCmdWriteAccelerationStructuresPropertiesKHR(cmd, 1, &as->accelerationStructure,
+                                                   VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                                                   as->compactedSizeQuery, 0);
+    as->compactedSizeRecorded = true;
+}
 
 CommandEncoder::CommandEncoder(void *pd) {
     this->native = pd;
@@ -1407,6 +1427,7 @@ void CommandEncoder::buildAccelerationStructure(
                          VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                          VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
                          0, 1, &barrier, 0, nullptr, 0, nullptr);
+    recordCompactedSize(data->commandBuffer, asH);
 }
 
 void CommandEncoder::buildAccelerationStructure(
@@ -1539,6 +1560,7 @@ void CommandEncoder::buildAccelerationStructure(
                          VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                          VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
                          0, 1, &barrier, 0, nullptr, 0, nullptr);
+    recordCompactedSize(data->commandBuffer, asH);
 }
 
 void CommandEncoder::updateAccelerationStructure(
@@ -1584,6 +1606,9 @@ void CommandEncoder::copyAccelerationStructure(
     copyInfo.sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR;
     copyInfo.src   = srcH->accelerationStructure;
     copyInfo.dst   = dstH->accelerationStructure;
-    copyInfo.mode  = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+    // Compact only into a structure made for it: a compacting copy needs a
+    // source built with allowCompaction.
+    copyInfo.mode  = dstH->compacted ? VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR
+                                     : VK_COPY_ACCELERATION_STRUCTURE_MODE_CLONE_KHR;
     pfnCmdCopyAccelerationStructureKHR(data->commandBuffer, &copyInfo);
 }

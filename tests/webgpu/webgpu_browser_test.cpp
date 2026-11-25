@@ -34,6 +34,7 @@
 #include <campello_gpu/descriptors/begin_render_pass_descriptor.hpp>
 #include <emscripten.h>
 #include <webgpu/webgpu.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <vector>

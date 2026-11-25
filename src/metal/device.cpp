@@ -277,6 +277,21 @@ std::set<Feature> Device::getFeatures() {
     return toReturn;
 }
 
+void Device::setAccelerationStructureHeapHint(uint64_t bytes) {
+    (void)bytes;  // hardware ray tracing: acceleration structures have their own storage
+}
+
+RayTracingCapabilities Device::getRayTracingCapabilities() {
+    MetalAutoreleasePool pool;
+    RayTracingCapabilities caps;
+    if (static_cast<MetalDeviceData *>(native)->device->supportsRaytracing()) {
+        caps.tier              = RayTracingTier::hardware;
+        caps.pipelines         = true;
+        caps.maxRecursionDepth = kMetalRayTracingMaxRecursionDepth;
+    }
+    return caps;
+}
+
 std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties() {
     // Metal has no runtime shape query -- simdgroup_matrix<T, cols, rows>
     // shapes are fixed by MSL template parameters at shader-compile time,
@@ -1221,6 +1236,8 @@ std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStru
         static_cast<uint64_t>(sizes.buildScratchBufferSize),
         static_cast<uint64_t>(sizes.refitScratchBufferSize)
     };
+    if (static_cast<int>(descriptor.buildFlags) & static_cast<int>(AccelerationStructureBuildFlag::allowCompaction))
+        handle->compactedSize = dev->newBuffer(sizeof(uint32_t), MTL::ResourceStorageModeShared);
     
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->accelerationStructureCount++;
@@ -1255,10 +1272,29 @@ std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructu
         static_cast<uint64_t>(sizes.refitScratchBufferSize)
     };
     handle->setInstanced(instancedStructures(descriptor, asToMTLData));
+    if (static_cast<int>(descriptor.buildFlags) & static_cast<int>(AccelerationStructureBuildFlag::allowCompaction))
+        handle->compactedSize = dev->newBuffer(sizeof(uint32_t), MTL::ResourceStorageModeShared);
     
     auto *deviceData = static_cast<MetalDeviceData *>(native);
     deviceData->accelerationStructureCount++;
     
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
+}
+
+std::shared_ptr<AccelerationStructure> Device::createCompactedAccelerationStructure(
+    std::shared_ptr<AccelerationStructure> source)
+{
+    MetalAutoreleasePool pool;
+    if (!source || !source->native) return nullptr;
+    const uint64_t size = source->getCompactedSize();
+    if (size == 0) return nullptr;
+    auto *src = static_cast<MetalAccelerationStructureData *>(source->native);
+    auto *as  = static_cast<MetalDeviceData *>(native)->device->newAccelerationStructure(size);
+    if (!as) return nullptr;
+    auto *handle = new MetalAccelerationStructureData{as, src->buildScratchSize, src->updateScratchSize};
+    handle->compacted = true;
+    handle->setInstanced(src->instanced);  // a top level keeps its instances resident
+    static_cast<MetalDeviceData *>(native)->accelerationStructureCount++;
     return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
 }
 

@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <campello_gpu/device.hpp>
+#include <campello_gpu/adapter.hpp>
+#include <campello_gpu/ray_tracing_capabilities.hpp>
 #include <campello_gpu/buffer.hpp>
 #include <campello_gpu/texture.hpp>
 #include <campello_gpu/acceleration_structure.hpp>
@@ -45,13 +47,17 @@ static std::shared_ptr<Device> tryCreateDevice() {
 #endif
 }
 
-/// Returns true when the device supports ray tracing, skips the test otherwise.
+/// True when the device has acceleration structures (hardware or software tier).
 static bool requireRaytracing(const std::shared_ptr<Device>& device) {
     if (!device) {
         return false;
     }
-    auto features = device->getFeatures();
-    return features.count(Feature::raytracing) > 0;
+    return device->getRayTracingCapabilities().tier != RayTracingTier::none;
+}
+
+/// True when the device can also create ray tracing pipelines.
+static bool requireRayTracingPipelines(const std::shared_ptr<Device>& device) {
+    return device && device->getRayTracingCapabilities().pipelines;
 }
 
 /// Combines two build flags with bitwise OR (the enum class has no operator|).
@@ -225,6 +231,58 @@ TEST(Raytracing, FeatureDetectionIsConsistentAcrossCalls) {
     bool first  = device->getFeatures().count(Feature::raytracing) > 0;
     bool second = device->getFeatures().count(Feature::raytracing) > 0;
     EXPECT_EQ(first, second);
+}
+
+// ---------------------------------------------------------------------------
+// Ray tracing capabilities (tier, pipelines, recursion limit)
+// ---------------------------------------------------------------------------
+
+/// The invariants every RayTracingCapabilities value must satisfy, given the
+/// feature set reported by the same adapter or device.
+static void expectConsistentCapabilities(const RayTracingCapabilities& caps,
+                                         const std::set<Feature>& features) {
+    // Feature::raytracing means hardware ray tracing, and only that.
+    EXPECT_EQ(caps.tier == RayTracingTier::hardware,
+              features.count(Feature::raytracing) > 0);
+    if (caps.tier == RayTracingTier::none) {
+        EXPECT_FALSE(caps.pipelines);
+    }
+    if (caps.pipelines) {
+        EXPECT_GE(caps.maxRecursionDepth, 1u);
+    } else {
+        EXPECT_EQ(caps.maxRecursionDepth, 0u);
+    }
+    // Every hardware backend supports ray tracing pipelines.
+    if (caps.tier == RayTracingTier::hardware) {
+        EXPECT_TRUE(caps.pipelines);
+    }
+}
+
+TEST(Raytracing, DeviceCapabilitiesAreConsistentWithFeatures) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device available";
+    expectConsistentCapabilities(device->getRayTracingCapabilities(),
+                                 device->getFeatures());
+}
+
+TEST(Raytracing, DeviceCapabilitiesAreStableAcrossCalls) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device available";
+    auto first  = device->getRayTracingCapabilities();
+    auto second = device->getRayTracingCapabilities();
+    EXPECT_EQ(first.tier, second.tier);
+    EXPECT_EQ(first.pipelines, second.pipelines);
+    EXPECT_EQ(first.maxRecursionDepth, second.maxRecursionDepth);
+}
+
+TEST(Raytracing, AdapterCapabilitiesAreConsistentWithFeatures) {
+    auto adapters = Device::getAdapters();
+    if (adapters.empty()) GTEST_SKIP() << "No adapters available";
+    for (auto& adapter : adapters) {
+        ASSERT_NE(adapter, nullptr);
+        expectConsistentCapabilities(adapter->getRayTracingCapabilities(),
+                                     adapter->getFeatures());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -904,6 +962,83 @@ TEST(Raytracing, CopyAccelerationStructureCompletesWithoutError) {
     EXPECT_NO_THROW(device->submit(cmdBuf));
 }
 
+// ---------------------------------------------------------------------------
+// Compaction: getCompactedSize() / createCompactedAccelerationStructure() /
+// a compacting copyAccelerationStructure()
+// ---------------------------------------------------------------------------
+
+TEST(Raytracing, CompactedSizeIsZeroWithoutAllowCompaction) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device available";
+    if (!requireRaytracing(device)) GTEST_SKIP() << "Ray tracing not available";
+
+    auto vertBuf = makeTriangleVertexBuffer(device);
+    auto desc = makeBlasDescriptor(vertBuf);
+    auto blas = device->createBottomLevelAccelerationStructure(desc);
+    ASSERT_NE(blas, nullptr);
+    EXPECT_EQ(blas->getCompactedSize(), 0u) << "not built yet";
+    buildAndSubmit(device, blas, desc);
+    device->waitForIdle();
+    EXPECT_EQ(blas->getCompactedSize(), 0u);
+    EXPECT_EQ(device->createCompactedAccelerationStructure(blas), nullptr);
+}
+
+TEST(Raytracing, CompactionOfBlasAndTlas) {
+    auto device = tryCreateDevice();
+    if (!device) GTEST_SKIP() << "No device available";
+    if (!requireRaytracing(device)) GTEST_SKIP() << "Ray tracing not available";
+
+    // A BLAS of several hundred triangles, so compaction has something to save.
+    std::vector<float> verts;
+    for (int i = 0; i < 600; ++i) {
+        const float x = float(i % 30) * 0.1f, y = float(i / 30) * 0.1f;
+        const float tri[9] = {x, y, 0.0f, x + 0.08f, y, 0.01f * float(i % 7), x, y + 0.08f, 0.0f};
+        verts.insert(verts.end(), tri, tri + 9);
+    }
+    auto vertBuf = device->createBuffer(verts.size() * sizeof(float), BufferUsage::accelerationStructureInput,
+                                        verts.data());
+    auto desc = makeBlasDescriptor(vertBuf, static_cast<uint32_t>(verts.size() / 3));
+    desc.buildFlags = AccelerationStructureBuildFlag::allowCompaction;
+    auto blas = device->createBottomLevelAccelerationStructure(desc);
+    ASSERT_NE(blas, nullptr);
+    buildAndSubmit(device, blas, desc);
+    device->waitForIdle();
+
+    const uint64_t blasSize = blas->getCompactedSize();
+    EXPECT_GT(blasSize, 0u);
+    auto compactBlas = device->createCompactedAccelerationStructure(blas);
+    ASSERT_NE(compactBlas, nullptr);
+    {
+        auto encoder = device->createCommandEncoder();
+        encoder->copyAccelerationStructure(blas, compactBlas);
+        device->submit(encoder->finish());
+    }
+
+    // A TLAS over the compacted BLAS, compacted in turn.
+    AccelerationStructureInstance inst{};
+    inst.blas = compactBlas;
+    TopLevelAccelerationStructureDescriptor tdesc{};
+    tdesc.instances = {inst, inst};
+    tdesc.instances[1].transform[0][3] = 5.0f;
+    tdesc.buildFlags = AccelerationStructureBuildFlag::allowCompaction;
+    auto tlas = device->createTopLevelAccelerationStructure(tdesc);
+    ASSERT_NE(tlas, nullptr);
+    {
+        auto scratch = device->createBuffer(tlas->getBuildScratchSize(), BufferUsage::storage);
+        auto encoder = device->createCommandEncoder();
+        encoder->buildAccelerationStructure(tlas, tdesc, scratch);
+        device->submit(encoder->finish());
+    }
+    device->waitForIdle();
+    EXPECT_GT(tlas->getCompactedSize(), 0u);
+    auto compactTlas = device->createCompactedAccelerationStructure(tlas);
+    ASSERT_NE(compactTlas, nullptr);
+    auto encoder = device->createCommandEncoder();
+    encoder->copyAccelerationStructure(tlas, compactTlas);
+    device->submit(encoder->finish());
+    device->waitForIdle();
+}
+
 TEST(Raytracing, CopyAccelerationStructureWithNullArgumentsDoesNotCrash) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
@@ -922,7 +1057,7 @@ TEST(Raytracing, CopyAccelerationStructureWithNullArgumentsDoesNotCrash) {
 TEST(Raytracing, BeginRayTracingPassReturnsNonNull) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     auto encoder = device->createCommandEncoder();
     ASSERT_NE(encoder, nullptr);
@@ -933,7 +1068,7 @@ TEST(Raytracing, BeginRayTracingPassReturnsNonNull) {
 TEST(Raytracing, RayTracingPassEndDoesNotThrow) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     auto encoder = device->createCommandEncoder();
     ASSERT_NE(encoder, nullptr);
@@ -946,7 +1081,7 @@ TEST(Raytracing, RayTracingPassEndDoesNotThrow) {
 TEST(Raytracing, RayTracingPassSetBindGroupWithNullBindGroupDoesNotCrash) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     auto encoder = device->createCommandEncoder();
     ASSERT_NE(encoder, nullptr);
@@ -960,7 +1095,7 @@ TEST(Raytracing, RayTracingPassSetBindGroupWithNullBindGroupDoesNotCrash) {
 TEST(Raytracing, MultipleSequentialRayTracingPassesDoNotCrash) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     auto encoder = device->createCommandEncoder();
     ASSERT_NE(encoder, nullptr);
@@ -985,7 +1120,7 @@ TEST(Raytracing, CreateRayTracingPipelineWithoutShadersDoesNotCrash) {
     // or succeed; the key invariant is it must not crash.
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     RayTracingPipelineDescriptor desc{};
     // rayGeneration has null module — implementation should return nullptr gracefully.
@@ -998,7 +1133,7 @@ TEST(Raytracing, CreateRayTracingPipelineWithoutShadersDoesNotCrash) {
 TEST(Raytracing, CreateRayTracingPipelineWithGarbageRayGenerationBytecodeDoesNotCrash) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     // ShaderModule accepts arbitrary bytes; validity is only checked at pipeline
     // creation time. Invalid bytecode must fail gracefully, not crash.
@@ -1018,7 +1153,7 @@ TEST(Raytracing, CreateRayTracingPipelineWithGarbageRayGenerationBytecodeDoesNot
 TEST(Raytracing, CreateRayTracingPipelineWithMultipleMissShadersDoesNotCrash) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     const uint8_t garbage[] = { 0x01, 0x02, 0x03, 0x04 };
     auto shaderModule = device->createShaderModule(garbage, sizeof(garbage));
@@ -1039,7 +1174,7 @@ TEST(Raytracing, CreateRayTracingPipelineWithMultipleMissShadersDoesNotCrash) {
 TEST(Raytracing, CreateRayTracingPipelineWithIntersectionHitGroupDoesNotCrash) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     const uint8_t garbage[] = { 0xAA, 0xBB, 0xCC, 0xDD };
     auto shaderModule = device->createShaderModule(garbage, sizeof(garbage));
@@ -1062,7 +1197,7 @@ TEST(Raytracing, CreateRayTracingPipelineWithIntersectionHitGroupDoesNotCrash) {
 TEST(Raytracing, CreateRayTracingPipelineWithVaryingRecursionDepthDoesNotCrash) {
     auto device = tryCreateDevice();
     if (!device) GTEST_SKIP() << "No device available";
-    if (!requireRaytracing(device)) GTEST_SKIP() << "Feature::raytracing not available";
+    if (!requireRayTracingPipelines(device)) GTEST_SKIP() << "Ray tracing pipelines not available";
 
     const uint8_t garbage[] = { 0x10, 0x20, 0x30, 0x40 };
     auto shaderModule = device->createShaderModule(garbage, sizeof(garbage));

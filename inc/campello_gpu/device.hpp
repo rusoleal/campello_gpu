@@ -37,6 +37,7 @@
 #include <campello_gpu/fence.hpp>
 #include <campello_gpu/surface.hpp>
 #include <campello_gpu/cooperative_matrix_properties.hpp>
+#include <campello_gpu/ray_tracing_capabilities.hpp>
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <campello_gpu/platform/linux_dmabuf.hpp>
 #endif
@@ -126,6 +127,38 @@ namespace systems::leal::campello_gpu
          *         doesn't expose per-shape data.
          */
         std::vector<CooperativeMatrixProperties> getCooperativeMatrixProperties();
+
+        /**
+         * @brief Reports how this device implements ray tracing.
+         *
+         * `tier` is `hardware` exactly when `Feature::raytracing` is in
+         * `getFeatures()`. A `software` tier (WebGPU, compute-shader
+         * emulation) supports acceleration structures and inline ray queries;
+         * check `pipelines` before creating ray tracing pipelines, and keep
+         * `RayTracingPipelineDescriptor::maxRecursionDepth` within
+         * `maxRecursionDepth`.
+         *
+         * @return The device's ray tracing capabilities; all-default
+         *         (`RayTracingTier::none`) when ray tracing is unavailable.
+         */
+        RayTracingCapabilities getRayTracingCapabilities();
+
+        /**
+         * @brief Sizes the storage that software ray tracing keeps
+         * acceleration structures in (`RayTracingTier::software`).
+         *
+         * Acceleration structures are placed in heap pages of this many
+         * bytes (default 256 MiB, capped at the device's largest storage
+         * buffer binding). A TLAS must share a page with all of its BLASes,
+         * so a scene larger than the default needs a bigger page: call this
+         * before creating its acceleration structures. Pages are created as
+         * needed, and existing pages keep their size.
+         *
+         * Ignored by the hardware backends.
+         *
+         * @param bytes Page size in bytes; 0 restores the default.
+         */
+        void setAccelerationStructureHeapHint(uint64_t bytes);
 
         // ------------------------------------------------------------------
         // Metrics and monitoring (Phase 1)
@@ -611,6 +644,24 @@ namespace systems::leal::campello_gpu
          */
         std::shared_ptr<AccelerationStructure> createTopLevelAccelerationStructure(
             const TopLevelAccelerationStructureDescriptor &descriptor);
+
+        /**
+         * @brief Creates an empty acceleration structure sized to hold `source`
+         * compacted.
+         *
+         * `source` must have been built with
+         * `AccelerationStructureBuildFlag::allowCompaction`, and that build must
+         * have finished on the GPU (`source->getCompactedSize()` is non-zero).
+         * Fill the result with `CommandEncoder::copyAccelerationStructure(source,
+         * result)`, which compacts. The result can be updated if `source` was
+         * built with `allowUpdate`.
+         *
+         * @param source A built, compactable acceleration structure.
+         * @return The compacted acceleration structure (not yet filled), or
+         *         `nullptr` when the compacted size isn't known yet or allocation fails.
+         */
+        std::shared_ptr<AccelerationStructure> createCompactedAccelerationStructure(
+            std::shared_ptr<AccelerationStructure> source);
 
         /**
          * @brief Creates a compiled ray tracing pipeline state object.

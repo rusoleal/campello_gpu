@@ -300,14 +300,15 @@ namespace systems::leal::campello_gpu
         void encodeTemporalUpscale(std::shared_ptr<TemporalUpscaler> upscaler, const TemporalUpscaleInputs &inputs);
 
         /**
-         * @brief Records an acceleration structure copy (for compaction or cloning).
+         * @brief Records an acceleration structure copy: a compaction or a clone.
          *
-         * Copies `src` into `dst`. Used primarily to compact an AS after building with
-         * `AccelerationStructureBuildFlag::allowCompaction` to reduce GPU memory usage.
-         * Query the compacted size before allocating `dst`.
+         * When `dst` was created by `Device::createCompactedAccelerationStructure(src)`,
+         * this is a compacting copy (see `AccelerationStructure::getCompactedSize()`).
+         * Otherwise it clones `src` into `dst`, which must have been created with
+         * the same descriptor.
          *
-         * @param src Source acceleration structure.
-         * @param dst Destination acceleration structure (must have sufficient backing memory).
+         * @param src Source acceleration structure (built).
+         * @param dst Destination acceleration structure.
          */
         void copyAccelerationStructure(
             std::shared_ptr<AccelerationStructure> src,
