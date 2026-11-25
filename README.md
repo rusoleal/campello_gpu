@@ -438,6 +438,37 @@ fn intersect(ray: CampelloRay, prim: CampelloProcedural) -> CampelloIntersection
 - `traceRays(w, h, d)` runs ray generation once per launch index. The pipeline uses one bind group after the layout's groups for the launch size, so it can use at most `maxBindGroups − 1` groups.
 - Shader modules that use `campello_traceRayPipeline`, `CampelloPayload` or the launch builtins are compiled only when a ray tracing pipeline is created from them.
 
+### Video and camera frames (external images)
+
+`copyExternalImageToTexture()` draws a platform image (a decoded video frame or a camera frame) into an RGBA texture without a CPU copy, converting YUV to RGB on the GPU. Decoding stays with the platform's media framework (AVFoundation / VideoToolbox, MediaCodec, WebCodecs); campello_gpu only takes the frame it hands out.
+
+```cpp
+#include <campello_gpu/external_image.hpp>
+
+// target: a 2D texture with TextureUsage::renderTarget, rgba8unorm / bgra8unorm (or _srgb)
+ExternalImage frame;
+frame.type   = ExternalImageType::cvPixelBuffer;   // a CVPixelBufferRef from AVPlayerItemVideoOutput
+frame.handle = pixelBuffer;
+
+auto encoder = device->createCommandEncoder();
+encoder->copyExternalImageToTexture(frame, target);  // recorded; draw with `target` after it
+// ... render passes that sample `target` ...
+device->submit(encoder->finish());
+CVPixelBufferRelease(pixelBuffer);                     // fine right away: the GPU holds its own reference
+```
+
+| Platform | `ExternalImageType` | Source |
+|---|---|---|
+| macOS, iOS | `cvPixelBuffer` | IOSurface-backed `CVPixelBuffer` (`kCVPixelBufferMetalCompatibilityKey`): NV12 (`'420v'`, `'420f'`), 3-plane (`'y420'`, `'f420'`), `'BGRA'` |
+| Android | `androidHardwareBuffer` | `AHardwareBuffer` with `GPU_SAMPLED_IMAGE` usage (camera, `MediaCodec` through `AImageReader`); vendor YUV formats through a sampler YCbCr conversion |
+| Web | `webImageSource` | `Module.campelloGpu.importExternalImage(source)` of a `VideoFrame`, `<video>`, `ImageBitmap` or canvas; the browser converts |
+| Windows, Linux | — | planned (`d3dSharedHandle` / `d3d12Resource`, `dmaBuf`); `supportsExternalImage()` is false |
+
+- `ExternalImage::matrix` / `range` override the image's color metadata (BT.601 / BT.709, full / limited); without metadata, BT.709 from 720 lines up, BT.601 below, limited range. The web ignores them: the browser converts from the frame's own color space.
+- `ExternalImageCopyOptions::uvTransform` maps target uv to source uv (row-major 2×3): crop, scale, rotation, mirroring.
+- `Device::copyExternalImageToTexture()` does the same synchronously (submits and waits), from any thread; `copyAHardwareBufferToTexture()` remains, as an Android wrapper of it.
+- Android: `ExternalImage::acquireFenceFd` takes the producer's sync_file fence (waited on, then closed).
+
 ### GPU → CPU Readback
 
 Copy texture data to a buffer and read it on the CPU:
