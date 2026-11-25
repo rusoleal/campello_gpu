@@ -15,6 +15,7 @@
 #include <campello_gpu/temporal_upscaler.hpp>
 #include <campello_gpu/types/offset_3d.hpp>
 #include <campello_gpu/types/extent_3d.hpp>
+#include <campello_gpu/external_image.hpp>
 
 namespace systems::leal::campello_gpu
 {
@@ -313,6 +314,29 @@ namespace systems::leal::campello_gpu
         void copyAccelerationStructure(
             std::shared_ptr<AccelerationStructure> src,
             std::shared_ptr<AccelerationStructure> dst);
+
+        /**
+         * @brief Records a draw of a platform image (video or camera frame)
+         * into `target`, without a CPU copy, converting YUV to RGB.
+         *
+         * Recorded at this point of the command buffer (no pass may be open);
+         * commands recorded after it see the new contents of `target`. The
+         * whole target is written. The caller may release the image right
+         * after this returns: the backend keeps its own reference until the
+         * command buffer completes. On the web the browser's copy of the
+         * image runs immediately, before this command buffer is submitted.
+         *
+         * @param source  The image; see `ExternalImage` and
+         *                `Device::supportsExternalImage()`.
+         * @param target  A 2D texture with `TextureUsage::renderTarget`, in an
+         *                8-bit RGBA/BGRA format (`_srgb` formats receive the
+         *                same bytes as the plain ones).
+         * @param options uv transform (crop, rotation, mirroring).
+         * @return false when unsupported or on failure (logged); nothing is
+         *         recorded then.
+         */
+        bool copyExternalImageToTexture(const ExternalImage &source, std::shared_ptr<Texture> target,
+                                        const ExternalImageCopyOptions &options = {});
     };
 
 }

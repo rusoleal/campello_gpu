@@ -83,6 +83,9 @@ struct MetalDeviceData {
     MTL::Device       *device;
     MTL::CommandQueue *commandQueue;
 
+    // copyExternalImageToTexture() state (external_image.mm), created on first use.
+    void *externalImageConverter = nullptr;
+
     // Drawable scheduled via Device::scheduleNextPresent() — consumed on the
     // next Device::submit() call to attach presentDrawable: before commit().
     // Written from the raster thread (real per-frame drawable) AND from the
@@ -168,6 +171,9 @@ struct MetalDeviceData {
  * without the optional format we substitute the always-supported
  * Depth32Float_Stencil8 instead of handing Metal an unusable format.
  */
+// Releases MetalDeviceData::externalImageConverter (external_image.mm).
+void destroyMetalExternalImageConverter(MetalDeviceData *d);
+
 inline MTL::PixelFormat toMTLPixelFormat(MTL::Device *device, PixelFormat format) {
     if (format == PixelFormat::depth24plus_stencil8 &&
         device && !device->depth24Stencil8PixelFormatSupported()) {

@@ -25,6 +25,7 @@ add_library(${PROJECT_NAME} SHARED
     src/directx/ray_tracing_pass_encoder.cpp
     src/pi/utils.cpp
     src/pi/temporal_upscaler_unsupported.cpp
+    src/pi/external_image_unsupported.cpp
     src/pi/validation_diagnostics.cpp
 )
 

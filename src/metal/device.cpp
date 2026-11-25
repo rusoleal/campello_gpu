@@ -198,6 +198,7 @@ Device::Device(void *pd) {
 Device::~Device() {
     if (native != nullptr) {
         auto *deviceData = static_cast<MetalDeviceData *>(native);
+        destroyMetalExternalImageConverter(deviceData);
         if (deviceData->timestampQueryBuffer) deviceData->timestampQueryBuffer->release();
         if (deviceData->commandQueue) deviceData->commandQueue->release();
         if (deviceData->device)       deviceData->device->release();

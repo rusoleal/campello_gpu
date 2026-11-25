@@ -624,6 +624,24 @@
       flight), and `Raytracing.CreateTlasWithEmptyInstancesReturnsNull` fails on lavapipe
       (also locally, at v0.29.0). Fix these, then widen the CI filter.
 
+## External images (video and camera frames)
+
+Design: `copyExternalImageToTexture()` imports platform images zero-copy; codecs stay in the
+platform media frameworks (campello_widgets players).
+
+- [x] Phase 1: API, Metal (`CVPixelBuffer`), Android (`AHardwareBuffer`, recorded and synchronous),
+      WebGPU (`VideoFrame` and other image sources).
+- [ ] Android test images: allocate `AHARDWAREBUFFER_FORMAT_Y8Cb8Cr8_420` buffers and write them with
+      `AHardwareBuffer_lockPlanes()`, so `ExternalImageTest.*` runs on devices instead of skipping.
+- [ ] Android: wait for `acquireFenceFd` on the GPU (`VK_KHR_external_semaphore_fd`) instead of the CPU.
+- [ ] Phase 2: DirectX 12 (shared D3D11 texture handle + shared fence, NV12 plane SRVs).
+- [ ] Phase 3: Linux (multi-plane dma-buf with sampler YCbCr conversion).
+- [ ] Phase 4: export for encoding (render into a texture backed by a platform image).
+- [ ] Later: HDR (P010, BT.2020, PQ/HLG).
+- [x] campello_widgets: the macOS/iOS and Android players use `copyExternalImageToTexture()`
+      (recorded into the frame's encoder), and a web player on `<video>` (2026-11-25). Android
+      verified on an Adreno 618 (Redmi Note 10 Pro, Android 13).
+
 ## Raytracing
 
 ### Constants & Enums

@@ -38,6 +38,7 @@
 #include <campello_gpu/surface.hpp>
 #include <campello_gpu/cooperative_matrix_properties.hpp>
 #include <campello_gpu/ray_tracing_capabilities.hpp>
+#include <campello_gpu/external_image.hpp>
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <campello_gpu/platform/linux_dmabuf.hpp>
 #endif
@@ -400,6 +401,37 @@ namespace systems::leal::campello_gpu
          */
         DrmDeviceNode getDrmDeviceNode();
 #endif
+
+        /**
+         * @brief Whether this device can copy external images of `type` with
+         * `copyExternalImageToTexture()` (here and on `CommandEncoder`).
+         *
+         * Metal: `cvPixelBuffer`. Android/Vulkan: `androidHardwareBuffer`,
+         * when `supportsAHardwareBufferImport()`. WebGPU: `webImageSource`.
+         * Other combinations: false (DirectX 12 and Linux are planned).
+         */
+        bool supportsExternalImage(ExternalImageType type) const;
+
+        /**
+         * @brief Draws a platform image (video or camera frame) into `target`,
+         * without a CPU copy, converting YUV to RGB; synchronous.
+         *
+         * Same conversion as `CommandEncoder::copyExternalImageToTexture()`,
+         * but recorded on a private command buffer, submitted and waited for:
+         * returns after the GPU finished. Can be called from any thread, also
+         * while another thread records a frame; calls are serialized
+         * internally. `target` must not be used by another thread meanwhile.
+         * Inside a render loop, the encoder call is cheaper.
+         *
+         * @param source  The image; see `ExternalImage`.
+         * @param target  A 2D texture with `TextureUsage::renderTarget`, in an
+         *                8-bit RGBA/BGRA format (`_srgb` formats receive the
+         *                same bytes as the plain ones).
+         * @param options uv transform (crop, rotation, mirroring).
+         * @return false when unsupported or on failure (logged).
+         */
+        bool copyExternalImageToTexture(const ExternalImage &source, std::shared_ptr<Texture> target,
+                                        const ExternalImageCopyOptions &options = {});
 
 #if defined(__ANDROID__)
         /**

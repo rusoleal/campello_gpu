@@ -185,6 +185,7 @@ struct PushConstantStream {
 
 struct WebGPUDeviceData;
 struct RayTracingState;  // src/webgpu/rt/rt_internal.hpp
+struct ExternalImageState;  // src/webgpu/external_image.cpp
 
 /** The device-wide bind group layout of the push-constant group (lazily created). */
 WGPUBindGroupLayout pushConstantBindGroupLayout(WebGPUDeviceData* deviceData);
@@ -228,6 +229,7 @@ struct WebGPUDeviceData {
     // Software ray tracing (acceleration-structure heap, BVH builder), created
     // on first use; see src/webgpu/rt/.
     RayTracingState* rayTracing = nullptr;
+    ExternalImageState* externalImage = nullptr;  // copyExternalImageToTexture(), lazily created
 
     // Render pipelines still compiling (createRenderPipelineAsync), waited
     // for before a canvas texture is taken (waitForPendingPipelines()).
@@ -581,5 +583,8 @@ bool formatHasStencil(WGPUTextureFormat format);
 
 /** Creates a WGSL shader module (nullptr code yields nullptr). */
 WGPUShaderModule createWGSLShaderModule(WGPUDevice device, const char* code);
+
+/** Releases WebGPUDeviceData::externalImage (external_image.cpp). */
+void releaseExternalImageState(WebGPUDeviceData* deviceData);
 
 } // namespace systems::leal::campello_gpu

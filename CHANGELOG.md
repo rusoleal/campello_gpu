@@ -4,6 +4,14 @@ All notable changes to campello_gpu are documented here.
 
 ## [Unreleased]
 
+### Added
+- **`copyExternalImageToTexture()`: video and camera frames into textures without a CPU copy.** On `CommandEncoder` (recorded) and `Device` (synchronous, any thread), with `Device::supportsExternalImage()`, `ExternalImage` and `ExternalImageCopyOptions` (new header `external_image.hpp`). It draws a platform image into a 2D render-target texture (`rgba8unorm`, `bgra8unorm` or their `_srgb` variants, which receive the same bytes), converting YUV to RGB on the GPU, with an affine uv transform for crop, rotation and mirroring. The caller may release the image as soon as the call returns: the backend keeps its own reference until the command buffer completes.
+  - Metal: IOSurface-backed `CVPixelBuffer`s (NV12 video and full range, 3-plane, BGRA) through a `CVMetalTextureCache`, BT.601 / BT.709 from the buffer's `kCVImageBufferYCbCrMatrixKey`.
+  - Android/Vulkan: `AHardwareBuffer`s, on the 0.36.0 import (sampler YCbCr conversion with the driver's suggested settings, which `ExternalImage::matrix` / `range` can override), now also recorded into an encoder: imports are reference-counted, so an in-flight command buffer keeps its import after the cache evicts it. `acquireFenceFd` takes a sync_file fence. The import cache holds 32 buffers (was 8), enough for a decoder's whole output pool: an `AImageReader` behind an H.264 decoder cycled 21 buffers on an Adreno 618, so an 8-entry LRU missed and re-imported on every frame. Imports unused for 64 copies are dropped, so a finished source's buffers are freed. Checked end to end through campello_widgets' video player on that device. `copyAHardwareBufferToTexture()` is unchanged.
+  - WebGPU: `VideoFrame`s, `<video>`, `ImageBitmap`s and canvases, registered from JavaScript with `Module.campelloGpu.importExternalImage()`; the browser's `copyExternalImageToTexture()` converts into a staging texture, and a draw recorded into the encoder applies the uv transform.
+  - DirectX 12 and Linux: not yet (`supportsExternalImage()` is false); planned with shared D3D11 textures and dma-buf.
+  - Tests: `ExternalImage.*` and `ExternalImageTest.*` compare synthetic frames (NV12 BT.709 limited, BT.601 full, 3-plane, BGRA into BGRA and sRGB targets, color overrides, mirror, 90° rotation, crop, odd sizes, invalid targets, keep-alive) with a CPU reference conversion, within ±2 (±3 on the web, where the browser converts). They run on Metal and WebGPU; on Android they skip until the suite can make test `AHardwareBuffer`s.
+
 ## [0.37.0] - 2026-11-25
 
 ### Added

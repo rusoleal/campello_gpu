@@ -9,7 +9,7 @@
 # dependency (FetchContent/add_subdirectory) it leaves CMAKE_OBJCXX_COMPILE_OBJECT unset and
 # the consumer's generate step fails. Without OBJCXX, CMake compiles .mm as CXX and clang
 # picks Objective-C++ from the extension; consumers that enable OBJCXX get it as OBJCXX.
-set_source_files_properties(src/metal/temporal_upscaler.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+set_source_files_properties(src/metal/temporal_upscaler.mm src/metal/external_image.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 
 add_library(${PROJECT_NAME} SHARED
     src/pi/pixel_format.cpp
@@ -39,10 +39,11 @@ add_library(${PROJECT_NAME} SHARED
     src/metal/texture.cpp
     src/metal/texture_view.cpp
     src/metal/temporal_upscaler.mm
+    src/metal/external_image.mm
 )
 
 target_link_libraries(${PROJECT_NAME}
-    "-framework Metal" "-framework Foundation" "-framework QuartzCore" objc
+    "-framework Metal" "-framework Foundation" "-framework QuartzCore" "-framework CoreVideo" objc
 )
 
 target_include_directories(${PROJECT_NAME} PUBLIC

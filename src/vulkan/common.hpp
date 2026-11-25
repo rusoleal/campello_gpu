@@ -10,6 +10,7 @@
 #include <memory>
 #include <unordered_map>
 #include <vulkan/vulkan.h>
+#include <campello_gpu/external_image.hpp>
 #ifdef __ANDROID__
 #include <android/native_window.h>
 #include <android/log.h>
@@ -656,6 +657,16 @@ namespace systems::leal::campello_gpu {
 #ifdef __ANDROID__
     // Releases DeviceData::ahbConverter (android_hardware_buffer.cpp).
     void destroyAhbConverter(DeviceData *deviceData);
+
+#if defined(__ANDROID__)
+    // copyExternalImageToTexture() for AHardwareBuffers (android_hardware_buffer.cpp):
+    // synchronous, and recorded into an encoder.
+    struct CommandEncoderHandle;
+    struct TextureHandle;
+    bool copyAhbSync(DeviceData *d, const ExternalImage &source, TextureHandle *t, const float *uvTransform);
+    bool recordAhbCopy(CommandEncoderHandle *e, const ExternalImage &source, TextureHandle *t,
+                       const float *uvTransform);
+#endif
 #endif
 
 } // namespace systems::leal::campello_gpu
