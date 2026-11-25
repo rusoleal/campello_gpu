@@ -32,6 +32,10 @@ add_library(${PROJECT_NAME} STATIC
     src/webgpu/ray_tracing_pass_encoder.cpp
     src/webgpu/fence.cpp
     src/webgpu/push_constants.cpp
+    src/webgpu/rt/as_heap.cpp
+    src/webgpu/rt/bvh_builder.cpp
+    src/webgpu/rt/bvh_kernels.cpp
+    src/webgpu/rt/rt_shader.cpp
 )
 
 # Dawn's emdawnwebgpu port provides <webgpu/webgpu.h> (upstream webgpu.h)

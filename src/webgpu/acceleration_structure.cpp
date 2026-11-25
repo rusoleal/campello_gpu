@@ -8,14 +8,24 @@ AccelerationStructure::AccelerationStructure(void* pd) {
 }
 
 AccelerationStructure::~AccelerationStructure() {
-    auto* handle = static_cast<AccelerationStructureHandle*>(native);
-    delete handle;
+    delete static_cast<AccelerationStructureHandle*>(native);
 }
 
 uint64_t AccelerationStructure::getBuildScratchSize() const {
-    return 0;
+    auto* handle = static_cast<AccelerationStructureHandle*>(native);
+    return handle ? handle->buildScratchBytes : 0;
 }
 
 uint64_t AccelerationStructure::getUpdateScratchSize() const {
-    return 0;
+    auto* handle = static_cast<AccelerationStructureHandle*>(native);
+    return handle ? handle->updateScratchBytes : 0;
+}
+
+uint64_t AccelerationStructure::getCompactedSize() const {
+    auto* handle = static_cast<AccelerationStructureHandle*>(native);
+    if (!handle || !handle->built || !(handle->buildFlags & kAsBuildFlagAllowCompaction)) return 0;
+    // Software ray tracing compacts deterministically: the size is known as
+    // soon as the build is recorded.
+    return computeCompactLayout(handle->tlas, handle->layout.n,
+                                (handle->buildFlags & kAsBuildFlagAllowUpdate) != 0).totalBytes;
 }

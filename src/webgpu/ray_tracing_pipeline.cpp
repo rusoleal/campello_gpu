@@ -9,5 +9,8 @@ RayTracingPipeline::RayTracingPipeline(void* pd) {
 
 RayTracingPipeline::~RayTracingPipeline() {
     auto* handle = static_cast<RayTracingPipelineHandle*>(native);
+    if (!handle) return;
+    if (handle->pipeline) wgpuComputePipelineRelease(handle->pipeline);
+    if (handle->deviceData) handle->deviceData->rayTracingPipelineCount--;
     delete handle;
 }

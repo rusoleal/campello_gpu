@@ -15,5 +15,8 @@ PipelineLayout::~PipelineLayout() {
     if (handle->layout) {
         wgpuPipelineLayoutRelease(handle->layout);
     }
+    for (WGPUBindGroupLayout bgl : handle->groupLayouts) {
+        if (bgl) wgpuBindGroupLayoutRelease(bgl);
+    }
     delete handle;
 }

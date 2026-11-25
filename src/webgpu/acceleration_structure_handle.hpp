@@ -1,2 +1,2 @@
 #pragma once
-#include "common.hpp"
+#include "rt/rt_internal.hpp"

@@ -15,5 +15,8 @@ BindGroup::~BindGroup() {
     if (handle->bindGroup) {
         wgpuBindGroupRelease(handle->bindGroup);
     }
+    if (handle->accelerationStructureRoots) {
+        wgpuBufferRelease(handle->accelerationStructureRoots);
+    }
     delete handle;
 }

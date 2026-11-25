@@ -15,6 +15,7 @@
 #include "buffer_handle.hpp"
 #include "texture_handle.hpp"
 #include "query_set_handle.hpp"
+#include "rt/rt_internal.hpp"
 
 using namespace systems::leal::campello_gpu;
 
@@ -30,7 +31,8 @@ using ComputePassTimestampWritesT =
 // Returns false when timing is unavailable (no "timestamp-query" feature, or
 // the per-encoder budget is used up); the pass is then simply not timed.
 template <typename TimestampWrites>
-static bool allocatePassTimestamps(CommandEncoderHandle* handle, bool isCompute, TimestampWrites& tw) {
+static bool allocatePassTimestamps(CommandEncoderHandle* handle, bool isCompute, TimestampWrites& tw,
+                                   bool isRayTracing = false) {
     auto* deviceData = handle->deviceData;
     if (!deviceData || !deviceData->timestampQueryEnabled) return false;
     if (handle->timedPasses.size() >= kMaxTimedPassesPerEncoder) return false;
@@ -45,6 +47,7 @@ static bool allocatePassTimestamps(CommandEncoderHandle* handle, bool isCompute,
 
     PassTimestampSlot slot;
     slot.isCompute = isCompute;
+    slot.isRayTracing = isRayTracing;
     slot.beginIndex = handle->nextTimestampIndex;
     slot.endIndex = handle->nextTimestampIndex + 1;
     handle->nextTimestampIndex += 2;
@@ -54,6 +57,17 @@ static bool allocatePassTimestamps(CommandEncoderHandle* handle, bool isCompute,
     tw.beginningOfPassWriteIndex = slot.beginIndex;
     tw.endOfPassWriteIndex = slot.endIndex;
     return true;
+}
+
+WGPUComputePassEncoder systems::leal::campello_gpu::beginTimedComputePass(CommandEncoderHandle* handle,
+                                                                          const char* label, bool rayTracing) {
+    WGPUComputePassDescriptor desc{};
+    desc.label = toStringView(label);
+    ComputePassTimestampWritesT timestampWrites{};
+    if (allocatePassTimestamps(handle, /*isCompute=*/!rayTracing, timestampWrites, rayTracing)) {
+        desc.timestampWrites = &timestampWrites;
+    }
+    return wgpuCommandEncoderBeginComputePass(handle->encoder, &desc);
 }
 
 CommandEncoder::CommandEncoder(void* pd) {
@@ -638,40 +652,93 @@ void CommandEncoder::writeTimestamp(std::shared_ptr<QuerySet> querySet, uint32_t
     (void)queryIndex;
 }
 
+// Ray tracing passes are compute passes running emulated pipelines
+// (see RayTracingPassEncoder::traceRays()).
 std::shared_ptr<RayTracingPassEncoder> CommandEncoder::beginRayTracingPass() {
-    return nullptr; // Ray tracing not supported in WebGPU
+    auto* h = static_cast<CommandEncoderHandle*>(native);
+    if (!h || !h->encoder) return nullptr;
+    WGPUComputePassEncoder pass = beginTimedComputePass(h, "campello_gpu ray tracing pass", /*rayTracing=*/true);
+    if (!pass) return nullptr;
+    auto* handle = new RayTracingPassEncoderHandle();
+    handle->encoder = pass;
+    handle->deviceData = h->deviceData;
+    h->deviceData->rayTracingPasses++;
+    return std::shared_ptr<RayTracingPassEncoder>(new RayTracingPassEncoder(handle));
 }
+
+// Software ray tracing: builds are compute passes (src/webgpu/rt/bvh_builder.cpp).
+
+// CommandEncoder is a friend of Buffer and AccelerationStructure: these
+// resolve the handles the builder works with.
+#define CAMPELLO_AS_HANDLE(as) ((as) ? static_cast<AccelerationStructureHandle*>((as)->native) : nullptr)
+#define CAMPELLO_BUFFER_HANDLE(b) ((b) ? static_cast<BufferHandle*>((b)->native) : nullptr)
 
 void CommandEncoder::buildAccelerationStructure(
     std::shared_ptr<AccelerationStructure> dst,
     const BottomLevelAccelerationStructureDescriptor& descriptor,
     std::shared_ptr<Buffer> scratchBuffer) {
-    (void)dst;
-    (void)descriptor;
-    (void)scratchBuffer;
+    auto* h = static_cast<CommandEncoderHandle*>(native);
+    auto* as = CAMPELLO_AS_HANDLE(dst);
+    if (!h || !as || as->tlas) return;
+    std::vector<GeometryBuffers> buffers;
+    for (const auto& g : descriptor.geometries) {
+        buffers.push_back({CAMPELLO_BUFFER_HANDLE(g.vertexBuffer), CAMPELLO_BUFFER_HANDLE(g.indexBuffer),
+                           CAMPELLO_BUFFER_HANDLE(g.transformBuffer), CAMPELLO_BUFFER_HANDLE(g.aabbBuffer)});
+    }
+    if (encodeBlasBuild(h, as, descriptor, buffers, CAMPELLO_BUFFER_HANDLE(scratchBuffer), false)) {
+        as->blasInput = descriptor;
+    }
 }
 
 void CommandEncoder::buildAccelerationStructure(
     std::shared_ptr<AccelerationStructure> dst,
     const TopLevelAccelerationStructureDescriptor& descriptor,
     std::shared_ptr<Buffer> scratchBuffer) {
-    (void)dst;
-    (void)descriptor;
-    (void)scratchBuffer;
+    auto* h = static_cast<CommandEncoderHandle*>(native);
+    auto* as = CAMPELLO_AS_HANDLE(dst);
+    if (!h || !as || !as->tlas) return;
+    std::vector<AccelerationStructureHandle*> blas;
+    for (const auto& inst : descriptor.instances) blas.push_back(CAMPELLO_AS_HANDLE(inst.blas));
+    if (encodeTlasBuild(h, as, descriptor, blas, CAMPELLO_BUFFER_HANDLE(scratchBuffer), false)) {
+        as->tlasInput = descriptor;
+    }
 }
 
+// Refits `dst` from the inputs of its latest build (copying `src` into it
+// first when they differ): same topology, new boxes.
 void CommandEncoder::updateAccelerationStructure(
     std::shared_ptr<AccelerationStructure> src,
     std::shared_ptr<AccelerationStructure> dst,
     std::shared_ptr<Buffer> scratchBuffer) {
-    (void)src;
-    (void)dst;
-    (void)scratchBuffer;
+    auto* h = static_cast<CommandEncoderHandle*>(native);
+    auto* from = CAMPELLO_AS_HANDLE(src);
+    auto* to = CAMPELLO_AS_HANDLE(dst);
+    if (!h || !from || !to) return;
+    if (from != to && !encodeAsCopy(h->encoder, from, to)) return;
+    if (to->tlas) {
+        std::vector<AccelerationStructureHandle*> blas;
+        for (const auto& inst : to->tlasInput.instances) blas.push_back(CAMPELLO_AS_HANDLE(inst.blas));
+        encodeTlasBuild(h, to, to->tlasInput, blas, CAMPELLO_BUFFER_HANDLE(scratchBuffer), true);
+    } else {
+        std::vector<GeometryBuffers> buffers;
+        for (const auto& g : to->blasInput.geometries) {
+            buffers.push_back({CAMPELLO_BUFFER_HANDLE(g.vertexBuffer), CAMPELLO_BUFFER_HANDLE(g.indexBuffer),
+                               CAMPELLO_BUFFER_HANDLE(g.transformBuffer), CAMPELLO_BUFFER_HANDLE(g.aabbBuffer)});
+        }
+        encodeBlasBuild(h, to, to->blasInput, buffers, CAMPELLO_BUFFER_HANDLE(scratchBuffer), true);
+    }
 }
 
 void CommandEncoder::copyAccelerationStructure(
     std::shared_ptr<AccelerationStructure> src,
     std::shared_ptr<AccelerationStructure> dst) {
-    (void)src;
-    (void)dst;
+    auto* h = static_cast<CommandEncoderHandle*>(native);
+    auto* from = CAMPELLO_AS_HANDLE(src);
+    auto* to = CAMPELLO_AS_HANDLE(dst);
+    if (!h || !from || !to || from == to) return;
+    if (to->compacted) {
+        encodeAsCompaction(h, from, to);
+    } else {
+        encodeAsCopy(h->encoder, from, to);
+    }
 }

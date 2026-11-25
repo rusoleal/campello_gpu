@@ -12,6 +12,7 @@
 #include <emscripten/html5.h>
 
 #include "campello_gpu_config.h"
+#include "rt/rt_internal.hpp"
 #include <campello_gpu/device.hpp>
 #include <campello_gpu/adapter.hpp>
 #include <campello_gpu/shader_module.hpp>
@@ -294,6 +295,7 @@ Device::~Device() {
         auto* deviceData = static_cast<WebGPUDeviceData*>(native);
         deviceData->alive->store(false);
         releasePushConstantResources(deviceData);
+        releaseRayTracingState(deviceData);
         if (deviceData->mipmapGen.pipelineLayout) {
             wgpuPipelineLayoutRelease(deviceData->mipmapGen.pipelineLayout);
         }
@@ -354,6 +356,21 @@ std::set<Feature> Device::getFeatures() {
     return featuresFromWGPU([device](WGPUFeatureName f) {
         return device && wgpuDeviceHasFeature(device, f);
     });
+}
+
+void Device::setAccelerationStructureHeapHint(uint64_t bytes) {
+    if (RayTracingState* rt = rayTracingState(static_cast<WebGPUDeviceData*>(native))) {
+        rt->pageSizeHint = bytes;
+    }
+}
+
+RayTracingCapabilities Device::getRayTracingCapabilities() {
+    // See Adapter::getRayTracingCapabilities() in adapter.cpp.
+    RayTracingCapabilities caps;
+    caps.tier = RayTracingTier::software;
+    caps.pipelines = true;
+    caps.maxRecursionDepth = kSoftwareMaxRecursionDepth;
+    return caps;
 }
 
 std::vector<CooperativeMatrixProperties> Device::getCooperativeMatrixProperties() {
@@ -664,12 +681,20 @@ std::shared_ptr<ShaderModule> Device::createShaderModule(const uint8_t* buffer, 
 
 std::shared_ptr<ShaderModule> Device::createShaderModule(const char* wgslSource) {
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
+    if (!wgslSource) return nullptr;
 
-    WGPUShaderModule shader = createWGSLShaderModule(deviceData->device, wgslSource);
-    if (!shader) return nullptr;
+    // Ray tracing pipeline modules are compiled by createRayTracingPipeline();
+    // shaders using inline ray queries get the software traversal library.
+    WGPUShaderModule shader = nullptr;
+    if (!isRayTracingPipelineSource(wgslSource)) {
+        const std::string source = rewriteRayTracingWGSL(wgslSource);
+        shader = createWGSLShaderModule(deviceData->device, source.c_str());
+        if (!shader) return nullptr;
+    }
 
     auto* handle = new ShaderModuleHandle();
     handle->shaderModule = shader;
+    handle->source = wgslSource;
     handle->size = strlen(wgslSource);
     handle->deviceData = deviceData;
 
@@ -692,6 +717,13 @@ std::shared_ptr<RenderPipeline> Device::createRenderPipeline(const RenderPipelin
 
     // Vertex state
     auto* vertHandle = static_cast<ShaderModuleHandle*>(descriptor.vertex.module->native);
+    if (!vertHandle->shaderModule ||
+        (descriptor.fragment && descriptor.fragment->module &&
+         !static_cast<ShaderModuleHandle*>(descriptor.fragment->module->native)->shaderModule)) {
+        fprintf(stderr, "[WebGPU] createRenderPipeline: a ray tracing pipeline module can only be used by "
+                        "createRayTracingPipeline()\n");
+        return nullptr;
+    }
     WGPUVertexState vertexState{};
     vertexState.module = vertHandle->shaderModule;
     vertexState.entryPoint = toStringView(descriptor.vertex.entryPoint);
@@ -911,6 +943,11 @@ std::shared_ptr<ComputePipeline> Device::createComputePipeline(const ComputePipe
     if (!descriptor.compute.module) return nullptr;
 
     auto* compHandle = static_cast<ShaderModuleHandle*>(descriptor.compute.module->native);
+    if (!compHandle->shaderModule) {
+        fprintf(stderr, "[WebGPU] createComputePipeline: a ray tracing pipeline module can only be used by "
+                        "createRayTracingPipeline()\n");
+        return nullptr;
+    }
 
     WGPUPipelineLayout layout = nullptr;
     if (descriptor.layout && descriptor.layout->native) {
@@ -945,7 +982,10 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
 
     std::vector<WGPUBindGroupLayoutEntry> entries;
-    entries.reserve(descriptor.entries.size());
+    entries.reserve(descriptor.entries.size() + 1);
+    bool hasAs = false;
+    uint32_t maxAsBinding = 0;
+    WGPUShaderStage asVisibility = WGPUShaderStage_None;
 
     for (const auto& entry : descriptor.entries) {
         WGPUBindGroupLayoutEntry wgpuEntry{};
@@ -970,11 +1010,23 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
                 break;
             }
             case EntryObjectType::accelerationStructure: {
-                // WebGPU does not support acceleration structures in standard API.
+                // Software ray tracing: the acceleration-structure heap page,
+                // read by the traversal library (src/webgpu/rt/rt_shader.cpp).
+                wgpuEntry.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+                hasAs = true;
+                maxAsBinding = std::max(maxAsBinding, entry.binding);
+                asVisibility |= wgpuEntry.visibility;
                 break;
             }
         }
         entries.push_back(wgpuEntry);
+    }
+    if (hasAs) {
+        WGPUBindGroupLayoutEntry roots{};
+        roots.binding = kAsRootsBinding;
+        roots.visibility = asVisibility;
+        roots.buffer.type = WGPUBufferBindingType_Uniform;
+        entries.push_back(roots);
     }
 
     WGPUBindGroupLayoutDescriptor desc{};
@@ -987,6 +1039,8 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const BindGroupLa
     auto* handle = new BindGroupLayoutHandle();
     handle->layout = layout;
     handle->deviceData = deviceData;
+    handle->hasAccelerationStructures = hasAs;
+    handle->maxAccelerationStructureBinding = maxAsBinding;
 
     deviceData->bindGroupLayoutCount++;
     return std::shared_ptr<BindGroupLayout>(new BindGroupLayout(handle));
@@ -996,13 +1050,19 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor& de
     auto* deviceData = static_cast<WebGPUDeviceData*>(native);
 
     WGPUBindGroupLayout layout = nullptr;
+    BindGroupLayoutHandle* bglHandle = nullptr;
     if (descriptor.layout && descriptor.layout->native) {
-        auto* bglHandle = static_cast<BindGroupLayoutHandle*>(descriptor.layout->native);
+        bglHandle = static_cast<BindGroupLayoutHandle*>(descriptor.layout->native);
         layout = bglHandle->layout;
     }
 
     std::vector<WGPUBindGroupEntry> entries;
-    entries.reserve(descriptor.entries.size());
+    entries.reserve(descriptor.entries.size() + 1);
+    // Acceleration structures: record word offsets, by binding number.
+    std::vector<uint32_t> asRoots;
+    if (bglHandle && bglHandle->hasAccelerationStructures) {
+        asRoots.assign(size_t(bglHandle->maxAccelerationStructureBinding + 1) * 4, 0);
+    }
 
     for (const auto& entry : descriptor.entries) {
         WGPUBindGroupEntry wgpuEntry{};
@@ -1021,11 +1081,32 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor& de
                 auto* sampHandle = static_cast<SamplerHandle*>(arg->native);
                 wgpuEntry.sampler = sampHandle->sampler;
             } else if constexpr (std::is_same_v<T, std::shared_ptr<AccelerationStructure>>) {
-                // WebGPU does not support acceleration structures.
+                auto* asHandle = arg ? static_cast<AccelerationStructureHandle*>(arg->native) : nullptr;
+                if (asHandle && asHandle->allocation.page) {
+                    wgpuEntry.buffer = asHandle->allocation.page->buffer;
+                    wgpuEntry.offset = 0;
+                    wgpuEntry.size = asHandle->allocation.page->size;
+                    if (size_t(entry.binding) * 4 < asRoots.size()) {
+                        asRoots[size_t(entry.binding) * 4] = recordWordOffset(asHandle);
+                    }
+                }
             }
         }, entry.resource);
 
         entries.push_back(wgpuEntry);
+    }
+    WGPUBuffer rootsBuffer = nullptr;
+    if (!asRoots.empty()) {
+        WGPUBufferDescriptor rootsDesc{};
+        rootsDesc.size = asRoots.size() * sizeof(uint32_t);
+        rootsDesc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        rootsBuffer = wgpuDeviceCreateBuffer(deviceData->device, &rootsDesc);
+        wgpuQueueWriteBuffer(deviceData->queue, rootsBuffer, 0, asRoots.data(), rootsDesc.size);
+        WGPUBindGroupEntry roots{};
+        roots.binding = kAsRootsBinding;
+        roots.buffer = rootsBuffer;
+        roots.size = rootsDesc.size;
+        entries.push_back(roots);
     }
 
     WGPUBindGroupDescriptor desc{};
@@ -1034,11 +1115,15 @@ std::shared_ptr<BindGroup> Device::createBindGroup(const BindGroupDescriptor& de
     desc.entries = entries.data();
 
     WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(deviceData->device, &desc);
-    if (!bindGroup) return nullptr;
+    if (!bindGroup) {
+        if (rootsBuffer) wgpuBufferRelease(rootsBuffer);
+        return nullptr;
+    }
 
     auto* handle = new BindGroupHandle();
     handle->bindGroup = bindGroup;
     handle->deviceData = deviceData;
+    handle->accelerationStructureRoots = rootsBuffer;
 
     deviceData->bindGroupCount++;
     return std::shared_ptr<BindGroup>(new BindGroup(handle));
@@ -1075,6 +1160,10 @@ std::shared_ptr<PipelineLayout> Device::createPipelineLayout(const PipelineLayou
     auto* handle = new PipelineLayoutHandle();
     handle->layout = layout;
     handle->pushConstantGroup = pushConstantGroup;
+    handle->groupLayouts = layouts;
+    for (WGPUBindGroupLayout bgl : layouts) {
+        if (bgl) wgpuBindGroupLayoutAddRef(bgl);
+    }
     handle->deviceData = deviceData;
 
     deviceData->pipelineLayoutCount++;
@@ -1162,22 +1251,188 @@ std::shared_ptr<CommandEncoder> Device::createCommandEncoder() {
     return std::shared_ptr<CommandEncoder>(new CommandEncoder(handle));
 }
 
+// Acceleration structures are records in the software ray tracing heap
+// (src/webgpu/rt/rt_internal.hpp); building them is recorded by
+// CommandEncoder::buildAccelerationStructure().
+static AccelerationStructureHandle* makeAccelerationStructure(
+    WebGPUDeviceData* deviceData, bool tlas, uint32_t n, uint32_t buildFlags, AsHeapPage* requiredPage) {
+    auto* handle = new AccelerationStructureHandle();
+    handle->tlas = tlas;
+    handle->layout = computeAsLayout(tlas, n);
+    handle->buildFlags = buildFlags;
+    if (!allocateAsRecord(deviceData, handle->layout.totalBytes, requiredPage, handle->allocation)) {
+        if (requiredPage) {
+            fprintf(stderr, "[WebGPU] createTopLevelAccelerationStructure: no room left in its BLASes' "
+                            "heap page; raise it with Device::setAccelerationStructureHeapHint()\n");
+        }
+        delete handle;
+        return nullptr;
+    }
+    handle->deviceData = deviceData;
+    handle->buildScratchBytes = computeScratchLayout(n).totalBytes;
+    handle->updateScratchBytes = handle->buildScratchBytes;
+    deviceData->accelerationStructureCount++;
+    updatePeakMemory(deviceData);
+    return handle;
+}
+
 std::shared_ptr<AccelerationStructure> Device::createBottomLevelAccelerationStructure(
     const BottomLevelAccelerationStructureDescriptor& descriptor) {
-    (void)descriptor;
-    return nullptr; // Ray tracing not supported in WebGPU
+    auto* deviceData = static_cast<WebGPUDeviceData*>(native);
+    const uint32_t n = countBlasPrimitives(descriptor);
+    if (n == 0) return nullptr;
+    auto* handle = makeAccelerationStructure(deviceData, false, n, static_cast<uint32_t>(descriptor.buildFlags), nullptr);
+    if (!handle) return nullptr;
+    handle->blasInput = descriptor;
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
 }
 
 std::shared_ptr<AccelerationStructure> Device::createTopLevelAccelerationStructure(
     const TopLevelAccelerationStructureDescriptor& descriptor) {
-    (void)descriptor;
-    return nullptr; // Ray tracing not supported in WebGPU
+    auto* deviceData = static_cast<WebGPUDeviceData*>(native);
+    if (descriptor.instances.empty()) return nullptr;
+    // A TLAS reaches its BLASes only inside one heap page (see rt_internal.hpp).
+    AsHeapPage* page = nullptr;
+    for (const auto& inst : descriptor.instances) {
+        if (!inst.blas || !inst.blas->native) continue;
+        AsHeapPage* p = static_cast<AccelerationStructureHandle*>(inst.blas->native)->allocation.page;
+        if (page && p != page) {
+            fprintf(stderr, "[WebGPU] createTopLevelAccelerationStructure: its BLASes are in different "
+                            "acceleration structure heap pages; raise the page size with "
+                            "Device::setAccelerationStructureHeapHint() before creating them\n");
+            return nullptr;
+        }
+        page = p;
+    }
+    auto* handle = makeAccelerationStructure(deviceData, true, static_cast<uint32_t>(descriptor.instances.size()),
+                                             static_cast<uint32_t>(descriptor.buildFlags), page);
+    if (!handle) return nullptr;
+    handle->tlasInput = descriptor;
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
 }
 
+std::shared_ptr<AccelerationStructure> Device::createCompactedAccelerationStructure(
+    std::shared_ptr<AccelerationStructure> source) {
+    auto* deviceData = static_cast<WebGPUDeviceData*>(native);
+    if (!source || !source->native || source->getCompactedSize() == 0) return nullptr;
+    auto* src = static_cast<AccelerationStructureHandle*>(source->native);
+    auto* handle = new AccelerationStructureHandle();
+    handle->tlas = src->tlas;
+    handle->layout = computeCompactLayout(src->tlas, src->layout.n, (src->buildFlags & kAsBuildFlagAllowUpdate) != 0);
+    handle->buildFlags = src->buildFlags;
+    handle->compacted = true;
+    // Next to the source where it fits, so TLASes and their BLASes can still share a page.
+    if (!allocateAsRecord(deviceData, handle->layout.totalBytes, src->allocation.page, handle->allocation) &&
+        (src->tlas || !allocateAsRecord(deviceData, handle->layout.totalBytes, nullptr, handle->allocation))) {
+        delete handle;
+        return nullptr;
+    }
+    handle->deviceData = deviceData;
+    handle->buildScratchBytes = src->buildScratchBytes;
+    handle->updateScratchBytes = src->updateScratchBytes;
+    handle->blasInput = src->blasInput;
+    handle->tlasInput = src->tlasInput;
+    deviceData->accelerationStructureCount++;
+    updatePeakMemory(deviceData);
+    return std::shared_ptr<AccelerationStructure>(new AccelerationStructure(handle));
+}
+
+// Ray tracing pipelines are emulated: the stages' WGSL modules are merged and
+// stitched into a compute shader (src/webgpu/rt/rt_shader.cpp) whose layout
+// is the app's plus one group holding the launch size.
 std::shared_ptr<RayTracingPipeline> Device::createRayTracingPipeline(
     const RayTracingPipelineDescriptor& descriptor) {
-    (void)descriptor;
-    return nullptr; // Ray tracing not supported in WebGPU
+    auto* deviceData = static_cast<WebGPUDeviceData*>(native);
+    const char* who = "[WebGPU] createRayTracingPipeline";
+    if (!descriptor.rayGeneration.module) return nullptr;
+    if (descriptor.maxRecursionDepth > kSoftwareMaxRecursionDepth) {
+        fprintf(stderr, "%s: maxRecursionDepth %u exceeds this device's %u\n", who,
+                descriptor.maxRecursionDepth, kSoftwareMaxRecursionDepth);
+        return nullptr;
+    }
+
+    // The stages' modules, ray generation's first; stage names are mapped
+    // through the renames the merge makes (rt_internal.hpp).
+    std::vector<ShaderModuleHandle*> modules{static_cast<ShaderModuleHandle*>(descriptor.rayGeneration.module->native)};
+    std::vector<std::pair<size_t, std::string*>> named;  // (module index, stage name to map)
+    RayTracingStages stages;
+    stages.rayGeneration = descriptor.rayGeneration.entryPoint;
+    named.push_back({0, &stages.rayGeneration});
+    auto moduleIndex = [&](const std::shared_ptr<ShaderModule>& m) {
+        auto* h = static_cast<ShaderModuleHandle*>(m->native);
+        for (size_t i = 0; i < modules.size(); ++i) if (modules[i] == h) return i;
+        modules.push_back(h);
+        return modules.size() - 1;
+    };
+    auto addStage = [&](const std::optional<RayTracingShaderDescriptor>& s, std::string& name) {
+        if (!s || !s->module) return;
+        name = s->entryPoint;
+        named.push_back({moduleIndex(s->module), &name});
+    };
+    stages.miss.resize(descriptor.missShaders.size());
+    for (size_t i = 0; i < descriptor.missShaders.size(); ++i) addStage(descriptor.missShaders[i], stages.miss[i]);
+    stages.hitGroups.resize(descriptor.hitGroups.size());
+    for (size_t i = 0; i < descriptor.hitGroups.size(); ++i) {
+        addStage(descriptor.hitGroups[i].closestHit, stages.hitGroups[i].closestHit);
+        addStage(descriptor.hitGroups[i].anyHit, stages.hitGroups[i].anyHit);
+        addStage(descriptor.hitGroups[i].intersection, stages.hitGroups[i].intersection);
+    }
+    std::vector<std::string> sources;
+    for (auto* m : modules) sources.push_back(m->source);
+    std::vector<std::map<std::string, std::string>> renames;
+    const std::string source = mergeRayTracingModules(sources, renames);
+    for (auto& [k, name] : named) {
+        auto it = renames[k].find(*name);
+        if (it != renames[k].end()) *name = it->second;
+    }
+    for (const auto& m : stages.miss) {
+        if (m.empty()) {
+            fprintf(stderr, "%s: a miss shader has no module\n", who);
+            return nullptr;
+        }
+    }
+
+    RayTracingState* rt = rayTracingState(deviceData);
+    std::vector<WGPUBindGroupLayout> groups;
+    if (descriptor.layout && descriptor.layout->native) {
+        groups = static_cast<PipelineLayoutHandle*>(descriptor.layout->native)->groupLayouts;
+    }
+    const uint32_t launchGroup = static_cast<uint32_t>(groups.size());
+    groups.push_back(rt->launchLayout);
+
+    std::string wgsl, error;
+    if (!buildRayTracingPipelineWGSL(source, stages, launchGroup, descriptor.maxRecursionDepth, wgsl, error)) {
+        fprintf(stderr, "%s: %s\n", who, error.c_str());
+        return nullptr;
+    }
+
+    WGPUPipelineLayoutDescriptor plDesc{};
+    plDesc.bindGroupLayoutCount = groups.size();
+    plDesc.bindGroupLayouts = groups.data();
+    WGPUPipelineLayout layout = wgpuDeviceCreatePipelineLayout(deviceData->device, &plDesc);
+
+    pushValidationScope(deviceData->device);
+    WGPUShaderModule shader = createWGSLShaderModule(deviceData->device, wgsl.c_str());
+    WGPUComputePipelineDescriptor desc{};
+    desc.label = toStringView("campello_gpu ray tracing pipeline");
+    desc.layout = layout;
+    desc.compute.module = shader;
+    desc.compute.entryPoint = toStringView("campello_rt_main");
+    WGPUComputePipeline pipeline = shader ? wgpuDeviceCreateComputePipeline(deviceData->device, &desc) : nullptr;
+    const bool valid = popValidationScope(deviceData->device, "createRayTracingPipeline");
+    if (shader) wgpuShaderModuleRelease(shader);
+    if (layout) wgpuPipelineLayoutRelease(layout);
+    if (!pipeline || !valid) {
+        if (pipeline) wgpuComputePipelineRelease(pipeline);
+        return nullptr;
+    }
+
+    auto* handle = new RayTracingPipelineHandle();
+    handle->pipeline = pipeline;
+    handle->launchGroup = launchGroup;
+    handle->deviceData = deviceData;
+    deviceData->rayTracingPipelineCount++;
+    return std::shared_ptr<RayTracingPipeline>(new RayTracingPipeline(handle));
 }
 
 // Maps a submitted command buffer's resolved pass timestamps (the map
@@ -1193,8 +1448,8 @@ static void startGpuTimingReadback(const std::shared_ptr<GpuTimingState>& timing
                 wgpuBufferGetConstMappedRange(t.readbackBuffer, 0, t.readbackSize));
             if (ts) {
                 uint64_t first = UINT64_MAX, last = 0;
-                uint64_t renderNs = 0, computeNs = 0;
-                uint32_t renderSamples = 0, computeSamples = 0;
+                uint64_t renderNs = 0, computeNs = 0, rayTracingNs = 0;
+                uint32_t renderSamples = 0, computeSamples = 0, rayTracingSamples = 0;
                 for (const auto& pass : t.passes) {
                     uint64_t begin = ts[pass.beginIndex];
                     uint64_t end = ts[pass.endIndex];
@@ -1202,7 +1457,8 @@ static void startGpuTimingReadback(const std::shared_ptr<GpuTimingState>& timing
                     first = std::min(first, begin);
                     last = std::max(last, end);
                     // WebGPU timestamps are in nanoseconds.
-                    if (pass.isCompute) { computeNs += end - begin; computeSamples++; }
+                    if (pass.isRayTracing) { rayTracingNs += end - begin; rayTracingSamples++; }
+                    else if (pass.isCompute) { computeNs += end - begin; computeSamples++; }
                     else { renderNs += end - begin; renderSamples++; }
                 }
                 if (first != UINT64_MAX && last > first) t.totalNs = last - first;
@@ -1212,6 +1468,8 @@ static void startGpuTimingReadback(const std::shared_ptr<GpuTimingState>& timing
                     t.deviceData->computePassTimeNs.fetch_add(computeNs);
                     t.deviceData->renderPassSampleCount.fetch_add(renderSamples);
                     t.deviceData->computePassSampleCount.fetch_add(computeSamples);
+                    t.deviceData->rayTracingPassTimeNs.fetch_add(rayTracingNs);
+                    t.deviceData->rayTracingPassSampleCount.fetch_add(rayTracingSamples);
                 }
             }
             wgpuBufferUnmap(t.readbackBuffer);
